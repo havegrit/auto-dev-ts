@@ -1,0 +1,144 @@
+# auto-dev
+
+[Claude Code SDK](https://github.com/anthropics/claude-agent-sdk-typescript) 기반 개발 자동화 에이전트. 스캐폴딩, 코드 리뷰, 테스트, CI/CD, 플래닝, 스펙 정제를 담당하는 6개의 전문 AI 에이전트를 오케스트레이션합니다. LLM API 키나 토큰 비용 없이 동작합니다.
+
+> [English documentation](README.md)
+
+## 동작 방식
+
+클라우드 LLM API를 직접 호출하는 대신, Agent SDK를 통해 **Claude Code** CLI를 프로그래밍으로 제어합니다. 각 에이전트는 워크스페이스 디렉토리로 파일 I/O와 쉘 접근이 제한된 Claude Code 세션 안에서 실행됩니다. 리뷰 에이전트는 정확성 · 보안 · 성능 · 스타일 4개 서브에이전트를 동시에 병렬 실행합니다.
+
+모든 실행 기록은 로컬 SQLite 데이터베이스에 저장되며, 내장 웹 대시보드에서 확인할 수 있습니다.
+
+## 에이전트
+
+| 에이전트 | 설명 |
+|---------|------|
+| `scaffold` | 스펙 또는 설명에서 코드 스켈레톤 생성 |
+| `review` | 멀티 렌즈 코드 리뷰: 정확성 · 보안 · 성능 · 스타일 (병렬) |
+| `test` | 기존 코드에 대한 테스트 케이스 생성 |
+| `cicd` | CI/CD 파이프라인 설정 생성 (GitHub Actions 등) |
+| `planner` | 스펙에서 구조화된 개발 계획 수립 |
+| `clarifier` | 플래닝 전 스펙의 불명확한 점 파악 |
+
+## 요구사항
+
+- [Claude Code](https://claude.ai/code) 설치 및 인증 완료 (`claude`가 PATH에 있어야 함)
+- Node.js ≥ 22
+- npm
+
+## 설치
+
+```bash
+git clone <repo>
+cd auto-dev-ts
+npm install
+cp .env.example .env
+```
+
+`.env` 파일을 필요에 맞게 수정합니다 (워크스페이스 경로, 포트, 일일 실행 제한 등).
+
+## 사용법
+
+입력은 인라인 문자열 또는 파일 경로 모두 가능하며, 자동으로 감지됩니다.
+
+```bash
+# 단일 에이전트 실행
+./run scaffold "JWT 인증을 포함한 REST API를 만들어줘"
+./run scaffold path/to/spec.md
+
+./run review src/
+./run test src/auth.ts
+./run cicd "Node.js 모노레포, AWS ECS 배포"
+./run planner path/to/spec.md
+./run clarifier path/to/spec.md
+
+# 전체 스펙 워크플로우 (clarifier → planner → scaffold → test → review → cicd)
+./run spec path/to/spec.md
+
+# 특정 단계만 실행
+./run spec path/to/spec.md --steps scaffold,test,review
+
+# 현황 및 통계
+./run status
+
+# HTTP API + 대시보드
+./run serve
+
+# 스케줄러만 실행 (일일 워크로그 브리핑)
+./run daemon
+```
+
+## 스펙 워크플로우
+
+`./run spec <file>`은 아래 순서로 전체 파이프라인을 실행합니다:
+
+```
+clarifier → planner → scaffold → test → review → cicd
+```
+
+리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
+
+## 대시보드
+
+`./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
+
+- 에이전트 현황 및 일일 실행 횟수
+- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기)
+- 10초마다 자동 갱신
+
+원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@host -N
+```
+
+## REST API
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `GET` | `/api/status` | 에이전트 목록 및 일일 실행 가드 통계 |
+| `POST` | `/api/agents/:name` | 단일 에이전트 실행 |
+| `POST` | `/api/clarify` | Q&A 컨텍스트와 함께 clarifier 실행 |
+| `POST` | `/api/specs` | 스펙 워크플로우 실행 |
+| `GET` | `/api/runs` | 최근 실행 목록 (`?limit=`) |
+| `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
+
+## 설정
+
+모든 설정은 환경 변수로 관리합니다 (`.env.example`을 `.env`로 복사):
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트가 파일을 읽고 쓰는 디렉토리 |
+| `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
+| `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
+| `AUTO_DEV_BIND_PORT` | `8080` | HTTP 서버 포트 |
+| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 최대 에이전트 실행 횟수 (서킷 브레이커) |
+| `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 리뷰 브리핑 스케줄러 활성화 |
+| `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 스케줄 크론 표현식 |
+
+## 프로젝트 구조
+
+```
+auto-dev-ts/
+├── prompts/          각 에이전트 시스템 프롬프트 (Markdown)
+├── static/           대시보드 프론트엔드 (바닐라 HTML/JS)
+├── src/
+│   ├── agents/       에이전트 구현체 및 레지스트리
+│   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
+│   ├── workflows/    SpecWorkflow 파이프라인
+│   ├── store/        SQLite 스키마 + CRUD
+│   ├── lib/          로거, 프롬프트 로더, 실행 가드, 코어 러너
+│   ├── server/       Hono HTTP 서버 + 라우트
+│   ├── schedule/     node-cron 일일 브리핑
+│   └── cli.ts        Commander CLI 진입점
+├── .env.example
+├── package.json
+└── tsconfig.json
+```
+
+## 라이선스
+
+MIT

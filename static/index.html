@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>auto-dev</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 2rem; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 2rem; color: #58a6ff; letter-spacing: -0.02em; }
+    h1 span { color: #8b949e; font-weight: 400; font-size: 1rem; margin-left: 0.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; }
+    .card h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; margin-bottom: 0.75rem; }
+    .stat { font-size: 2rem; font-weight: 700; color: #e6edf3; }
+    .stat-sub { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
+    .agents { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .badge { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #79c0ff; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; color: #8b949e; font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #21262d; }
+    td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #21262d; color: #c9d1d9; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    .status { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+    .DONE    { background: #1a4731; color: #3fb950; }
+    .FAILED  { background: #3b1219; color: #f85149; }
+    .RUNNING { background: #1c2d4a; color: #58a6ff; }
+    .BLOCKED { background: #2d2800; color: #e3b341; }
+    .agent-name { font-family: monospace; color: #79c0ff; }
+    .duration { color: #8b949e; font-size: 0.78rem; }
+    .output-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 0.78rem; }
+    .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; }
+    .refresh:hover { border-color: #58a6ff; color: #58a6ff; }
+    .section-title { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  <h1>auto-dev <span>Claude Code SDK 에이전트</span></h1>
+
+  <div class="grid">
+    <div class="card">
+      <h2>오늘 실행</h2>
+      <div class="stat" id="today-runs">—</div>
+      <div class="stat-sub" id="today-limit">—</div>
+    </div>
+    <div class="card">
+      <h2>전체 실행</h2>
+      <div class="stat" id="total-runs">—</div>
+    </div>
+    <div class="card">
+      <h2>에이전트</h2>
+      <div class="agents" id="agents"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">
+      최근 실행 <button class="refresh" onclick="load()">새로고침</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>에이전트</th><th>상태</th><th>소요시간</th><th>출력</th><th>시작시간</th>
+        </tr>
+      </thead>
+      <tbody id="runs"></tbody>
+    </table>
+  </div>
+
+  <script>
+    async function load() {
+      const [statusRes, statsRes, runsRes] = await Promise.all([
+        fetch('/api/status').then(r => r.json()),
+        fetch('/api/stats').then(r => r.json()),
+        fetch('/api/runs?limit=30').then(r => r.json()),
+      ]);
+
+      document.getElementById('today-runs').textContent = statsRes.today ?? '—';
+      const g = statusRes.guard;
+      document.getElementById('today-limit').textContent = g ? `한도 ${g.limit}회 중 ${g.count}회 사용` : '';
+      document.getElementById('total-runs').textContent = statsRes.total ?? '—';
+
+      const agentsEl = document.getElementById('agents');
+      agentsEl.innerHTML = (statusRes.agents ?? []).map(a => `<span class="badge">${a}</span>`).join('');
+
+      const tbody = document.getElementById('runs');
+      tbody.innerHTML = runsRes.map(r => `
+        <tr>
+          <td><span class="agent-name">${r.agent_name}</span></td>
+          <td><span class="status ${r.status}">${r.status}</span></td>
+          <td><span class="duration">${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '—'}</span></td>
+          <td><span class="output-preview">${(r.output ?? '').replace(/</g,'&lt;')}</span></td>
+          <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
+        </tr>`).join('');
+    }
+
+    load();
+    setInterval(load, 10000);
+  </script>
+</body>
+</html>
