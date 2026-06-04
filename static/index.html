@@ -9,8 +9,8 @@
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 2rem; }
     h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 2rem; color: #58a6ff; letter-spacing: -0.02em; }
     h1 span { color: #8b949e; font-weight: 400; font-size: 1rem; margin-left: 0.5rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
     .card h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; margin-bottom: 0.75rem; }
     .stat { font-size: 2rem; font-weight: 700; color: #e6edf3; }
     .stat-sub { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
@@ -31,30 +31,142 @@
     .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; }
     .refresh:hover { border-color: #58a6ff; color: #58a6ff; }
     .section-title { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; }
+
+    /* Submit panel */
+    .submit-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
+    .submit-card h2 { font-size: 0.85rem; font-weight: 600; color: #e6edf3; margin-bottom: 1rem; }
+    .form-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; align-items: center; flex-wrap: wrap; }
+    .form-row label { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
+    select, input[type="text"] {
+      background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+      border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; flex: 1;
+    }
+    select:focus, input[type="text"]:focus { outline: none; border-color: #58a6ff; }
+    .tab-bar { display: flex; gap: 0; margin-bottom: 0.5rem; }
+    .tab {
+      background: none; border: 1px solid #30363d; color: #8b949e;
+      padding: 0.35rem 0.9rem; font-size: 0.8rem; cursor: pointer;
+    }
+    .tab:first-child { border-radius: 6px 0 0 6px; }
+    .tab:last-child  { border-radius: 0 6px 6px 0; border-left: none; }
+    .tab.active { background: #21262d; color: #58a6ff; border-color: #58a6ff; }
+    textarea {
+      width: 100%; background: #0d1117; border: 1px solid #30363d;
+      color: #e6edf3; border-radius: 6px; padding: 0.6rem 0.75rem;
+      font-size: 0.85rem; font-family: inherit; resize: vertical; min-height: 100px;
+    }
+    textarea:focus { outline: none; border-color: #58a6ff; }
+    .drop-zone {
+      border: 2px dashed #30363d; border-radius: 6px; padding: 2rem;
+      text-align: center; color: #8b949e; font-size: 0.85rem; cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: #58a6ff; color: #58a6ff; }
+    .file-name { font-size: 0.8rem; color: #3fb950; margin-top: 0.4rem; }
+    .run-btn {
+      background: #1f6feb; border: none; color: #fff;
+      padding: 0.5rem 1.4rem; border-radius: 6px; font-size: 0.85rem;
+      font-weight: 600; cursor: pointer; margin-top: 0.75rem;
+    }
+    .run-btn:hover { background: #388bfd; }
+    .run-btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+
+    /* Result panel */
+    .result-panel { display: none; margin-top: 1rem; border-top: 1px solid #21262d; padding-top: 1rem; }
+    .result-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; font-size: 0.82rem; color: #8b949e; }
+    .result-output {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+      padding: 0.75rem; font-family: monospace; font-size: 0.78rem; color: #c9d1d9;
+      white-space: pre-wrap; max-height: 400px; overflow-y: auto;
+    }
+    .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .sub-runs { margin-top: 0.75rem; }
+    .sub-run-row { display: flex; gap: 0.5rem; align-items: center; font-size: 0.78rem; padding: 0.25rem 0; color: #8b949e; }
+    .sub-run-row .agent-name { font-size: 0.78rem; }
   </style>
 </head>
 <body>
   <h1>auto-dev <span>Claude Code SDK 에이전트</span></h1>
 
+  <!-- 통계 카드 -->
   <div class="grid">
-    <div class="card">
+    <div class="card" style="margin-bottom:0">
       <h2>오늘 실행</h2>
       <div class="stat" id="today-runs">—</div>
       <div class="stat-sub" id="today-limit">—</div>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:0">
       <h2>전체 실행</h2>
       <div class="stat" id="total-runs">—</div>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:0">
       <h2>에이전트</h2>
       <div class="agents" id="agents"></div>
     </div>
   </div>
 
+  <!-- 새 요청 실행 -->
+  <div class="submit-card">
+    <h2>새 요청 실행</h2>
+
+    <div class="form-row">
+      <label>에이전트</label>
+      <select id="agent-select">
+        <option value="spec">전체 워크플로우 (clarifier → planner → scaffold → test → review → cicd)</option>
+        <option value="scaffold">scaffold — 코드 스캐폴딩</option>
+        <option value="review">review — 코드 리뷰</option>
+        <option value="test">test — 테스트 생성</option>
+        <option value="cicd">cicd — CI/CD 설정</option>
+        <option value="planner">planner — 개발 계획</option>
+        <option value="clarifier">clarifier — 스펙 명확화</option>
+      </select>
+    </div>
+
+    <div id="spec-steps-row" class="form-row" style="display:none">
+      <label>단계 (선택)</label>
+      <input type="text" id="spec-steps" placeholder="scaffold,test,review (비워두면 전체)" />
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab active" onclick="setTab('text')">텍스트</button>
+      <button class="tab" onclick="setTab('file')">파일</button>
+    </div>
+
+    <div id="tab-text">
+      <textarea id="text-input" placeholder="스펙 또는 요청 내용을 입력하세요..."></textarea>
+    </div>
+
+    <div id="tab-file" style="display:none">
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
+           ondragover="event.preventDefault();this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="handleDrop(event)">
+        파일을 끌어다 놓거나 클릭해서 선택<br>
+        <small style="color:#484f58">(.md .txt .json .yaml .yml)</small>
+      </div>
+      <input type="file" id="file-input" accept=".md,.txt,.json,.yaml,.yml" style="display:none" onchange="handleFileSelect(this)" />
+      <div class="file-name" id="file-name"></div>
+    </div>
+
+    <button class="run-btn" id="run-btn" onclick="submitRequest()">실행</button>
+
+    <!-- 결과 패널 -->
+    <div class="result-panel" id="result-panel">
+      <div class="result-header">
+        <div id="result-spinner" class="spinner" style="display:none"></div>
+        <span id="result-status-label">대기 중</span>
+        <span id="result-run-id" style="font-family:monospace;font-size:0.72rem;color:#484f58"></span>
+      </div>
+      <div class="sub-runs" id="sub-runs"></div>
+      <div class="result-output" id="result-output" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- 최근 실행 -->
   <div class="card">
     <div class="section-title">
-      최근 실행 <button class="refresh" onclick="load()">새로고침</button>
+      최근 실행 <button class="refresh" onclick="loadStats()">새로고침</button>
     </div>
     <table>
       <thead>
@@ -67,14 +179,141 @@
   </div>
 
   <script>
-    async function load() {
+    let currentTab = 'text';
+    let selectedFile = null;
+    let pollTimer = null;
+
+    // agent 선택 시 spec-steps 표시
+    document.getElementById('agent-select').addEventListener('change', function() {
+      document.getElementById('spec-steps-row').style.display = this.value === 'spec' ? 'flex' : 'none';
+    });
+
+    function setTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('tab-text').style.display = tab === 'text' ? '' : 'none';
+      document.getElementById('tab-file').style.display = tab === 'file' ? '' : 'none';
+    }
+
+    function handleFileSelect(input) {
+      const file = input.files[0];
+      if (file) {
+        selectedFile = file;
+        document.getElementById('file-name').textContent = `선택됨: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        document.getElementById('drop-zone').textContent = file.name;
+      }
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        selectedFile = file;
+        document.getElementById('file-name').textContent = `선택됨: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        document.getElementById('drop-zone').textContent = file.name;
+      }
+    }
+
+    async function submitRequest() {
+      const agent = document.getElementById('agent-select').value;
+      const formData = new FormData();
+      formData.append('agent', agent);
+
+      if (currentTab === 'text') {
+        const txt = document.getElementById('text-input').value.trim();
+        if (!txt) { alert('입력 내용을 작성하세요.'); return; }
+        formData.append('input', txt);
+      } else {
+        if (!selectedFile) { alert('파일을 선택하세요.'); return; }
+        formData.append('file', selectedFile);
+      }
+
+      if (agent === 'spec') {
+        const steps = document.getElementById('spec-steps').value.trim();
+        if (steps) formData.append('steps', steps);
+      }
+
+      // UI 초기화
+      const btn = document.getElementById('run-btn');
+      btn.disabled = true;
+      btn.textContent = '실행 중...';
+      const panel = document.getElementById('result-panel');
+      panel.style.display = '';
+      document.getElementById('result-spinner').style.display = '';
+      document.getElementById('result-status-label').textContent = '요청 전송 중...';
+      document.getElementById('result-run-id').textContent = '';
+      document.getElementById('sub-runs').innerHTML = '';
+      document.getElementById('result-output').style.display = 'none';
+      document.getElementById('result-output').textContent = '';
+
+      try {
+        const res = await fetch('/api/submit', { method: 'POST', body: formData });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error ?? res.statusText);
+        }
+        const { runId, type } = await res.json();
+        document.getElementById('result-run-id').textContent = runId.slice(0, 8) + '…';
+        document.getElementById('result-status-label').textContent = '실행 중';
+        pollRun(runId, type);
+      } catch (err) {
+        document.getElementById('result-spinner').style.display = 'none';
+        document.getElementById('result-status-label').textContent = '오류: ' + err.message;
+        btn.disabled = false;
+        btn.textContent = '실행';
+      }
+    }
+
+    function pollRun(runId, type) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        try {
+          const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
+          const statusEl = document.getElementById('result-status-label');
+          const spinnerEl = document.getElementById('result-spinner');
+
+          statusEl.innerHTML = `<span class="status ${run.status}">${run.status}</span>`;
+
+          if (run.output) {
+            const outEl = document.getElementById('result-output');
+            outEl.style.display = '';
+            outEl.textContent = run.output;
+          }
+
+          // 워크플로우면 sub-runs 폴링
+          if (type === 'workflow') {
+            const children = await fetch(`/api/runs/${runId}/children`).then(r => r.json());
+            const subEl = document.getElementById('sub-runs');
+            subEl.innerHTML = children.map(c => `
+              <div class="sub-run-row">
+                <span class="agent-name">${c.agent_name}</span>
+                <span class="status ${c.status}">${c.status}</span>
+                <span class="duration">${c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '—'}</span>
+              </div>`).join('');
+          }
+
+          if (run.status === 'DONE' || run.status === 'FAILED' || run.status === 'BLOCKED') {
+            clearInterval(pollTimer);
+            spinnerEl.style.display = 'none';
+            const btn = document.getElementById('run-btn');
+            btn.disabled = false;
+            btn.textContent = '실행';
+            loadStats();
+          }
+        } catch (e) { /* 일시적 네트워크 오류 무시 */ }
+      }, 2000);
+    }
+
+    async function loadStats() {
       const [statusRes, statsRes, runsRes] = await Promise.all([
         fetch('/api/status').then(r => r.json()),
         fetch('/api/stats').then(r => r.json()),
         fetch('/api/runs?limit=30').then(r => r.json()),
       ]);
 
-      document.getElementById('today-runs').textContent = statsRes.today ?? '—';
+      document.getElementById('today-runs').textContent = statsRes.todayCount ?? '—';
       const g = statusRes.guard;
       document.getElementById('today-limit').textContent = g ? `한도 ${g.limit}회 중 ${g.count}회 사용` : '';
       document.getElementById('total-runs').textContent = statsRes.total ?? '—';
@@ -93,8 +332,8 @@
         </tr>`).join('');
     }
 
-    load();
-    setInterval(load, 10000);
+    loadStats();
+    setInterval(loadStats, 10000);
   </script>
 </body>
 </html>

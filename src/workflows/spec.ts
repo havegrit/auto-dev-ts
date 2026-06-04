@@ -6,11 +6,13 @@ import { planner } from '../agents/planner.js';
 import { clarifier } from '../agents/clarifier.js';
 import { randomUUID } from 'crypto';
 import type { RunResult } from '../lib/runner.js';
+import { insertRun, updateRun } from '../store/runs.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
   iterations?: number;
   triggerSource?: string;
+  workflowRunId?: string;
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -24,7 +26,7 @@ export interface SpecResult {
 const STEP_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'];
 
 export async function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
-  const workflowRunId = randomUUID();
+  const workflowRunId = opts.workflowRunId ?? randomUUID();
   const steps = opts.steps ?? new Set(STEP_ORDER);
   const iterations = opts.iterations ?? 1;
   const start = Date.now();
@@ -49,4 +51,33 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   }
 
   return { workflowRunId, steps: results, totalDurationMs: Date.now() - start };
+}
+
+export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  insertRun({
+    id: runId,
+    agentName: 'spec',
+    input: specContent.slice(0, 4000),
+    status: 'RUNNING',
+    startedAt,
+    triggerSource: opts.triggerSource ?? 'dashboard',
+  });
+
+  const wallStart = Date.now();
+  runSpec(specContent, { ...opts, workflowRunId: runId }).then(result => {
+    const summary = Object.entries(result.steps)
+      .map(([k, v]) => `${k}: ${v.status}`)
+      .join(', ');
+    updateRun(runId, { output: summary, status: 'DONE', durationMs: result.totalDurationMs });
+  }).catch(err => {
+    updateRun(runId, {
+      output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+      status: 'FAILED',
+      durationMs: Date.now() - wallStart,
+    });
+  });
+
+  return runId;
 }

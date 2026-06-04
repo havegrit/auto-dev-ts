@@ -82,6 +82,10 @@ export function getRecentRuns(limit: number): RunRow[] {
   return db.prepare('SELECT * FROM agent_run ORDER BY started_at DESC LIMIT ?').all(limit) as RunRow[];
 }
 
+export function getRunsByWorkflowId(workflowRunId: string): RunRow[] {
+  return db.prepare('SELECT * FROM agent_run WHERE workflow_run_id = ? ORDER BY started_at ASC').all(workflowRunId) as RunRow[];
+}
+
 export function getStats(): object {
   const total = (db.prepare('SELECT COUNT(*) as count FROM agent_run').get() as { count: number }).count;
   const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());

@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { getAgent, listAgents } from '../agents/index.js';
 import { clarifier } from '../agents/clarifier.js';
-import { runSpec } from '../workflows/spec.js';
-import { getRun, getRecentRuns, getStats } from '../store/runs.js';
+import { runSpec, runSpecBackground } from '../workflows/spec.js';
+import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
+import { runAgentBackground } from '../lib/runner.js';
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -62,9 +63,46 @@ export function createRoutes(): Hono {
     }
   });
 
+  app.post('/api/submit', async (c) => {
+    const body = await c.req.parseBody();
+    const agentName = String(body['agent'] ?? 'spec');
+    let input = String(body['input'] ?? '');
+
+    const file = body['file'];
+    if (file instanceof File && file.size > 0) {
+      input = await file.text();
+    }
+
+    if (!input.trim()) return c.json({ error: 'input 또는 파일이 필요합니다' }, 400);
+
+    if (agentName === 'spec') {
+      const stepsRaw = String(body['steps'] ?? '');
+      const steps = stepsRaw
+        ? new Set(stepsRaw.split(',').map((s: string) => s.trim()).filter(Boolean))
+        : undefined;
+      const iterations = body['iterations'] ? Number(body['iterations']) : undefined;
+      const runId = runSpecBackground(input, { steps, iterations, triggerSource: 'dashboard' });
+      return c.json({ runId, type: 'workflow' });
+    }
+
+    const agent = getAgent(agentName);
+    if (!agent) return c.json({ error: `Unknown agent: ${agentName}` }, 404);
+
+    const runId = runAgentBackground({
+      name: agentName,
+      prompt: input,
+      triggerSource: 'dashboard',
+    });
+    return c.json({ runId, type: 'agent' });
+  });
+
   app.get('/api/runs', (c) => {
     const limit = Number(c.req.query('limit') ?? '20');
     return c.json(getRecentRuns(limit));
+  });
+
+  app.get('/api/runs/:id/children', (c) => {
+    return c.json(getRunsByWorkflowId(c.req.param('id')));
   });
 
   app.get('/api/runs/:id', (c) => {
