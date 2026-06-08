@@ -5,6 +5,8 @@ import { runSpec, runSpecBackground } from '../workflows/spec.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { runAgentBackground } from '../lib/runner.js';
+import { getIssueTracker } from '../integrations/issue-tracker/index.js';
+import { processIssue } from '../workflows/from-issue.js';
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -113,6 +115,29 @@ export function createRoutes(): Hono {
 
   app.get('/api/stats', (c) => {
     return c.json(getStats());
+  });
+
+  app.get('/api/issues', async (c) => {
+    const tracker = getIssueTracker();
+    try {
+      const issues = await tracker.fetchOpenIssues();
+      return c.json(issues);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 502);
+    }
+  });
+
+  app.post('/api/issues/:key/run', async (c) => {
+    const key = c.req.param('key');
+    try {
+      const result = await processIssue(key);
+      return c.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = msg.includes('연동되지 않았습니다') || msg.includes('찾을 수 없습니다') ? 400 : 500;
+      return c.json({ error: msg }, status);
+    }
   });
 
   return app;

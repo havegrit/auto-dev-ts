@@ -10,6 +10,8 @@ import { runSpec } from './workflows/spec.js';
 import { listAgents } from './agents/index.js';
 import { costGuard } from './lib/cost-guard.js';
 import { getStats } from './store/runs.js';
+import { getIssueTracker } from './integrations/issue-tracker/index.js';
+import { processIssue } from './workflows/from-issue.js';
 
 function readInput(inputArg: string): string {
   if (existsSync(inputArg)) return readFileSync(inputArg, 'utf-8');
@@ -76,6 +78,37 @@ program.command('spec <file>')
     const iterations = Number(options.iterations);
     const result = await runSpec(content, { steps, iterations, triggerSource: 'cli' });
     console.log(JSON.stringify(result, null, 2));
+  });
+
+program.command('issues')
+  .description('이슈 트래커에서 열린 이슈 목록 조회')
+  .action(async () => {
+    const tracker = getIssueTracker();
+    try {
+      const issues = await tracker.fetchOpenIssues();
+      if (issues.length === 0) {
+        console.log('열린 이슈가 없거나 트래커가 연동되지 않았습니다.');
+        return;
+      }
+      for (const i of issues) {
+        console.log(`[${i.key}] ${i.title}  (${i.type}/${i.priority}/${i.status})  ${i.updatedAt}`);
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+program.command('work <key>')
+  .description('이슈를 SpecWorkflow로 자동 처리 (AUTO_DEV_ISSUE_TRACKER_URL 필요)')
+  .action(async (key: string) => {
+    try {
+      const result = await processIssue(key);
+      console.log(JSON.stringify(result, null, 2));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   });
 
 program.command('status')

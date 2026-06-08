@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { review } from '../agents/review/index.js';
 import { log } from '../lib/logger.js';
+import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 
 const ENABLED = process.env.AUTO_DEV_WORKLOG_BRIEFING_ENABLED === 'true';
 const CRON_EXPR = process.env.AUTO_DEV_WORKLOG_BRIEFING_CRON ?? '0 9 * * *';
@@ -16,14 +17,39 @@ export function startBriefingSchedule(): void {
     log.info({ schedule: 'briefing' }, 'Running daily worklog briefing');
     try {
       const { readFileSync } = await import('fs');
-      let content: string;
+      let worklog = '';
       try {
-        content = readFileSync(WORKLOG_PATH, 'utf-8');
+        worklog = readFileSync(WORKLOG_PATH, 'utf-8');
       } catch {
-        log.warn({ schedule: 'briefing', path: WORKLOG_PATH }, 'Worklog file not found, skipping');
-        return;
+        log.warn({ schedule: 'briefing', path: WORKLOG_PATH }, 'Worklog file not found');
       }
-      const result = await review(content, { triggerSource: 'schedule', triggerDetail: 'daily-briefing' });
+
+      const tracker = getIssueTracker();
+      let issueSummary = '(이슈 없음 — 트래커 미연동)';
+      try {
+        const issues = await tracker.fetchOpenIssues();
+        if (issues.length > 0) {
+          issueSummary = issues
+            .map(i => `- [${i.key}] ${i.title} (${i.priority}/${i.status})`)
+            .join('\n');
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ schedule: 'briefing', err: msg }, 'Failed to fetch issues');
+      }
+
+      const prompt = [
+        '오늘의 워크로그 브리핑.',
+        '',
+        '할당된 이슈:',
+        issueSummary,
+        '',
+        worklog ? `워크로그:\n${worklog}` : '',
+        '',
+        '먼저 시작할 작업과 고려할 점을 3줄 이내로 요약.',
+      ].join('\n').trim();
+
+      const result = await review(prompt, { triggerSource: 'schedule', triggerDetail: 'daily-briefing' });
       log.info({ schedule: 'briefing', runId: result.runId, durationMs: result.durationMs }, 'Briefing complete');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

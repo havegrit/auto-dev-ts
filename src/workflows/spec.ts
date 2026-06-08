@@ -12,6 +12,7 @@ export interface SpecOptions {
   steps?: Set<string>;
   iterations?: number;
   triggerSource?: string;
+  triggerDetail?: string;
   workflowRunId?: string;
 }
 
@@ -21,6 +22,7 @@ export interface SpecResult {
   workflowRunId: string;
   steps: Record<string, StepResult>;
   totalDurationMs: number;
+  verdict?: string;
 }
 
 const STEP_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'];
@@ -38,6 +40,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   };
 
   let input = specContent;
+  let verdict: string | undefined;
 
   for (let iter = 0; iter < iterations; iter++) {
     for (const step of STEP_ORDER) {
@@ -46,11 +49,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       const r = await agent(input, runOpts);
       results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'DONE' };
       if (step === 'planner' && r.output) input = r.output;
-      if (step === 'review' && r.output.includes('[VERDICT: SHIP]')) break;
+      if (step === 'review') {
+        verdict = r.output.includes('[VERDICT: SHIP]') ? 'SHIP' : 'NEEDS_WORK';
+        if (verdict === 'SHIP') break;
+      }
     }
   }
 
-  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start };
+  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict };
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
