@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "build": "tsc",
+    "build": "tsc && cp src/store/schema.sql dist/store/schema.sql",
     "start": "node dist/cli.js",
     "scaffold": "tsx src/cli.ts scaffold",
     "review": "tsx src/cli.ts review",
