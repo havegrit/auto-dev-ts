@@ -12,6 +12,7 @@ import { costGuard } from './lib/cost-guard.js';
 import { getStats } from './store/runs.js';
 import { getIssueTracker } from './integrations/issue-tracker/index.js';
 import { processIssue } from './workflows/from-issue.js';
+import { circuitBreaker } from './lib/circuit-breaker.js';
 
 function readInput(inputArg: string): string {
   if (existsSync(inputArg)) return readFileSync(inputArg, 'utf-8');
@@ -115,8 +116,9 @@ program.command('status')
   .description('에이전트 현황 및 통계 조회')
   .action(() => {
     const guard = costGuard.stats();
+    const circuit = circuitBreaker.stats();
     const stats = getStats();
-    console.log(JSON.stringify({ agents: listAgents(), guard, stats }, null, 2));
+    console.log(JSON.stringify({ agents: listAgents(), guard, circuit, stats }, null, 2));
   });
 
 program.command('serve')

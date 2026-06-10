@@ -4,6 +4,7 @@ import { clarifier } from '../agents/clarifier.js';
 import { runSpec, runSpecBackground } from '../workflows/spec.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
+import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { runAgentBackground } from '../lib/runner.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
@@ -16,6 +17,7 @@ export function createRoutes(): Hono {
       status: 'ok',
       agents: listAgents(),
       guard: costGuard.stats(),
+      circuit: circuitBreaker.stats(),
     });
   });
 
