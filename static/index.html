@@ -217,7 +217,7 @@
     <table>
       <thead>
         <tr>
-          <th>에이전트</th><th>상태</th><th>소요시간</th><th>출력</th><th>시작시간</th>
+          <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th>
         </tr>
       </thead>
       <tbody id="runs"></tbody>
@@ -437,14 +437,20 @@
       agentsEl.innerHTML = (statusRes.agents ?? []).map(a => `<span class="badge">${a}</span>`).join('');
 
       const tbody = document.getElementById('runs');
-      tbody.innerHTML = runsRes.map(r => `
-        <tr>
+      tbody.innerHTML = runsRes.map(r => {
+        const errorBadge = r.error_type
+          ? `<span style="font-size:0.7rem;color:#f85149;font-family:monospace">${r.error_type}</span> `
+          : '';
+        const preview = (r.output ?? '').replace(/</g,'&lt;').slice(0, 120);
+        return `<tr>
           <td><span class="agent-name">${r.agent_name}</span></td>
           <td><span class="status ${r.status}">${r.status}</span></td>
           <td><span class="duration">${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '—'}</span></td>
-          <td><span class="output-preview">${(r.output ?? '').replace(/</g,'&lt;')}</span></td>
+          <td><span class="duration">${r.num_turns ?? '—'}</span></td>
+          <td>${errorBadge}<span class="output-preview">${preview}</span></td>
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     }
 
     loadConfig();

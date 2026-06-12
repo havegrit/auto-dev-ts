@@ -15,6 +15,9 @@ export interface RunRow {
   trigger_source?: string;
   trigger_detail?: string;
   workflow_run_id?: string;
+  error_type?: string;
+  stop_reason?: string;
+  num_turns: number;
 }
 
 export interface RunInsert {
@@ -38,6 +41,9 @@ export interface RunPatch {
   tokensOut?: number;
   status?: RunStatus;
   durationMs?: number;
+  errorType?: string;
+  stopReason?: string;
+  numTurns?: number;
 }
 
 export function insertRun(row: RunInsert): void {
@@ -64,11 +70,14 @@ export function updateRun(id: string, patch: RunPatch): void {
   const sets: string[] = [];
   const params: Record<string, unknown> = { id };
 
-  if (patch.output !== undefined)   { sets.push('output = @output');       params.output = patch.output; }
-  if (patch.tokensIn !== undefined) { sets.push('tokens_in = @tokensIn');  params.tokensIn = patch.tokensIn; }
-  if (patch.tokensOut !== undefined){ sets.push('tokens_out = @tokensOut'); params.tokensOut = patch.tokensOut; }
-  if (patch.status !== undefined)   { sets.push('status = @status');       params.status = patch.status; }
-  if (patch.durationMs !== undefined){ sets.push('duration_ms = @durationMs'); params.durationMs = patch.durationMs; }
+  if (patch.output !== undefined)    { sets.push('output = @output');             params.output = patch.output; }
+  if (patch.tokensIn !== undefined)  { sets.push('tokens_in = @tokensIn');        params.tokensIn = patch.tokensIn; }
+  if (patch.tokensOut !== undefined) { sets.push('tokens_out = @tokensOut');      params.tokensOut = patch.tokensOut; }
+  if (patch.status !== undefined)    { sets.push('status = @status');             params.status = patch.status; }
+  if (patch.durationMs !== undefined){ sets.push('duration_ms = @durationMs');    params.durationMs = patch.durationMs; }
+  if (patch.errorType !== undefined) { sets.push('error_type = @errorType');      params.errorType = patch.errorType; }
+  if (patch.stopReason !== undefined){ sets.push('stop_reason = @stopReason');    params.stopReason = patch.stopReason; }
+  if (patch.numTurns !== undefined)  { sets.push('num_turns = @numTurns');        params.numTurns = patch.numTurns; }
 
   if (sets.length === 0) return;
   db.prepare(`UPDATE agent_run SET ${sets.join(', ')} WHERE id = @id`).run(params);

@@ -34,6 +34,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   let output = '';
   let tokensIn = 0;
   let tokensOut = 0;
+  const ctx = { runId, agent: opts.name };
 
   try {
     const tools = opts.tools ?? ['Read', 'Write', 'Bash'];
@@ -58,10 +59,10 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         if (info?.status === 'rejected') {
           if (info.resetsAt != null) {
             circuitBreaker.openUntil(info.resetsAt);
-            log.warn({ resetsAt: info.resetsAt, rateLimitType: info.rateLimitType }, 'Rate limit rejected — circuit opened');
+            log.warn({ ...ctx, resetsAt: info.resetsAt, rateLimitType: info.rateLimitType }, 'Rate limit rejected — circuit opened');
           } else {
             circuitBreaker.openForFallback();
-            log.warn({}, 'Rate limit rejected (no resetsAt) — circuit opened with fallback');
+            log.warn(ctx, 'Rate limit rejected (no resetsAt) — circuit opened with fallback');
           }
         }
         continue;
@@ -70,31 +71,59 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       if (m.type === 'system' && m.subtype === 'api_retry' && m.error_status === 429) {
         if (m.retry_delay_ms != null) {
           circuitBreaker.openUntil(Date.now() + m.retry_delay_ms);
-          log.warn({ retry_delay_ms: m.retry_delay_ms }, '429 retry — circuit opened');
+          log.warn({ ...ctx, retry_delay_ms: m.retry_delay_ms }, '429 retry — circuit opened');
         } else {
           circuitBreaker.openForFallback();
-          log.warn({}, '429 retry (no delay) — circuit opened with fallback');
+          log.warn(ctx, '429 retry (no delay) — circuit opened with fallback');
         }
         continue;
       }
 
       if (m.type === 'result') {
-        output = m.result ?? '';
         tokensIn = m.usage?.input_tokens ?? 0;
         tokensOut = m.usage?.output_tokens ?? 0;
-        costGuard.recordRun();
+        const numTurns: number = m.num_turns ?? 0;
+        const stopReason: string | null = m.stop_reason ?? null;
+
+        if (m.subtype === 'success') {
+          output = m.result ?? '';
+          costGuard.recordRun();
+          const durationMs = Date.now() - start;
+          updateRun(runId, { output, tokensIn, tokensOut, status: 'DONE', durationMs, stopReason: stopReason ?? undefined, numTurns });
+          log.info({ ...ctx, tokensIn, tokensOut, durationMs, numTurns, stopReason }, 'Agent done');
+          return { runId, output, tokensIn, tokensOut, durationMs };
+        } else {
+          // error subtype: error_during_execution | error_max_turns | error_max_budget_usd | ...
+          const errorType: string = m.subtype ?? 'error_unknown';
+          const errors: string[] = Array.isArray(m.errors) ? m.errors : [];
+          const permDenials: string[] = (m.permission_denials ?? []).map((d: any) => d.tool_name ?? String(d));
+          output = [
+            `[${errorType}]`,
+            errors.length > 0 ? errors.join('\n') : '',
+            permDenials.length > 0 ? `Permission denied: ${permDenials.join(', ')}` : '',
+          ].filter(Boolean).join('\n');
+
+          const durationMs = Date.now() - start;
+          updateRun(runId, { output, tokensIn, tokensOut, status: 'FAILED', durationMs, errorType, stopReason: stopReason ?? undefined, numTurns });
+          log.error({ ...ctx, errorType, errors, permDenials, numTurns, stopReason, durationMs }, 'Agent result error');
+          return { runId, output, tokensIn, tokensOut, durationMs };
+        }
       }
     }
 
+    // 스트림이 result 없이 종료된 경우
     const durationMs = Date.now() - start;
-    updateRun(runId, { output, tokensIn, tokensOut, status: 'DONE', durationMs });
-    log.info({ agent: opts.name, tokensIn, tokensOut, durationMs }, 'Agent done');
+    output = '[no result] Stream ended without a result message';
+    updateRun(runId, { output, status: 'FAILED', durationMs, errorType: 'no_result' });
+    log.error({ ...ctx, durationMs }, 'Stream ended without result');
     return { runId, output, tokensIn, tokensOut, durationMs };
   } catch (err) {
     const durationMs = Date.now() - start;
-    const msg = err instanceof Error ? err.message : String(err);
-    updateRun(runId, { output: `ERROR: ${msg}`, status: 'FAILED', durationMs });
-    log.error({ agent: opts.name, err: msg }, 'Agent failed');
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const errStack = err instanceof Error ? err.stack : undefined;
+    output = `ERROR: ${errMsg}`;
+    updateRun(runId, { output, status: 'FAILED', durationMs, errorType: 'exception' });
+    log.error({ ...ctx, durationMs, err: errMsg, stack: errStack }, 'Agent threw exception');
     throw err;
   }
 }
