@@ -5,7 +5,9 @@ import { runSpec, runSpecBackground } from '../workflows/spec.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
+import { modelConfig } from '../lib/model-config.js';
 import { runAgentBackground } from '../lib/runner.js';
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
 
@@ -117,6 +119,20 @@ export function createRoutes(): Hono {
 
   app.get('/api/stats', (c) => {
     return c.json(getStats());
+  });
+
+  app.get('/api/config', (c) => {
+    return c.json(modelConfig.stats());
+  });
+
+  app.post('/api/config', async (c) => {
+    const body = await c.req.json<{ model?: string; effort?: string }>();
+    try {
+      modelConfig.set(body.model ?? modelConfig.getModel(), (body.effort ?? modelConfig.getEffort()) as EffortLevel);
+      return c.json(modelConfig.stats());
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
   });
 
   app.get('/api/issues', async (c) => {

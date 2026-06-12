@@ -2,6 +2,7 @@ import { query, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { insertRun, updateRun } from '../store/runs.js';
 import { costGuard } from './cost-guard.js';
 import { circuitBreaker } from './circuit-breaker.js';
+import { modelConfig } from './model-config.js';
 import { log } from './logger.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
@@ -45,6 +46,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         allowedTools: allTools,
         permissionMode: 'bypassPermissions',
         cwd,
+        model: modelConfig.getModel(),
+        effort: modelConfig.getEffort(),
         ...(hasSubagents ? { agents: opts.subagents } : {}),
       },
     })) {
