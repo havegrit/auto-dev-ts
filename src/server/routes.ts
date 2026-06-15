@@ -9,6 +9,7 @@ import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { modelConfig } from '../lib/model-config.js';
 import { runAgentBackground } from '../lib/runner.js';
+import { getOrCreateEmitter } from '../lib/run-events.js';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
@@ -133,6 +134,39 @@ export function createRoutes(): Hono {
 
   app.get('/api/runs/:id/children', (c) => {
     return c.json(getRunsByWorkflowId(c.req.param('id')));
+  });
+
+  app.get('/api/runs/:id/events', (c) => {
+    const runId = c.req.param('id');
+    const run = getRun(runId);
+
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          const enc = (data: string) => new TextEncoder().encode(data);
+          const send = (obj: object) => controller.enqueue(enc(`data: ${JSON.stringify(obj)}\n\n`));
+
+          if (!run || run.status !== 'RUNNING') {
+            send({ type: 'status', ts: new Date().toISOString(), data: run?.status ?? 'NOT_FOUND' });
+            controller.close();
+            return;
+          }
+
+          const ee = getOrCreateEmitter(runId);
+          const onEvent = (e: object) => { try { send(e); } catch {} };
+          const onDone = () => { try { controller.close(); } catch {} };
+
+          ee.on('event', onEvent);
+          ee.once('done', onDone);
+
+          c.req.raw.signal.addEventListener('abort', () => {
+            ee.off('event', onEvent);
+            ee.off('done', onDone);
+          });
+        },
+      }),
+      { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' } },
+    );
   });
 
   app.get('/api/runs/:id', (c) => {

@@ -108,6 +108,22 @@
     .circuit-badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     .circuit-CLOSED { background: #1a4731; color: #3fb950; }
     .circuit-OPEN   { background: #3b1219; color: #f85149; }
+    tr.run-row { cursor: pointer; }
+    tr.run-row:hover td { background: #1c2128; }
+    tr.run-row.selected td { background: #1c2d4a; }
+    .detail-chip { background: #21262d; border-radius: 4px; padding: 0.15rem 0.5rem; font-family: monospace; font-size: 0.75rem; color: #c9d1d9; }
+    .detail-chip.error { background: #3b1219; color: #f85149; }
+    .live-log { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto; }
+    .log-line { padding: 0.15rem 0; border-bottom: 1px solid #161b22; display: flex; gap: 0.5rem; align-items: flex-start; }
+    .log-line:last-child { border-bottom: none; }
+    .log-ts { color: #484f58; white-space: nowrap; flex-shrink: 0; }
+    .log-type-tool_call   { color: #79c0ff; }
+    .log-type-tool_result { color: #56d364; }
+    .log-type-text        { color: #c9d1d9; }
+    .log-type-status      { color: #e3b341; font-weight: 600; }
+    .live-badge { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; color: #58a6ff; }
+    .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #58a6ff; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
 </head>
 <body>
@@ -127,7 +143,7 @@
     <div class="card" style="margin-bottom:0">
       <h2>상태</h2>
       <div style="margin-bottom:0.5rem">
-        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:0.3rem">회로 차단기</div>
+        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:0.3rem">API Rate Limit</div>
         <div id="circuit-status">—</div>
       </div>
       <div style="font-size:0.72rem;color:#8b949e;margin-bottom:0.2rem">에이전트</div>
@@ -224,12 +240,38 @@
     </table>
   </div>
 
+  <!-- 실행 상세 패널 -->
+  <div class="card" id="run-detail-panel" style="display:none">
+    <div class="section-title">
+      <span id="run-detail-title">실행 상세</span>
+      <button class="refresh" onclick="closeRunDetail()">닫기</button>
+    </div>
+    <div id="run-detail-meta" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.78rem;color:#8b949e"></div>
+
+    <!-- 실시간 로그 (RUNNING 상태일 때) -->
+    <div id="live-log-section" style="display:none;margin-bottom:0.75rem">
+      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem;display:flex;align-items:center;gap:0.5rem">
+        실시간 활동
+        <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+      </div>
+      <div class="live-log" id="live-log"></div>
+    </div>
+
+    <!-- 완료 후 출력 -->
+    <div id="run-detail-output-section">
+      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem">출력</div>
+      <div class="result-output" id="run-detail-output" style="max-height:400px"></div>
+    </div>
+  </div>
+
   <script>
     let currentTab = 'text';
     let selectedFile = null;
     let pollTimer = null;
     let availableModels = [];
     let selectedEffort = 'high';
+    let selectedRunId = null;
+    let liveEventSource = null;
 
     // agent 선택 시 spec-steps 표시
     document.getElementById('agent-select').addEventListener('change', function() {
@@ -448,7 +490,8 @@
           ? `<span style="font-size:0.7rem;color:#f85149;font-family:monospace">${r.error_type}</span> `
           : '';
         const preview = (r.output ?? '').replace(/</g,'&lt;').slice(0, 120);
-        return `<tr>
+        const isSelected = r.id === selectedRunId;
+        return `<tr class="run-row${isSelected ? ' selected' : ''}" onclick="showRunDetail('${r.id}')">
           <td><span class="agent-name">${r.agent_name}</span></td>
           <td><span class="status ${r.status}">${r.status}</span></td>
           <td><span class="duration">${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '—'}</span></td>
@@ -457,6 +500,97 @@
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
         </tr>`;
       }).join('');
+    }
+
+    function appendLiveLog(event) {
+      const el = document.getElementById('live-log');
+      const ts = event.ts ? new Date(event.ts).toLocaleTimeString('ko-KR') : '';
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-type-${event.type}">${escHtml(event.data)}</span>`;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    function startLiveStream(runId) {
+      if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      document.getElementById('live-log').innerHTML = '';
+      document.getElementById('live-log-section').style.display = '';
+
+      const es = new EventSource(`/api/runs/${runId}/events`);
+      liveEventSource = es;
+      es.onmessage = (e) => {
+        const evt = JSON.parse(e.data);
+        if (evt.type === 'status') {
+          es.close();
+          liveEventSource = null;
+          document.querySelector('.live-dot')?.remove();
+          loadStats();
+          setTimeout(() => refreshRunDetail(runId), 500);
+        } else {
+          appendLiveLog(evt);
+        }
+      };
+      es.onerror = () => { es.close(); liveEventSource = null; };
+    }
+
+    async function refreshRunDetail(runId) {
+      const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
+      renderRunDetail(run);
+    }
+
+    function renderRunDetail(run) {
+      const chips = [
+        `<span class="detail-chip">${run.agent_name}</span>`,
+        `<span class="detail-chip"><span class="status ${run.status}" style="font-size:0.7rem">${run.status}</span></span>`,
+        run.error_type ? `<span class="detail-chip error">${run.error_type}</span>` : '',
+        run.stop_reason ? `<span class="detail-chip">stop: ${run.stop_reason}</span>` : '',
+        run.num_turns ? `<span class="detail-chip">${run.num_turns}턴</span>` : '',
+        run.tokens_in ? `<span class="detail-chip">in ${run.tokens_in} / out ${run.tokens_out} tok</span>` : '',
+        run.trigger_source ? `<span class="detail-chip">트리거: ${run.trigger_source}${run.trigger_detail ? ' / ' + run.trigger_detail : ''}</span>` : '',
+        run.workflow_run_id ? `<span class="detail-chip">workflow: ${run.workflow_run_id.slice(0,8)}</span>` : '',
+      ].filter(Boolean).join(' ');
+
+      document.getElementById('run-detail-meta').innerHTML = chips;
+      document.getElementById('run-detail-output').textContent = run.output ?? '(출력 없음)';
+
+      if (run.status !== 'RUNNING') {
+        document.getElementById('live-log-section').style.display = 'none';
+      }
+    }
+
+    async function showRunDetail(runId) {
+      if (selectedRunId === runId) { closeRunDetail(); return; }
+      if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      selectedRunId = runId;
+      document.querySelectorAll('tr.run-row').forEach(tr => {
+        tr.classList.toggle('selected', tr.getAttribute('onclick') === `showRunDetail('${runId}')`);
+      });
+
+      const panel = document.getElementById('run-detail-panel');
+      panel.style.display = '';
+      document.getElementById('run-detail-meta').innerHTML = '<span style="color:#8b949e">불러오는 중...</span>';
+      document.getElementById('live-log-section').style.display = 'none';
+      document.getElementById('run-detail-output').textContent = '';
+
+      const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
+      renderRunDetail(run);
+
+      if (run.status === 'RUNNING') {
+        startLiveStream(runId);
+      }
+
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function closeRunDetail() {
+      if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      selectedRunId = null;
+      document.getElementById('run-detail-panel').style.display = 'none';
+      document.getElementById('live-log-section').style.display = 'none';
+      document.querySelectorAll('tr.run-row').forEach(tr => tr.classList.remove('selected'));
     }
 
     loadConfig();

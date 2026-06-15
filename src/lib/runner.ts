@@ -4,6 +4,7 @@ import { costGuard } from './cost-guard.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { modelConfig } from './model-config.js';
 import { log } from './logger.js';
+import { emitRunEvent, closeEmitter } from './run-events.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 
@@ -54,6 +55,32 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     })) {
       const m = msg as any;
 
+      const now = () => new Date().toISOString();
+
+      if (m.type === 'assistant') {
+        for (const block of (m.message?.content ?? [])) {
+          if (block.type === 'text' && block.text?.trim()) {
+            emitRunEvent(runId, { type: 'text', ts: now(), data: block.text.trim().slice(0, 500) });
+          } else if (block.type === 'tool_use') {
+            const input = typeof block.input === 'object'
+              ? JSON.stringify(block.input).slice(0, 200)
+              : String(block.input ?? '');
+            emitRunEvent(runId, { type: 'tool_call', ts: now(), data: `${block.name}(${input})` });
+          }
+        }
+        continue;
+      }
+
+      if (m.type === 'tool_result') {
+        const content = Array.isArray(m.content)
+          ? m.content.map((c: any) => c.text ?? '').join('').slice(0, 200)
+          : String(m.content ?? '').slice(0, 200);
+        if (content.trim()) {
+          emitRunEvent(runId, { type: 'tool_result', ts: now(), data: content });
+        }
+        continue;
+      }
+
       if (m.type === 'rate_limit_event') {
         const info = m.rate_limit_info;
         if (info?.status === 'rejected') {
@@ -91,6 +118,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
           const durationMs = Date.now() - start;
           updateRun(runId, { output, tokensIn, tokensOut, status: 'DONE', durationMs, stopReason: stopReason ?? undefined, numTurns });
           log.info({ ...ctx, tokensIn, tokensOut, durationMs, numTurns, stopReason }, 'Agent done');
+          emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: 'DONE' });
+          closeEmitter(runId);
           return { runId, output, tokensIn, tokensOut, durationMs };
         } else {
           // error subtype: error_during_execution | error_max_turns | error_max_budget_usd | ...
@@ -106,6 +135,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
           const durationMs = Date.now() - start;
           updateRun(runId, { output, tokensIn, tokensOut, status: 'FAILED', durationMs, errorType, stopReason: stopReason ?? undefined, numTurns });
           log.error({ ...ctx, errorType, errors, permDenials, numTurns, stopReason, durationMs }, 'Agent result error');
+          emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: `FAILED:${errorType}` });
+          closeEmitter(runId);
           return { runId, output, tokensIn, tokensOut, durationMs };
         }
       }
@@ -116,6 +147,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     output = '[no result] Stream ended without a result message';
     updateRun(runId, { output, status: 'FAILED', durationMs, errorType: 'no_result' });
     log.error({ ...ctx, durationMs }, 'Stream ended without result');
+    emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: 'FAILED:no_result' });
+    closeEmitter(runId);
     return { runId, output, tokensIn, tokensOut, durationMs };
   } catch (err) {
     const durationMs = Date.now() - start;
@@ -124,6 +157,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     output = `ERROR: ${errMsg}`;
     updateRun(runId, { output, status: 'FAILED', durationMs, errorType: 'exception' });
     log.error({ ...ctx, durationMs, err: errMsg, stack: errStack }, 'Agent threw exception');
+    emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: `FAILED:exception:${errMsg}` });
+    closeEmitter(runId);
     throw err;
   }
 }
