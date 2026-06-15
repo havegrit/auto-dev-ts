@@ -26,4 +26,11 @@ for (const col of [
   try { db.exec(col); } catch { /* 이미 존재 */ }
 }
 
+// 서버 시작 시 RUNNING 상태로 남은 고아 레코드를 FAILED로 정리
+db.prepare(`
+  UPDATE agent_run
+  SET status = 'FAILED', output = '[server_restart] 서버 재시작으로 중단됨', error_type = 'server_restart'
+  WHERE status = 'RUNNING'
+`).run();
+
 export { db };
