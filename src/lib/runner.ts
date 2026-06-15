@@ -49,7 +49,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         permissionMode: 'bypassPermissions',
         cwd,
         model: modelConfig.getModel(),
-        effort: modelConfig.getEffort(),
+        ...(modelConfig.getEffortOption() !== undefined ? { effort: modelConfig.getEffortOption() } : {}),
         ...(hasSubagents ? { agents: opts.subagents } : {}),
       },
     })) {

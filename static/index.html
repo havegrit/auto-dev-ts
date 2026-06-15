@@ -291,9 +291,10 @@
 
       // 모델 드롭다운 구성
       const sel = document.getElementById('model-select');
-      sel.innerHTML = availableModels.map(m =>
-        `<option value="${m.id}" ${m.id === cfg.model ? 'selected' : ''}>${m.displayName}</option>`
-      ).join('');
+      sel.innerHTML = availableModels.map(m => {
+        const label = m.description ? `${m.displayName} — ${m.description}` : m.displayName;
+        return `<option value="${m.id}" ${m.id === cfg.model ? 'selected' : ''}>${label}</option>`;
+      }).join('');
 
       // effort 버튼 구성 (선택된 모델 기준)
       selectedEffort = cfg.effort;
@@ -305,11 +306,18 @@
     function renderEffortBtns(modelId, activeEffort) {
       const spec = availableModels.find(m => m.id === modelId);
       const levels = spec?.effortLevels ?? ['low', 'medium', 'high'];
+      const btns = document.getElementById('effort-btns');
+      // 이 모델이 effort를 지원하지 않으면 안내만 표시
+      if (levels.length === 0) {
+        selectedEffort = undefined;
+        btns.innerHTML = '<span style="color:#8b949e;font-size:13px">이 모델은 effort 설정을 지원하지 않습니다.</span>';
+        return;
+      }
       // activeEffort가 이 모델에서 지원 안 되면 'high'로 fallback
       if (!levels.includes(activeEffort)) {
         selectedEffort = levels.includes('high') ? 'high' : levels[levels.length - 1];
       }
-      document.getElementById('effort-btns').innerHTML = levels.map(l =>
+      btns.innerHTML = levels.map(l =>
         `<button class="effort-btn ${l === selectedEffort ? 'active' : ''}" onclick="selectEffort('${l}')">${l}</button>`
       ).join('');
     }
