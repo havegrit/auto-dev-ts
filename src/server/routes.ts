@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { complete, parseJsonLoose } from '../lib/complete.js';
 import { getAgent, listAgents } from '../agents/index.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec, runSpecBackground } from '../workflows/spec.js';
@@ -13,6 +15,28 @@ import { processIssue } from '../workflows/from-issue.js';
 
 export function createRoutes(): Hono {
   const app = new Hono();
+
+  // 인터뷰 등 외부 정적 앱(다른 포트)에서 LLM 프록시를 호출할 수 있도록 허용 (루프백 전용)
+  app.use('/api/*', cors());
+
+  // Claude 구독으로 단발성 completion을 수행하는 프록시 (브라우저 직접 API 호출 대체)
+  app.post('/api/llm/complete', async (c) => {
+    const body = await c.req.json<{ system?: string; message?: string; json?: boolean; model?: string }>();
+    if (!body.message) return c.json({ error: 'message is required' }, 400);
+    try {
+      const text = await complete({ system: body.system, message: body.message, json: body.json, model: body.model });
+      if (body.json) {
+        try {
+          return c.json({ text, data: parseJsonLoose(text) });
+        } catch {
+          return c.json({ text, data: null, parseError: true });
+        }
+      }
+      return c.json({ text });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
 
   app.get('/api/status', (c) => {
     return c.json({
