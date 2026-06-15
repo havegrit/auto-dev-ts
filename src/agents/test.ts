@@ -3,6 +3,6 @@ import { loadPrompt } from '../lib/prompt.js';
 
 const SYSTEM = loadPrompt('test.system.md');
 
-export async function test(input: string, opts: { workflowRunId?: string; triggerSource?: string; triggerDetail?: string } = {}): Promise<RunResult> {
+export async function test(input: string, opts: { workflowRunId?: string; triggerSource?: string; triggerDetail?: string; cwd?: string } = {}): Promise<RunResult> {
   return runAgent({ name: 'test', prompt: `${SYSTEM}\n\n---\n\n${input}`, tools: ['Read', 'Write', 'Bash'], ...opts });
 }

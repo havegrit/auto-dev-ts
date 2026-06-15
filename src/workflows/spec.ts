@@ -14,6 +14,7 @@ export interface SpecOptions {
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
+  cwd?: string;
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -34,7 +35,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const start = Date.now();
   const results: Record<string, StepResult> = {};
 
-  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli' };
+  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd };
   const agents: Record<string, (input: string, opts: any) => Promise<RunResult>> = {
     clarifier, planner, scaffold, test, review, cicd,
   };

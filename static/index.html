@@ -190,6 +190,13 @@
       <input type="text" id="spec-steps" placeholder="scaffold,test,review (비워두면 전체)" />
     </div>
 
+    <div class="form-row">
+      <label>프로젝트명</label>
+      <input type="text" id="project-input" list="project-list" placeholder="프로젝트명 (비우면 워크스페이스 루트)" style="font-family:monospace;font-size:0.82rem" />
+      <datalist id="project-list"></datalist>
+      <span id="workspace-hint" style="color:#8b949e;font-size:0.72rem;white-space:nowrap"></span>
+    </div>
+
     <div class="tab-bar">
       <button class="tab active" onclick="setTab('text')">텍스트</button>
       <button class="tab" onclick="setTab('file')">파일</button>
@@ -383,6 +390,9 @@
         const steps = document.getElementById('spec-steps').value.trim();
         if (steps) formData.append('steps', steps);
       }
+
+      const project = document.getElementById('project-input').value.trim();
+      if (project) formData.append('project', project);
 
       // UI 초기화
       const btn = document.getElementById('run-btn');
@@ -585,6 +595,14 @@
       panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    async function loadProjects() {
+      const res = await fetch('/api/config').then(r => r.json());
+      const hint = document.getElementById('workspace-hint');
+      if (hint) hint.textContent = `루트: ${res.workspaceRoot ?? ''}`;
+      const dl = document.getElementById('project-list');
+      if (dl) dl.innerHTML = (res.projects ?? []).map(p => `<option value="${p}"></option>`).join('');
+    }
+
     function closeRunDetail() {
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
       selectedRunId = null;
@@ -594,6 +612,7 @@
     }
 
     loadConfig();
+    loadProjects();
     loadStats();
     setInterval(loadStats, 10000);
   </script>

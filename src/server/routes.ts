@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { complete, parseJsonLoose } from '../lib/complete.js';
+import { resolveProjectDir, listProjects, WORKSPACE_ROOT } from '../lib/workspace.js';
 import { getAgent, listAgents } from '../agents/index.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec, runSpecBackground } from '../workflows/spec.js';
@@ -53,14 +54,23 @@ export function createRoutes(): Hono {
     const agent = getAgent(name);
     if (!agent) return c.json({ error: `Unknown agent: ${name}` }, 404);
 
-    const body = await c.req.json<{ input: string; triggerSource?: string; triggerDetail?: string; workflowRunId?: string }>();
+    const body = await c.req.json<{ input: string; triggerSource?: string; triggerDetail?: string; workflowRunId?: string; project?: string; cwd?: string }>();
     if (!body.input) return c.json({ error: 'input is required' }, 400);
+
+    let cwd: string | undefined;
+    try {
+      // project명이 오면 워크스페이스 루트 기준으로 해석, 없으면 직접 cwd 경로 사용(하위호환)
+      cwd = body.project !== undefined ? resolveProjectDir(body.project) : body.cwd;
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
 
     try {
       const result = await agent(body.input, {
         triggerSource: body.triggerSource ?? 'api',
         triggerDetail: body.triggerDetail,
         workflowRunId: body.workflowRunId,
+        cwd,
       });
       return c.json(result);
     } catch (err) {
@@ -98,6 +108,13 @@ export function createRoutes(): Hono {
     const body = await c.req.parseBody();
     const agentName = String(body['agent'] ?? 'spec');
     let input = String(body['input'] ?? '');
+    const project = String(body['project'] ?? '').trim() || undefined;
+    let cwd: string;
+    try {
+      cwd = resolveProjectDir(project);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
 
     const file = body['file'];
     if (file instanceof File && file.size > 0) {
@@ -112,7 +129,7 @@ export function createRoutes(): Hono {
         ? new Set(stepsRaw.split(',').map((s: string) => s.trim()).filter(Boolean))
         : undefined;
       const iterations = body['iterations'] ? Number(body['iterations']) : undefined;
-      const runId = runSpecBackground(input, { steps, iterations, triggerSource: 'dashboard' });
+      const runId = runSpecBackground(input, { steps, iterations, triggerSource: 'dashboard', cwd });
       return c.json({ runId, type: 'workflow' });
     }
 
@@ -123,6 +140,7 @@ export function createRoutes(): Hono {
       name: agentName,
       prompt: input,
       triggerSource: 'dashboard',
+      cwd,
     });
     return c.json({ runId, type: 'agent' });
   });
@@ -180,7 +198,7 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/config', (c) => {
-    return c.json(modelConfig.stats());
+    return c.json({ ...modelConfig.stats(), workspaceRoot: WORKSPACE_ROOT, projects: listProjects() });
   });
 
   app.post('/api/config', async (c) => {
