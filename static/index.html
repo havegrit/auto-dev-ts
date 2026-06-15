@@ -422,7 +422,13 @@
 
       document.getElementById('today-runs').textContent = statsRes.todayCount ?? '—';
       const g = statusRes.guard;
-      document.getElementById('today-limit').textContent = g ? `한도 ${g.limit}회 중 ${g.count}회 사용` : '';
+      const limitEl = document.getElementById('today-limit');
+      if (g) {
+        limitEl.textContent = `한도 ${g.limit}회 중 ${g.count}회 사용`;
+        limitEl.style.display = '';
+      } else {
+        limitEl.style.display = 'none';
+      }
       document.getElementById('total-runs').textContent = statsRes.total ?? '—';
 
       const circuit = statusRes.circuit;

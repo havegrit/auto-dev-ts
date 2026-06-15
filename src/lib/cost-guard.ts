@@ -1,4 +1,6 @@
-const DAILY_LIMIT = Number(process.env.AUTO_DEV_DAILY_RUN_LIMIT ?? '100');
+const DAILY_LIMIT: number | null = process.env.AUTO_DEV_DAILY_RUN_LIMIT != null
+  ? Number(process.env.AUTO_DEV_DAILY_RUN_LIMIT)
+  : null;
 const ZONE = 'Asia/Seoul';
 
 let dayKey = today();
@@ -14,9 +16,12 @@ function resetIfNewDay() {
 }
 
 export const costGuard = {
-  allow(): boolean { resetIfNewDay(); return runCount < DAILY_LIMIT; },
+  allow(): boolean {
+    resetIfNewDay();
+    return DAILY_LIMIT === null || runCount < DAILY_LIMIT;
+  },
   recordRun(): void { resetIfNewDay(); runCount++; },
-  stats(): { count: number; limit: number; date: string } {
+  stats(): { count: number; limit: number | null; date: string } {
     resetIfNewDay();
     return { count: runCount, limit: DAILY_LIMIT, date: dayKey };
   },

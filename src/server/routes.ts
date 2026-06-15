@@ -42,7 +42,7 @@ export function createRoutes(): Hono {
     return c.json({
       status: 'ok',
       agents: listAgents(),
-      guard: costGuard.stats(),
+      guard: costGuard.stats().limit !== null ? costGuard.stats() : null,
       circuit: circuitBreaker.stats(),
     });
   });
