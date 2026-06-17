@@ -64,3 +64,27 @@ or
   (`pytest: command not found`), required dependency unresolvable, target
   service not reachable, prompt's input itself is incoherent. **Use this
   whenever further iterations would just repeat the same failure.**
+
+## 재작업 라우팅 (NEEDS-WORK 일 때 REQUIRED)
+
+`[VERDICT: NEEDS-WORK]` 를 낼 때는 **바로 다음 줄**에 어느 단계로 수정 작업을
+되돌릴지 라우팅 마커를 추가하라. review 는 직접 코드를 고치지 않으므로, 수정은
+이 단계에서 다시 시작된다:
+
+```
+[ROUTE: planner]
+```
+또는
+```
+[ROUTE: clarifier]
+```
+
+- `[ROUTE: clarifier]` — 문제의 근본 원인이 **요구사항/스펙의 모호함·누락**일 때
+  (무엇을 만들지가 불명확해 구현이 어긋남). 스펙을 다시 명확화해야 한다.
+- `[ROUTE: planner]` — 스펙은 분명한데 **구현/설계가 잘못**됐을 때. 계획을 다시
+  세워 scaffold 가 재구현하도록 한다. (대부분의 코드 결함은 이쪽.)
+- `SHIP` / `BLOCKED` 에는 `[ROUTE: ...]` 를 붙이지 마라. 둘 다 루프를 멈춘다.
+
+오케스트레이터는 이 두 줄을 파싱한다. `NEEDS-WORK` + `[ROUTE: ...]` 이면 해당
+단계로 피드백(이 응답 전문)을 들고 되돌아가 재작업한다. 정직한 verdict 가 토큰을
+아낀다.

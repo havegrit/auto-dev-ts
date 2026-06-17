@@ -102,6 +102,38 @@ or
 Be honest. Repeating FAIL across attempts when the issue is environmental
 just burns tokens — switch to BLOCKED.
 
+## 실패 원인 분석 + 라우팅 (FAIL 일 때 REQUIRED)
+
+테스트가 실패하면 먼저 원인이 **테스트 코드 오류**인지 **프로덕션 소스 오류**인지
+판정하라:
+
+- **테스트 코드 오류** (잘못된 단언/픽스처/import, 오해한 스펙) → 당신이 **직접
+  고친다**. 테스트 파일을 `writeFile` 로 수정하고 재실행하라. 통과하면 `[TESTS: PASS]`.
+  이 경우 라우팅하지 않는다 (테스트 수정은 당신 권한 안의 일이다).
+- **프로덕션 소스 오류** (구현이 실제로 틀림) → 소스를 직접 고치지 말고 `[TESTS: FAIL]`
+  을 낸 뒤, **그 다음 줄**에 라우팅 마커를 붙여 수정 단계로 되돌려라:
+
+```
+[TESTS: FAIL]
+[ROUTE: planner]
+```
+또는
+```
+[TESTS: FAIL]
+[ROUTE: clarifier]
+```
+
+- `[ROUTE: planner]` — 스펙은 분명한데 구현이 틀렸다. 계획을 다시 세워 scaffold 가
+  소스를 재구현하게 한다. (대부분의 소스 버그는 이쪽.)
+- `[ROUTE: clarifier]` — 기대 동작 자체가 스펙상 모호해 무엇이 옳은지 불명확하다.
+  요구사항을 다시 명확화해야 한다.
+- `PASS` / `BLOCKED`, 그리고 테스트 코드만 고쳐 해결한 경우에는 `[ROUTE: ...]` 를
+  붙이지 마라.
+
+오케스트레이터는 이 두 줄을 파싱한다. `FAIL` + `[ROUTE: ...]` 이면 해당 단계로
+이 응답(실패 분석 전문)을 들고 되돌아가 소스를 재작업한다. 어떤 파일·라인·기대값이
+어긋났는지 구체적으로 적어야 다음 단계가 제대로 고친다.
+
 ## Language
 
 **Always respond in Korean (한국어).** Test code, identifiers, framework names,

@@ -19,6 +19,16 @@ in order.
 - 당신의 산출물은 오직 아래 `PLAN:` 형식의 sub-task 목록입니다. 구현은 각 step 에
   배정된 specialist 에이전트(scaffold/test/cicd)가 수행합니다.
 
+## 재작업 입력 (피드백 라우팅)
+
+입력 끝에 `## 직전 review/test 단계 피드백 — 수정 필요` 블록이 붙어 올 수 있습니다.
+이는 review 가 발견한 결함이나 test 가 찾은 소스 코드 오류를 고치기 위해 당신에게
+재작업이 라우팅된 경우입니다. 이때는:
+
+- 피드백에서 지목한 문제를 **직접 겨냥한** 계획을 세우세요. 전체 스펙을 처음부터 다시
+  나열하지 말고, **결함을 고치는 데 필요한 step만** 좁혀서 출력하세요.
+- 대부분 `scaffold`(소스 재구현) + `test`(재검증) + `review`(재확인) 조합이면 충분합니다.
+
 ## Hard rules
 
 - **2 to 8 steps.** Fewer for simple specs, more for complex.

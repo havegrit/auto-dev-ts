@@ -10,7 +10,9 @@ import { insertRun, updateRun } from '../store/runs.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
+  /** 피드백 재작업(라우팅) 허용 횟수. 미지정 시 iterations, 그것도 없으면 2. */
   iterations?: number;
+  maxRoutes?: number;
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
@@ -24,14 +26,51 @@ export interface SpecResult {
   steps: Record<string, StepResult>;
   totalDurationMs: number;
   verdict?: string;
+  /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
+  routeCount?: number;
 }
 
-const STEP_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'];
+const STEP_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'] as const;
+type Step = typeof STEP_ORDER[number];
+type RouteTarget = 'planner' | 'clarifier';
+
+/** 출력에서 마지막에 등장한 `[KEY: value]` 마커 값을 소문자로 반환 */
+function lastMarker(output: string, re: RegExp): string | undefined {
+  const matches = [...output.matchAll(re)];
+  return matches.length ? matches[matches.length - 1][1].trim().toLowerCase() : undefined;
+}
+
+/** review/test 가 지정한 재작업 대상. planner·clarifier 외에는 라우팅하지 않음. */
+function parseRoute(output: string): RouteTarget | undefined {
+  const m = lastMarker(output, /\[ROUTE:\s*([^\]]+)\]/gi);
+  return m === 'planner' || m === 'clarifier' ? m : undefined;
+}
+
+function parseVerdict(output: string): 'SHIP' | 'NEEDS-WORK' | 'BLOCKED' | undefined {
+  const m = lastMarker(output, /\[VERDICT:\s*([^\]]+)\]/gi);
+  if (!m) return undefined;
+  if (m.includes('ship')) return 'SHIP';
+  if (m.includes('block')) return 'BLOCKED';
+  return 'NEEDS-WORK';
+}
+
+function parseTests(output: string): 'PASS' | 'FAIL' | 'BLOCKED' | undefined {
+  const m = lastMarker(output, /\[TESTS:\s*([^\]]+)\]/gi);
+  if (!m) return undefined;
+  if (m.includes('pass')) return 'PASS';
+  if (m.includes('block')) return 'BLOCKED';
+  return 'FAIL';
+}
+
+function feedbackBlock(fromStep: Step, output: string): string {
+  return `---\n\n## 직전 ${fromStep} 단계 피드백 — 수정 필요\n\n` +
+    `아래는 ${fromStep} 단계가 발견한 문제다. 원인을 해소하도록 작업을 갱신하라.\n\n${output.trim()}`;
+}
 
 export async function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
   const workflowRunId = opts.workflowRunId ?? randomUUID();
-  const steps = opts.steps ?? new Set(STEP_ORDER);
-  const iterations = opts.iterations ?? 1;
+  const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
+  const maxRoutes = opts.maxRoutes ?? opts.iterations ?? 2;
   const start = Date.now();
   const results: Record<string, StepResult> = {};
 
@@ -40,24 +79,64 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     clarifier, planner, scaffold, test, review, cicd,
   };
 
-  let input = specContent;
+  const baseSpec = specContent;
+  let planOutput: string | undefined;
+  let pendingFeedback: string | undefined;
   let verdict: string | undefined;
+  let routeCount = 0;
 
-  for (let iter = 0; iter < iterations; iter++) {
-    for (const step of STEP_ORDER) {
-      if (!steps.has(step)) continue;
-      const agent = agents[step];
-      const r = await agent(input, runOpts);
-      results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'DONE' };
-      if (step === 'planner' && r.output) input = r.output;
-      if (step === 'review') {
-        verdict = r.output.includes('[VERDICT: SHIP]') ? 'SHIP' : 'NEEDS_WORK';
-        if (verdict === 'SHIP') break;
-      }
+  // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
+  // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
+  const inputFor = (step: Step): string => {
+    const baseline = step === 'clarifier' || step === 'planner' ? baseSpec : (planOutput ?? baseSpec);
+    return pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
+  };
+
+  const routeTo = (target: RouteTarget, fromStep: Step, output: string): boolean => {
+    if (!stepsFilter.has(target) || routeCount >= maxRoutes) return false;
+    routeCount++;
+    pendingFeedback = feedbackBlock(fromStep, output);
+    cursor = STEP_ORDER.indexOf(target);
+    return true;
+  };
+
+  let cursor = 0;
+  let executed = 0;
+  const safetyCap = STEP_ORDER.length * (maxRoutes + 2); // 무한 라우팅 방지
+
+  while (cursor < STEP_ORDER.length) {
+    const step = STEP_ORDER[cursor];
+    if (!stepsFilter.has(step)) { cursor++; continue; }
+    if (++executed > safetyCap) break;
+
+    const r = await agents[step](inputFor(step), runOpts);
+    pendingFeedback = undefined;
+    results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'DONE' };
+
+    if (step === 'planner' && r.output) planOutput = r.output;
+
+    // test: 소스 코드 오류로 판정된 실패만 planner/clarifier 로 되돌린다.
+    // (테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 고친다.)
+    if (step === 'test' && parseTests(r.output) === 'FAIL') {
+      const route = parseRoute(r.output);
+      if (route && routeTo(route, 'test', r.output)) continue;
     }
+
+    // review: 수정 필요(NEEDS-WORK)면 지정한 planner/clarifier 로 즉시 되돌린다.
+    if (step === 'review') {
+      verdict = parseVerdict(r.output) ?? 'NEEDS-WORK';
+      if (verdict === 'SHIP') { cursor++; continue; } // 통과 → cicd 진행
+      if (verdict === 'NEEDS-WORK') {
+        const route = parseRoute(r.output);
+        if (route && routeTo(route, 'review', r.output)) continue;
+      }
+      break; // NEEDS-WORK(예산 소진/라우트 없음) 또는 BLOCKED → cicd 미진행, 종료
+    }
+
+    cursor++;
   }
 
-  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict };
+  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, routeCount };
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
