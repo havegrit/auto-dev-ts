@@ -28,10 +28,10 @@
 - ✅ Claude Code SDK 기반 에이전트 실행 (파일 I/O, 쉘 접근 내장)
 - ✅ 병렬 멀티-렌즈 리뷰 (SDK `agents` 옵션)
 - ✅ SpecWorkflow 파이프라인 (clarifier → planner → scaffold → test → review → cicd)
+- ✅ 피드백 라우팅 (review/test 가 수정 필요 시 planner/clarifier 로 되돌려 재작업)
 - ✅ HTTP API + 웹 대시보드
 - ⚠️ SSE 라이브 이벤트 — 미구현
-- ⚠️ Test-pass loop — 미구현 (Java 버전에는 있음)
-- ⚠️ Planner 모드 (동적 plan 파싱) — 미구현 (고정 시퀀스만)
+- ⚠️ Planner 모드 (동적 plan 파싱) — 미구현 (고정 순서 + 라우팅 재진입)
 - ⚠️ 브라우저 검증 (Playwright) — 미구현
 
 현실적 자율 범위: **잘 정의된 좁은 task 한 건을 Claude Code 세션 1개로 처리** 수준.
@@ -202,6 +202,30 @@ export const costGuard = {
 
 ## 5. Agent 별 책임
 
+### 5.0 구현 권한 정책 (역할 경계)
+
+각 에이전트의 권한은 **"누가 코드를 구현하는가"** 기준으로 엄격히 분리된다.
+이 경계는 (1) 코드의 `tools` 배열(하드 enforcement) 과 (2) 각 프롬프트의
+`역할 경계` 섹션(행동 지침) 양쪽에 명시되어 있다.
+
+| 에이전트 | tools | 파일 쓰기 | 구현 범위 |
+|---|---|---|---|
+| clarifier | `Read` | ❌ | 없음 — 질문/요약 JSON 출력만 |
+| planner | `Read` | ❌ | 없음 — `PLAN:` step 목록 출력만 |
+| **scaffold** | `Read, Write, Bash` | ✅ | **애플리케이션 소스 코드를 구현하는 유일한 에이전트** |
+| test | `Read, Write, Bash` | ✅ (테스트 코드 한정) | 테스트 코드만. 프로덕션 소스 수정 금지 (버그는 보고만) |
+| review | `Read` | ❌ | 없음 — 읽기 전용. blocker/high 도 수정안 제시만 |
+| cicd | `Read, Write` | ✅ (설정 파일 한정) | 파이프라인/Docker/배포 설정 파일만. 앱 소스 구현 금지 |
+
+원칙:
+
+- **애플리케이션 소스 코드 구현은 오직 scaffold.** 다른 단계는 절대 소스를 쓰지 않는다.
+- **test 는 테스트 코드 작성이 예외로 허용**된다. 단 프로덕션 소스에 버그가 보이면
+  직접 고치지 않고 `[TESTS: FAIL]` 로 보고 → 다음 iteration 의 scaffold 가 수정한다.
+- **cicd 는 CI/CD 설정 파일(YAML/Dockerfile 등) 작성만** 허용된다. 이는 앱 "코드 구현"이
+  아닌 인프라 설정으로 간주한다. 앱 소스 변경이 필요하면 scaffold 로 넘긴다.
+- review/planner/clarifier 는 `Write` 권한 자체가 없어 물리적으로 파일을 쓸 수 없다.
+
 ### 5.1 clarifier
 
 - **입력**: 스펙 전문 + 이전 Q&A (선택)
@@ -269,13 +293,16 @@ Java 버전 대비 차이점:
 
 ### 5.5 test
 
-- 도구: `Read`, `Write`, `Bash` — 테스트 파일 작성 + 실행
-- Java 버전의 test-pass loop (`[TESTS: PASS|FAIL|BLOCKED]` 마커 재시도) 미구현
+- 도구: `Read`, `Write`, `Bash` — **테스트 코드만** 작성 + 실행
+- 테스트 코드 오류는 자기 실행 안에서 직접 수정한다. 프로덕션 소스 오류는 고치지 않고
+  `[TESTS: FAIL]` + `[ROUTE: planner|clarifier]` 로 보고 → 오케스트레이터가 해당
+  단계로 되돌려 scaffold 가 재구현 (§6.2, §10.3)
 
 ### 5.6 cicd
 
-- 도구: `Read`, `Write`
-- GitHub Actions YAML, Dockerfile, 배포 manifest 생성
+- 도구: `Read`, `Write` (`Bash` 없음 — 실제 배포/빌드 명령 실행 불가)
+- GitHub Actions YAML, Dockerfile, 배포 manifest 등 **설정 파일 생성만**
+- 애플리케이션 소스 코드는 구현하지 않는다 (scaffold 전용)
 
 ---
 
@@ -288,29 +315,49 @@ Java 버전 대비 차이점:
 export async function runSpec(specContent: string, opts: SpecOptions): Promise<SpecResult>
 ```
 
-### 6.2 고정 시퀀스 모드
+### 6.2 시퀀스 + 피드백 라우팅 모드
 
-현재 유일한 모드 (Java 의 Planner 모드 동적 plan 파싱 미구현):
+기본 순서는 `clarifier → planner → scaffold → test → review → cicd` 의 선형
+시퀀스다. 단, **review/test 가 수정이 필요하다고 판단하면 planner 또는 clarifier 로
+즉시 되돌아가** 재작업한다 (커서 기반 재진입):
 
 ```
-for step in [clarifier, planner, scaffold, test, review, cicd] (steps 필터 적용):
-    result = await agent(input, { workflowRunId, triggerSource })
-    if step == 'planner' && result.output:
-        input = result.output   # planner 출력이 이후 단계의 입력
-    if step == 'review' && result.output.includes('[VERDICT: SHIP]'):
-        break                   # 조기 종료
+cursor = 0
+while cursor < len(STEP_ORDER):
+    step = STEP_ORDER[cursor]
+    result = await agent(step)(inputFor(step) + pendingFeedback)
+    if step == 'planner': planOutput = result.output
+
+    # test: 소스 코드 오류로 판정된 FAIL 만 되돌린다 (테스트 코드 오류는 test 가 직접 수정)
+    if step == 'test' and parseTests == FAIL and [ROUTE: planner|clarifier]:
+        cursor = index(route); pendingFeedback = result; continue
+
+    # review: NEEDS-WORK + [ROUTE: ...] 이면 되돌린다. SHIP → cicd 진행, BLOCKED → 종료
+    if step == 'review':
+        if verdict == SHIP: cursor += 1; continue
+        if verdict == NEEDS-WORK and [ROUTE: planner|clarifier]:
+            cursor = index(route); pendingFeedback = result; continue
+        break
+
+    cursor += 1
 ```
 
-- `--steps` 로 특정 단계만 실행 가능
-- `--iterations` 로 전체 사이클 N회 반복 (Java 버전의 refinement iteration)
-- 모든 자식 실행은 동일한 `workflowRunId` 로 묶여 DB 에서 추적 가능
+- **입력 분기** (`inputFor`): planner·clarifier 는 원본 스펙을, 그 외 단계는 planner
+  산출물(plan)을 입력으로 받는다. 라우팅된 경우 직전 단계 출력 전문이 피드백 블록으로
+  덧붙는다.
+- **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
+  마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
+- **무한 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 되돌리고, 그 외
+  `safetyCap` 으로 총 실행 횟수도 제한한다. 예산 소진 시 더 되돌리지 않고 종료한다.
+- `--steps` 로 특정 단계만 실행 가능. 라우팅 대상이 필터에서 빠져 있으면 라우팅하지 않는다.
+- 모든 자식 실행은 동일한 `workflowRunId` 로 묶여 DB 에서 추적 가능 (재작업 포함).
 
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |
 |---|---|---|
-| Planner 모드 | `Plan.parse()` → 동적 step 목록 | 미구현 (고정 시퀀스만) |
-| Test-pass loop | attempt 1..3, `[TESTS: FAIL]` 재시도 | 미구현 |
+| Planner 모드 | `Plan.parse()` → 동적 step 목록 | 미구현 (고정 순서 + 라우팅 재진입) |
+| Test-pass loop | attempt 1..3, `[TESTS: FAIL]` 재시도 | ✅ 피드백 라우팅으로 구현 (§6.2) |
 | summary.md 출력 | 토큰·비용·소요시간 표 | 미구현 |
 | 출력 디렉토리 | `docs/output/<spec>-<ts>/` | 미구현 |
 
@@ -453,13 +500,23 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | 토큰 budget | `PromptBudget.clamp` — head+marker+tail | SDK 컨텍스트 관리 |
 | 세션 관리 | N/A (stateless) | SDK 자동 |
 
-### 10.3 Verdict 기반 조기 종료
+### 10.3 Verdict / 라우팅 마커 기반 제어 흐름
 
-| Verdict | 발생 | 효과 |
+오케스트레이터(`runSpec`)는 review/test 출력 끝의 마커를 파싱해 흐름을 제어한다:
+
+| 마커 | 발생 | 효과 |
 |---|---|---|
-| `[VERDICT: SHIP]` | review 출력 | SpecWorkflow iteration 루프 종료 |
+| `[VERDICT: SHIP]` | review | 통과 → cicd 진행 |
+| `[VERDICT: NEEDS-WORK]` + `[ROUTE: planner\|clarifier]` | review | 지정 단계로 되돌려 재작업 |
+| `[VERDICT: NEEDS-WORK]` (라우트 없음/예산 소진) | review | cicd 미진행, 종료 |
+| `[VERDICT: BLOCKED]` | review | 종료 (사람 개입 필요) |
+| `[TESTS: FAIL]` + `[ROUTE: planner\|clarifier]` | test | 소스 오류 → 지정 단계로 되돌려 재작업 |
+| `[TESTS: PASS\|BLOCKED]`, 라우트 없는 FAIL | test | 다음 단계 진행 |
 
-`[VERDICT: BLOCKED]`, `[VERDICT: NEEDS-WORK]` 구분 및 Test-pass loop 마커 (`[TESTS: PASS|FAIL|BLOCKED]`) 처리 미구현.
+- 라우팅은 `maxRoutes`(`--iterations`, 기본 2) 와 `safetyCap` 으로 이중 제한해 무한
+  루프를 막는다.
+- 테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 수정하므로 라우팅 대상이
+  아니다. 라우팅되는 것은 **소스 코드 오류로 판정된 FAIL** 뿐이다.
 
 ---
 
@@ -602,8 +659,8 @@ npm rebuild better-sqlite3
 
 | 영역 | 현재 |
 |---|---|
-| Planner 모드 | 고정 시퀀스만. `PLAN: ... END.` 동적 파싱 미구현 |
-| Test-pass loop | 단일 attempt. 실패 시 재시도 없음 |
+| Planner 모드 | 고정 순서 기반. `PLAN: ... END.` 동적 파싱 미구현 (단, review/test 피드백 라우팅으로 재진입은 구현됨) |
+| 재작업 루프 | review/test → planner·clarifier 라우팅 구현. 단 라우팅 대상(planner/clarifier) 선택은 모델 마커에 의존 |
 | SSE | 폴링(10s) 방식. 실시간 이벤트 스트림 없음 |
 | 실행 가드 복원 | 재시작 시 카운터 0 리셋. DB 누적 복원 없음 |
 | runShell 위험 패턴 | `bypassPermissions` 로 모든 Bash 명령 허용. 신뢰된 환경 필수 |
@@ -621,7 +678,6 @@ npm rebuild better-sqlite3
 | 우선순위 | 항목 | Java 버전 대응 |
 |---|---|---|
 | 高 | **SSE 라이브 이벤트** | `AgentEventBroadcaster` |
-| 高 | **Test-pass loop** | `runTestStepWithLoop` |
 | 高 | **runShell 위험 패턴 거부** | `WorkspaceTools.runShell` danger check |
 | 中 | **Planner 모드** (동적 plan 파싱) | `Plan.parse()` + planner 모드 분기 |
 | 中 | **review finding 구조화** | `ReviewFinding` 테이블 + dedup + verdict |
@@ -685,7 +741,6 @@ Bun 으로 런타임 교체도 가능.
 | 기능 | 현재 상태 | 이유 |
 |---|---|---|
 | 실시간 이벤트 스트림(SSE) | 2초 폴링으로 대체 | 1인 운영 환경에서 구현 복잡도 대비 효과 낮음 |
-| 테스트 실패 시 자동 재시도(Test-pass loop) | 단일 attempt | 재시도 판단 기준이 모델 출력에 의존 — 루프 종료 조건 정의 필요 |
 | 위험 Bash 패턴 거부 | 미구현 | `bypassPermissions` 사용 중 — 신뢰된 환경 전제 |
 | review finding 구조화 | 자유 형식 출력 | JSON dedup + verdict 파싱은 구현 복잡도 高 |
 
