@@ -1,8 +1,6 @@
-import { runAgent, type RunResult } from '../lib/runner.js';
-import { loadPrompt } from '../lib/prompt.js';
+import type { RunResult } from '../lib/runner.js';
+import { runNamedAgent, type AgentRunOpts } from './dispatch.js';
 
-const SYSTEM = loadPrompt('test.system.md');
-
-export async function test(input: string, opts: { workflowRunId?: string; triggerSource?: string; triggerDetail?: string; cwd?: string } = {}): Promise<RunResult> {
-  return runAgent({ name: 'test', prompt: `${SYSTEM}\n\n---\n\n${input}`, tools: ['Read', 'Write', 'Bash'], ...opts });
+export function test(input: string, opts: AgentRunOpts = {}): Promise<RunResult> {
+  return runNamedAgent('test', input, opts);
 }

@@ -38,7 +38,9 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   const ctx = { runId, agent: opts.name };
 
   try {
-    const tools = opts.tools ?? ['Read', 'Write', 'Bash'];
+    // 기본값은 읽기 전용. 구현 권한(Write/Bash)은 호출부가 명시적으로 부여해야 한다
+    // (역할 경계는 src/agents/specs.ts 의 AGENT_SPECS 가 단일 출처).
+    const tools = opts.tools ?? ['Read'];
     const hasSubagents = opts.subagents && Object.keys(opts.subagents).length > 0;
     const allTools = hasSubagents ? [...tools, 'Agent'] : tools;
 

@@ -3,13 +3,13 @@ import { cors } from 'hono/cors';
 import { complete, parseJsonLoose } from '../lib/complete.js';
 import { resolveProjectDir, listProjects, WORKSPACE_ROOT } from '../lib/workspace.js';
 import { getAgent, listAgents } from '../agents/index.js';
+import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec, runSpecBackground } from '../workflows/spec.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { modelConfig } from '../lib/model-config.js';
-import { runAgentBackground } from '../lib/runner.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
@@ -133,15 +133,10 @@ export function createRoutes(): Hono {
       return c.json({ runId, type: 'workflow' });
     }
 
-    const agent = getAgent(agentName);
-    if (!agent) return c.json({ error: `Unknown agent: ${agentName}` }, 404);
-
-    const runId = runAgentBackground({
-      name: agentName,
-      prompt: input,
-      triggerSource: 'dashboard',
-      cwd,
-    });
+    // 에이전트의 시스템 프롬프트 + 역할 경계(tools)를 적용해 실행한다.
+    // 원시 input 을 그대로 넘기면 프롬프트·권한 제한이 우회되므로 dispatch 를 거친다.
+    const runId = runNamedAgentBackground(agentName, input, { triggerSource: 'dashboard', cwd });
+    if (!runId) return c.json({ error: `Unknown agent: ${agentName}` }, 404);
     return c.json({ runId, type: 'agent' });
   });
 
