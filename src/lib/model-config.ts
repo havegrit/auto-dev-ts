@@ -1,4 +1,5 @@
-import { query, type EffortLevel } from '@anthropic-ai/claude-agent-sdk';
+import { type EffortLevel } from '@anthropic-ai/claude-agent-sdk';
+import { getModelCatalog } from '../llm/registry.js';
 import { log } from './logger.js';
 
 export interface ModelSpec {
@@ -23,16 +24,6 @@ let currentModel = DESIRED_MODEL ?? FALLBACK_MODELS[0].id;
 let currentEffort: EffortLevel = DEFAULT_EFFORT;
 let loadedFromCli = false;
 
-/** SDK ModelInfo → 내부 ModelSpec 변환. */
-function mapModelInfo(m: any): ModelSpec {
-  return {
-    id: m.value,
-    displayName: m.displayName ?? m.value,
-    description: m.description,
-    effortLevels: (m.supportedEffortLevels ?? []) as EffortLevel[],
-  };
-}
-
 /** 현재 선택값이 목록과 모순되지 않도록 보정한다. */
 function reconcileSelection(): void {
   if (!availableModels.find(m => m.id === currentModel)) {
@@ -53,24 +44,17 @@ function reconcileSelection(): void {
  */
 export async function loadModelsFromCli(): Promise<void> {
   try {
-    const q = query({ prompt: 'hi', options: { allowedTools: [], permissionMode: 'bypassPermissions' } });
-    let models: any[];
-    try {
-      models = await q.supportedModels();
-    } finally {
-      await q.interrupt().catch(() => {});
-    }
-
-    if (Array.isArray(models) && models.length > 0) {
-      availableModels = models.map(mapModelInfo);
+    const models = await getModelCatalog().listModels();
+    if (models.length > 0) {
+      availableModels = models as ModelSpec[];
       reconcileSelection();
       loadedFromCli = true;
-      log.info({ count: availableModels.length, models: availableModels.map(m => m.id) }, 'Loaded models from CLI');
+      log.info({ count: availableModels.length, models: availableModels.map(m => m.id) }, 'Loaded models from provider');
     } else {
-      log.warn({}, 'CLI returned no models — keeping fallback list');
+      log.warn({}, 'Provider returned no models — keeping fallback list');
     }
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to load models from CLI — keeping fallback list');
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to load models from provider — keeping fallback list');
   }
 }
 
