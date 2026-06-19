@@ -39,7 +39,7 @@ function reconcileSelection(): void {
 }
 
 /**
- * Claude CLI(구독)에서 사용 가능한 모델 목록을 동적으로 가져와 캐시한다.
+ * 활성 프로바이더에서 사용 가능한 모델 목록을 동적으로 가져와 캐시한다.
  * 실패하면 폴백 목록을 유지한다.
  */
 export async function loadModelsFromCli(): Promise<void> {

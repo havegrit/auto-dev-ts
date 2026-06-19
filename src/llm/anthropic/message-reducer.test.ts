@@ -84,6 +84,7 @@ describe('reduceMessage', () => {
       output: '[error_max_turns]\nboom\nPermission denied: Bash',
       tokensIn: 1, tokensOut: 2, numTurns: 5, stopReason: null,
       permissionDenials: ['Bash'],
+      errors: ['boom'],
     });
   });
 

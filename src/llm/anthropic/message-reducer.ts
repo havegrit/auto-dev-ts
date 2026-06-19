@@ -16,6 +16,7 @@ export function newAccumulator(): OutcomeAccumulator {
  */
 export function reduceMessage(
   msg: any,
+  // _acc는 미래의 스트리밍 누적 usage 집계를 위해 예약된 파라미터이며, 현재는 result 메시지의 usage를 직접 읽으므로 변경하지 않는다.
   _acc: OutcomeAccumulator,
   onEvent: (e: AgentEvent) => void,
 ): AgentRunOutcome | null {
@@ -71,7 +72,7 @@ export function reduceMessage(
       errors.length > 0 ? errors.join('\n') : '',
       permissionDenials.length > 0 ? `Permission denied: ${permissionDenials.join(', ')}` : '',
     ].filter(Boolean).join('\n');
-    return { status: 'error', output, tokensIn, tokensOut, numTurns, stopReason, errorType, permissionDenials };
+    return { status: 'error', output, tokensIn, tokensOut, numTurns, stopReason, errorType, permissionDenials, errors };
   }
 
   return null;

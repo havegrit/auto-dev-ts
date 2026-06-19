@@ -25,6 +25,7 @@ export interface AgentRunOutcome {
   stopReason: string | null;
   errorType?: string;
   permissionDenials?: string[];
+  errors?: string[];
 }
 
 /** 도구를 쓰는 agentic 실행. 이벤트를 콜백으로 흘려보내고 최종 결과를 반환한다. */

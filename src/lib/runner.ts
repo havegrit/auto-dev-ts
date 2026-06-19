@@ -87,7 +87,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       tokensIn = outcome.tokensIn;
       tokensOut = outcome.tokensOut;
       updateRun(runId, { output, tokensIn, tokensOut, status: 'FAILED', durationMs, errorType: outcome.errorType, stopReason: outcome.stopReason ?? undefined, numTurns: outcome.numTurns });
-      log.error({ ...ctx, errorType: outcome.errorType, permDenials: outcome.permissionDenials, numTurns: outcome.numTurns, stopReason: outcome.stopReason, durationMs }, 'Agent result error');
+      log.error({ ...ctx, errorType: outcome.errorType, permDenials: outcome.permissionDenials, errors: outcome.errors, numTurns: outcome.numTurns, stopReason: outcome.stopReason, durationMs }, 'Agent result error');
       emitRunEvent(runId, { type: 'status', ts: now(), data: `FAILED:${outcome.errorType}` });
       closeEmitter(runId);
       return { runId, output, tokensIn, tokensOut, durationMs };
