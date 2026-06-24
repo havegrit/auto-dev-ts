@@ -84,8 +84,9 @@ clarifier → planner → scaffold → test → review → cicd
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
 
 - 에이전트 현황 및 일일 실행 횟수
-- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기)
-- 10초마다 자동 갱신
+- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신
+- 실행 중인 작업은 SSE로 라이브 갱신, 행 클릭 시 상세 패널 펼치기
+- 작업 제출: 에이전트 선택 + 프로젝트명 입력 + 모델/effort 설정
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
 
@@ -97,13 +98,17 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `GET` | `/api/status` | 에이전트 목록 및 일일 실행 가드 통계 |
-| `POST` | `/api/agents/:name` | 단일 에이전트 실행 |
+| `GET` | `/api/status` | 에이전트 목록 + 실행 가드 + 회로차단기 통계 |
+| `POST` | `/api/agents/:name` | 단일 에이전트 실행 (`project` 지정 가능) |
 | `POST` | `/api/clarify` | Q&A 컨텍스트와 함께 clarifier 실행 |
 | `POST` | `/api/specs` | 스펙 워크플로우 실행 |
+| `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?limit=`) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
+| `GET`/`POST` | `/api/config` | 모델/effort 조회·변경 + 프로젝트 목록 |
+| `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |
 
 ## 설정
 
@@ -111,11 +116,15 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트가 파일을 읽고 쓰는 디렉토리 |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 |
+| `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 |
+| `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`~`max`) |
+| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 서버 포트 |
-| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 최대 에이전트 실행 횟수 (서킷 브레이커) |
+| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 실행 횟수 한도 (비우면 무제한) |
+| `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker URL — 설정 시 연동 활성 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 리뷰 브리핑 스케줄러 활성화 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 스케줄 크론 표현식 |
 
@@ -128,9 +137,11 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
-│   ├── workflows/    SpecWorkflow 파이프라인
+│   ├── workflows/    SpecWorkflow + 이슈 기반 워크플로우
+│   ├── llm/          LLM 프로바이더 seam (registry + anthropic 구현)
+│   ├── integrations/ issue-tracker 클라이언트
 │   ├── store/        SQLite 스키마 + CRUD
-│   ├── lib/          로거, 프롬프트 로더, 실행 가드, 코어 러너
+│   ├── lib/          러너, 가드, 회로차단기, SSE, 워크스페이스 해석 등
 │   ├── server/       Hono HTTP 서버 + 라우트
 │   ├── schedule/     node-cron 일일 브리핑
 │   └── cli.ts        Commander CLI 진입점

@@ -84,8 +84,9 @@ The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline 
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
 
 - Live agent status and daily run count
-- Recent run history (agent, status, duration, output preview)
-- Auto-refreshes every 10 seconds
+- Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s
+- Running jobs update live over SSE; click a row to expand a detail panel
+- Submit form: agent picker + project name + model/effort settings
 
 If accessing from a remote machine over SSH, use local port forwarding:
 
@@ -97,13 +98,17 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Agent list and daily run guard stats |
-| `POST` | `/api/agents/:name` | Invoke a single agent |
+| `GET` | `/api/status` | Agent list + run guard + circuit breaker stats |
+| `POST` | `/api/agents/:name` | Invoke a single agent (accepts `project`) |
 | `POST` | `/api/clarify` | Run clarifier with Q&A context |
 | `POST` | `/api/specs` | Run spec workflow |
+| `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
 | `GET` | `/api/runs` | Recent runs (`?limit=`) |
 | `GET` | `/api/runs/:id` | Single run detail |
+| `GET` | `/api/runs/:id/events` | SSE — live events for a running job |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
+| `GET`/`POST` | `/api/config` | Get/set model & effort + project list |
+| `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
 
 ## Configuration
 
@@ -111,11 +116,15 @@ All configuration is via environment variables (copy `.env.example` to `.env`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Directory agents read/write files in |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection |
+| `AUTO_DEV_MODEL` | (CLI default) | Claude model to use |
+| `AUTO_DEV_EFFORT` | `high` | Effort level (`low`–`max`) |
+| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Root for project-name resolution |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP server bind address |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP server port |
-| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | Max agent runs per day (circuit breaker) |
+| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | Max agent runs per day (empty = unlimited) |
+| `AUTO_DEV_ISSUE_TRACKER_URL` | (none) | Issue-tracker URL — enables integration when set |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | Enable daily review briefing cron |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | Cron expression for briefing schedule |
 
@@ -128,9 +137,11 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       Agent implementations + registry
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
-│   ├── workflows/    SpecWorkflow pipeline
+│   ├── workflows/    SpecWorkflow + issue-driven workflow
+│   ├── llm/          LLM provider seam (registry + anthropic impl)
+│   ├── integrations/ issue-tracker client
 │   ├── store/        SQLite schema + CRUD
-│   ├── lib/          Logger, prompt loader, cost guard, core runner
+│   ├── lib/          Runner, guards, circuit breaker, SSE, workspace resolver
 │   ├── server/       Hono HTTP server + routes
 │   ├── schedule/     node-cron daily briefing
 │   └── cli.ts        Commander CLI entry point
