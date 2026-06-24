@@ -7,6 +7,10 @@
 > auto-dev-ts 는 [auto-dev (Java)](https://github.com/havegrit/auto-dev) 를
 > TypeScript 로 재작성한 버전입니다. LLM API 직접 호출 → **Claude Code SDK 위임** 으로
 > 전환해 per-token 과금을 구독 플랜 비용으로 대체한 것이 핵심 변경점입니다.
+>
+> SDK 호출은 `src/llm/` **프로바이더 seam** 뒤로 격리되어 있어, 인증·과금 방식
+> (구독 ↔ API)이나 프로바이더를 교체해도 상위 파이프라인은 영향받지 않습니다.
+> 설계 배경은 [`docs/superpowers/specs/2026-06-19-llm-provider-abstraction-design.md`](superpowers/specs/2026-06-19-llm-provider-abstraction-design.md) 참고.
 
 ## 1. 개요
 
@@ -44,6 +48,7 @@
 |---|---|---|
 | 언어/런타임 | **TypeScript + Node.js 22** | Claude Code SDK 가 Node.js 기반 |
 | LLM 런타임 | **Claude Code SDK (`@anthropic-ai/claude-agent-sdk`)** | Claude Code CLI 를 프로그래밍으로 제어, 구독 플랜 사용 |
+| LLM 추상화 | **프로바이더 seam (`src/llm/`)** | SDK 호출을 `anthropic` 프로바이더로 격리 → 인증/프로바이더 교체 가능 (§4.2) |
 | HTTP 서버 | **Hono + `@hono/node-server`** | 경량, Spring Boot 대비 오버헤드 없음 |
 | CLI | **Commander v12** | Picocli 대응, Node.js 생태계 표준 |
 | 영속화 | **better-sqlite3 v9** | 동기 API, 단일 사용자 / 파일 1개 |
@@ -69,10 +74,12 @@
                          │ 1. costGuard.allow()?               │
                          │    NO  → insertRun(BLOCKED), return │
                          │ 2. insertRun(RUNNING)               │
-                         │ 3. query(prompt, options)           │
-                         │    ← @anthropic-ai/claude-agent-sdk │
-                         │    ← Claude Code CLI subprocess     │
-                         │ 4. collect ResultMessage            │
+                         │ 3. getAgentRunner().run(req, onEvt) │
+                         │    └─ llm/registry → anthropic      │
+                         │       provider → query()            │
+                         │       ← @anthropic-ai/claude-agent-sdk │
+                         │       ← Claude Code CLI subprocess  │
+                         │ 4. collect AgentRunOutcome          │
                          │ 5. costGuard.recordRun()            │
                          │ 6. updateRun(DONE | FAILED)         │
                          └──────────────┬──────────────────────┘
@@ -91,8 +98,8 @@
                                │ style sub-agent        │
                                └───────────────────────┘
 
-           Each agent → query(prompt, { cwd, allowedTools, permissionMode })
-                          │
+  Each agent → getAgentRunner().run({ cwd, tools, model, effort }, onEvent)
+                          │  (anthropic provider → query())
                           ▼
                 ┌───────────────────────────┐
                 │  Claude Code (CLI)         │
@@ -127,8 +134,8 @@ export async function runAgent(opts: RunOptions): Promise<RunResult>
 |---|---|
 | 1 | `costGuard.allow()` — 일일 한도 도달 시 BLOCKED 즉시 반환 |
 | 2 | `insertRun(RUNNING)` — DB row 생성 + trigger 메타 |
-| 3 | `query(prompt, options)` — Claude Code SDK 호출 (async generator) |
-| 4 | `ResultMessage` 수집 — output + token usage |
+| 3 | `getAgentRunner().run(req, onEvent)` — LLM seam 경유 (§4.2). 프로바이더가 SDK 호출을 담당 |
+| 4 | `AgentRunOutcome` 수집 — output + token usage + stopReason. 스트리밍 이벤트는 `onEvent` 콜백으로 SSE/circuit-breaker 에 전달 |
 | 5 | `costGuard.recordRun()` |
 | 6 | `updateRun(DONE | FAILED)` — DB row 업데이트 |
 
@@ -139,31 +146,61 @@ Java 버전 대비 **제거된 책임**:
 - 429 재시도 (SDK 내부 처리)
 - SSE 브로드캐스트 (미구현)
 
-### 4.2 `query()` — Claude Code SDK 진입점
+### 4.2 LLM 프로바이더 seam (`src/llm/`)
+
+`runner.ts` / `complete.ts` / `model-config.ts` 는 SDK 를 **직접** 부르지 않고
+프로바이더-무관 인터페이스를 통해 호출한다. SDK·인증·과금 방식을 한 곳에 가두는
+경계(seam)이며, 설계 배경은
+[`docs/superpowers/specs/2026-06-19-llm-provider-abstraction-design.md`](superpowers/specs/2026-06-19-llm-provider-abstraction-design.md) 참고.
 
 ```typescript
-import { query } from '@anthropic-ai/claude-agent-sdk';
-
-for await (const msg of query(prompt, {
-  allowedTools: ['Read', 'Write', 'Bash'],
-  permissionMode: 'bypassPermissions',
-  cwd: workspaceDir,
-})) {
-  if (msg.type === 'result') {
-    output = msg.result;
-  }
-}
+// src/llm/types.ts — 세 가지 능력을 분리한 인터페이스
+interface AgentRunner  { run(req, onEvent): Promise<AgentRunOutcome>; }  // 도구 쓰는 agentic 실행
+interface Completer    { complete(req): Promise<string>; }              // 도구 없는 단발성 생성
+interface ModelCatalog { listModels(): Promise<ModelSpec[]>; }          // 모델 디스커버리
 ```
 
-`query()` 는 Claude Code CLI 를 subprocess 로 구동하고 메시지를 스트리밍한다.
-주요 옵션:
+```typescript
+// src/llm/registry.ts — AUTO_DEV_PROVIDER 로 활성 프로바이더 선택 (기본 anthropic)
+export function getAgentRunner(): AgentRunner   // → 알 수 없는 provider 면 fail-fast
+export function getCompleter(): Completer
+export function getModelCatalog(): ModelCatalog
+```
 
-| 옵션 | 타입 | 설명 |
+| 호출부 | 사용하는 능력 | 용도 |
+|---|---|---|
+| `lib/runner.ts` | `AgentRunner` | 에이전트 1회 실행 (clarifier~cicd) |
+| `lib/complete.ts` | `Completer` | 인터뷰 프록시 등 단발성 텍스트 (`POST /api/llm/complete`) |
+| `lib/model-config.ts` | `ModelCatalog` | 대시보드 모델 목록 동적 로딩 |
+
+**anthropic 프로바이더 구현** (`src/llm/anthropic/`)이 실제 SDK 호출을 담당한다.
+`agent-runner.ts` 는 `query()` 로 Claude Code CLI 를 subprocess 구동하고,
+`message-reducer.ts` 가 SDK 메시지 스트림을 프로바이더-무관 `AgentEvent`
+(`text` / `tool_call` / `tool_result` / `rate_limit`)와 `AgentRunOutcome` 으로 환원한다.
+
+```typescript
+// src/llm/anthropic/agent-runner.ts (요지)
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
+for await (const msg of query({ prompt, options: {
+  allowedTools: req.tools,           // 역할 경계 (AGENT_SPECS.tools)
+  permissionMode: 'bypassPermissions',
+  cwd: req.cwd,
+  model: req.model,
+  ...(req.effort ? { effort: req.effort } : {}),  // 모델이 effort 미지원 시 생략
+} })) { /* reduce → AgentEvent / AgentRunOutcome */ }
+```
+
+| `query()` 옵션 | 타입 | 설명 |
 |---|---|---|
 | `allowedTools` | `string[]` | 에이전트가 사용할 수 있는 도구 (`Read`, `Write`, `Bash`, `Agent`) |
 | `permissionMode` | string | `bypassPermissions` — 모든 권한 승인 없이 자동 실행 |
 | `cwd` | string | 에이전트 작업 디렉토리 (모든 파일 I/O 기준점) |
+| `model` / `effort` | string | `modelConfig` 가 주입 (`AUTO_DEV_MODEL` / `AUTO_DEV_EFFORT`) |
 | `agents` | `{name, description}[]` | 서브에이전트 선언 (병렬 fan-out) |
+
+> 새 프로바이더(예: API 키 기반 직접 호출)는 `src/llm/<name>/` 에 세 인터페이스를
+> 구현하고 `registry.ts` 의 `PROVIDERS` 에 등록하면 된다. 상위 파이프라인 변경 불필요.
 
 ### 4.3 에이전트 레지스트리
 
@@ -548,7 +585,10 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`src/llm/registry.ts`). 미등록 값이면 fail-fast |
+| `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 id/별칭. 미지정 시 CLI 디스커버리 결과의 default |
+| `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`/`medium`/`high`/`xhigh`/`max`). 모델이 미지원이면 무시 |
+| `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd (프로젝트명 해석 기준 루트) |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
@@ -595,12 +635,22 @@ auto-dev-ts/
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
 │   │   └── spec.ts                   # SpecWorkflow 파이프라인
+│   ├── llm/                          # LLM 프로바이더 seam (§4.2)
+│   │   ├── types.ts                  # AgentRunner / Completer / ModelCatalog 인터페이스
+│   │   ├── registry.ts               # AUTO_DEV_PROVIDER 기반 활성 프로바이더 선택
+│   │   └── anthropic/                # Claude Code SDK 구현
+│   │       ├── agent-runner.ts       # query() agentic 실행
+│   │       ├── completer.ts          # 단발성 생성
+│   │       ├── models.ts             # supportedModels() 디스커버리
+│   │       └── message-reducer.ts    # SDK 메시지 → AgentEvent / AgentRunOutcome
 │   ├── store/
 │   │   ├── schema.sql                # DDL (IF NOT EXISTS)
 │   │   ├── db.ts                     # better-sqlite3 싱글턴 + WAL pragma
 │   │   └── runs.ts                   # insertRun / updateRun / getRun / getStats
 │   ├── lib/
-│   │   ├── runner.ts                 # runAgent() — 공통 실행 파이프라인
+│   │   ├── runner.ts                 # runAgent() — 공통 실행 파이프라인 (AgentRunner 소비)
+│   │   ├── complete.ts               # 단발성 생성 래퍼 (Completer 소비)
+│   │   ├── model-config.ts           # 모델/effort 선택 + 동적 목록 (ModelCatalog 소비)
 │   │   ├── cost-guard.ts             # 일일 실행 가드 (메모리)
 │   │   ├── prompt.ts                 # loadPrompt() — 파일 캐시
 │   │   └── logger.ts                 # JSON 구조화 로그
@@ -783,7 +833,10 @@ Bun 으로 런타임 교체도 가능.
 9. **스케줄러** — node-cron 일일 브리핑
 10. **SDK 패키지 수정** — `@anthropic-ai/claude-code` → `@anthropic-ai/claude-agent-sdk`
 11. **README** (영문 + 한국어)
-12. **ARCHITECTURE.md** ← 현재
+12. **ARCHITECTURE.md**
+13. **LLM 프로바이더 seam** — SDK 직접 호출을 `src/llm/` (AgentRunner / Completer /
+    ModelCatalog 인터페이스 + registry + anthropic 구현) 뒤로 격리. `AUTO_DEV_PROVIDER`
+    로 프로바이더 선택. 인증/과금 방식 교체 가능 ← 현재
 
 ---
 
