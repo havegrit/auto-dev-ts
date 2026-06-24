@@ -34,7 +34,12 @@
 - ✅ SpecWorkflow 파이프라인 (clarifier → planner → scaffold → test → review → cicd)
 - ✅ 피드백 라우팅 (review/test 가 수정 필요 시 planner/clarifier 로 되돌려 재작업)
 - ✅ HTTP API + 웹 대시보드
-- ⚠️ SSE 라이브 이벤트 — 미구현
+- ✅ SSE 라이브 이벤트 (`run-events` + `GET /api/runs/:id/events` — 실행 중 행 실시간 표시 + run 상세 펼치기)
+- ✅ LLM 프로바이더 seam (`src/llm/` — 인증/프로바이더 교체 가능, §4.2)
+- ✅ rate-limit 회로차단기 (`circuit-breaker` — 429/reset 감지 시 실행 차단)
+- ✅ issue-tracker 연동 (`/api/issues`, `work <key>` — 이슈 조회 + 자동 처리)
+- ✅ 프로젝트명 기반 워크스페이스 (경로 대신 프로젝트명 입력 → 루트 기준 해석)
+- ✅ 단발성 LLM 프록시 (`POST /api/llm/complete` — 외부 정적 앱이 구독으로 생성)
 - ⚠️ Planner 모드 (동적 plan 파싱) — 미구현 (고정 순서 + 라우팅 재진입)
 - ⚠️ 브라우저 검증 (Playwright) — 미구현
 
@@ -463,18 +468,20 @@ data/
 
 | Method | Path | 설명 |
 |---|---|---|
-| `GET` | `/api/status` | 에이전트 목록 + 실행 가드 통계 |
-| `POST` | `/api/agents/:name` | 단일 에이전트 실행 `{ input }` |
+| `GET` | `/api/status` | 에이전트 목록 + 실행 가드 + 회로차단기 통계 |
+| `POST` | `/api/agents/:name` | 단일 에이전트 실행 `{ input, project? }` |
 | `POST` | `/api/clarify` | clarifier 실행 `{ input }` |
 | `POST` | `/api/specs` | SpecWorkflow 실행 `{ content, steps?, iterations? }` |
+| `POST` | `/api/submit` | 대시보드 폼 제출 (multipart — 파일/프로젝트명 포함) |
+| `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 `{ system?, message, json? }` (CORS 허용) |
 | `GET` | `/api/runs?limit=N` | 최근 N개 실행 (cap 없음) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
+| `GET` | `/api/runs/:id/events` | **SSE** — 실행 중 라이브 이벤트 (text/tool/status) |
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
-
-Java 버전 대비 미구현:
-- `GET /api/events` — SSE 스트림
-- `GET /api/runs/:id/findings` — review finding 구조화 조회
-- `GET /api/jira/issues` — Jira 연동
+| `GET`/`POST` | `/api/config` | 모델/effort 조회·변경 + 워크스페이스/프로젝트 목록 |
+| `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
+| `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거 |
 
 ### 8.3 스케줄러 (node-cron)
 
@@ -505,17 +512,17 @@ cron.schedule('0 9 * * *', async () => {
 ```
 
 - 정적 HTML (`static/index.html`) — `@hono/node-server/serve-static` 서빙
-- 10초마다 `/api/status`, `/api/stats`, `/api/runs` 자동 폴링
-- SSE 미구현 → 폴링 방식
+- 10초마다 `/api/status`, `/api/stats`, `/api/runs` 자동 폴링 (목록·통계)
+- 실행 중(RUNNING) 행은 `/api/runs/:id/events` **SSE** 로 라이브 갱신
+- run 행 클릭 → 상세 패널 펼치기 (메타 + 출력, 실행 중이면 라이브 이벤트 스트림)
+- 작업 제출 폼: 에이전트 선택 + 프로젝트명 입력(자동완성) + 모델/effort 설정
 
 ### 9.2 Java 버전 대비 미구현
 
-- SSE 라이브 인디케이터
-- Jira 이슈 카드 그리드
-- Plan / Plan & Run 버튼
+- 이슈 카드 그리드 (API `/api/issues` 는 있으나 대시보드 UI 미연동)
+- Plan / Plan & Run 버튼 (동적 planner 모드 미구현)
 - Per-agent summary 테이블
-- 통화 토글 (USD ↔ KRW)
-- Run 행 클릭 상세 펼치기 (현재 미리보기만)
+- 통화 토글 (USD ↔ KRW) — 구독 모델이라 per-token 비용 개념 없음(의도적 N/A)
 
 ---
 
@@ -523,21 +530,36 @@ cron.schedule('0 9 * * *', async () => {
 
 ### 10.1 일일 실행 가드 (`costGuard`)
 
-- 일일 100회 초과 시 BLOCKED 즉시 반환
+- `AUTO_DEV_DAILY_RUN_LIMIT` 초과 시 BLOCKED 즉시 반환 (기본 100회)
+- 변수를 비우면 `limit = null` → **무제한** (가드 비활성)
 - 자정 (`Asia/Seoul`) 자동 리셋
 - DB 재시작 시 카운터 0 (비휘발성 복원 미구현)
 
-### 10.2 SDK 내장 안전망
+### 10.2 rate-limit 회로차단기 (`circuitBreaker`)
+
+프로바이더가 rate limit(`AgentEvent: rate_limit`)을 알리면 회로를 열어 후속 실행을
+즉시 BLOCKED 처리한다. 런어웨이 자동화가 429 폭주를 일으키는 것을 막는다.
+
+| 신호 | 동작 |
+|---|---|
+| `resetsAt` 제공 | 해당 시각까지 회로 open |
+| `retryDelayMs` 제공 | 현재시각 + delay 까지 open |
+| 둘 다 없음 | `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS`(기본 5분) 쿨다운 |
+
+`_initRun` 이 실행 전 `circuitBreaker.isOpen()` 을 검사하고, open 이면 BLOCKED row 를
+남기고 반환한다. 상태는 메모리(재시작 시 닫힘).
+
+### 10.3 SDK 내장 안전망
 
 Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 
 | 기능 | Java (자체 구현) | TypeScript (SDK 위임) |
 |---|---|---|
-| 429 재시도 | `executeWithRetry` — 메시지 파싱 + sleep | SDK 내부 |
+| 429 재시도 | `executeWithRetry` — 메시지 파싱 + sleep | SDK 내부 + 회로차단기(§10.2) |
 | 토큰 budget | `PromptBudget.clamp` — head+marker+tail | SDK 컨텍스트 관리 |
 | 세션 관리 | N/A (stateless) | SDK 자동 |
 
-### 10.3 Verdict / 라우팅 마커 기반 제어 흐름
+### 10.4 Verdict / 라우팅 마커 기반 제어 흐름
 
 오케스트레이터(`runSpec`)는 review/test 출력 끝의 마커를 파싱해 흐름을 제어한다:
 
@@ -592,9 +614,13 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
-| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 에이전트 실행 횟수 한도 |
+| `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 에이전트 실행 횟수 한도 (비우면 무제한) |
+| `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS` | `300000` | rate-limit reset 미제공 시 회로 open 쿨다운(ms) |
+| `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker 베이스 URL — 설정 시 연동 활성 |
+| `AUTO_DEV_ISSUE_TRACKER_STATUS` | `OPEN` | 조회할 이슈 상태 필터 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 브리핑 스케줄러 활성 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 크론 표현식 |
+| `AUTO_DEV_WORKLOG_PATH` | `./data/worklog.md` | 워크로그 파일 경로 |
 
 ---
 
@@ -622,7 +648,7 @@ auto-dev-ts/
 │   ├── planner.system.md
 │   └── clarifier.system.md
 ├── src/
-│   ├── cli.ts                        # Commander CLI 진입점 (9 서브커맨드)
+│   ├── cli.ts                        # Commander CLI 진입점 (12 서브커맨드)
 │   ├── agents/
 │   │   ├── index.ts                  # 레지스트리 + getAgent / listAgents
 │   │   ├── scaffold.ts
@@ -634,7 +660,10 @@ auto-dev-ts/
 │   │       ├── index.ts              # 멀티-렌즈 오케스트레이터
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
-│   │   └── spec.ts                   # SpecWorkflow 파이프라인
+│   │   ├── spec.ts                   # SpecWorkflow 파이프라인
+│   │   └── from-issue.ts             # 이슈 1건 → 워크플로우 트리거
+│   ├── integrations/
+│   │   └── issue-tracker/            # 이슈 조회 클라이언트 (+ Noop 폴백)
 │   ├── llm/                          # LLM 프로바이더 seam (§4.2)
 │   │   ├── types.ts                  # AgentRunner / Completer / ModelCatalog 인터페이스
 │   │   ├── registry.ts               # AUTO_DEV_PROVIDER 기반 활성 프로바이더 선택
@@ -652,11 +681,14 @@ auto-dev-ts/
 │   │   ├── complete.ts               # 단발성 생성 래퍼 (Completer 소비)
 │   │   ├── model-config.ts           # 모델/effort 선택 + 동적 목록 (ModelCatalog 소비)
 │   │   ├── cost-guard.ts             # 일일 실행 가드 (메모리)
+│   │   ├── circuit-breaker.ts        # rate-limit 회로차단기 (§10.2)
+│   │   ├── run-events.ts             # SSE 이벤트 emitter (실행별)
+│   │   ├── workspace.ts              # 프로젝트명 → cwd 해석 (경로 탈출 차단)
 │   │   ├── prompt.ts                 # loadPrompt() — 파일 캐시
 │   │   └── logger.ts                 # JSON 구조화 로그
 │   ├── server/
 │   │   ├── index.ts                  # startServer() — Hono + serve-static
-│   │   └── routes.ts                 # 7개 API 엔드포인트
+│   │   └── routes.ts                 # 15개 API 엔드포인트 (§8.2)
 │   └── schedule/
 │       └── briefing.ts               # node-cron 일일 브리핑
 └── data/                             # gitignore
@@ -664,7 +696,7 @@ auto-dev-ts/
     └── workspace/
 ```
 
-대략 **TypeScript 16 파일 / HTML 1 파일 / 프롬프트 10 파일**.
+대략 **TypeScript 37 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
 
 ---
 
@@ -711,12 +743,12 @@ npm rebuild better-sqlite3
 |---|---|
 | Planner 모드 | 고정 순서 기반. `PLAN: ... END.` 동적 파싱 미구현 (단, review/test 피드백 라우팅으로 재진입은 구현됨) |
 | 재작업 루프 | review/test → planner·clarifier 라우팅 구현. 단 라우팅 대상(planner/clarifier) 선택은 모델 마커에 의존 |
-| SSE | 폴링(10s) 방식. 실시간 이벤트 스트림 없음 |
-| 실행 가드 복원 | 재시작 시 카운터 0 리셋. DB 누적 복원 없음 |
+| SSE | 실행 중 행은 라이브(§9.1). 단 종료된 실행 목록·통계는 여전히 10s 폴링 |
+| 실행 가드 복원 | 재시작 시 카운터/회로 0 리셋. DB 누적 복원 없음 |
 | runShell 위험 패턴 | `bypassPermissions` 로 모든 Bash 명령 허용. 신뢰된 환경 필수 |
 | review finding 구조화 | 자유 형식 출력. JSON dedup + verdict 파싱 없음 |
 | 인증 | 없음. 127.0.0.1 바인딩만 |
-| Jira 연동 | 인터페이스 없음 (Java 버전 있음) |
+| 이슈 카드 UI | issue-tracker API 는 연동되나 대시보드 카드 그리드 미구현 |
 | 브라우저 검증 | Playwright 미구현 |
 | 출력 파일 | `docs/output/<spec>-<ts>/` 디렉토리 생성 없음 |
 | CI/CD | auto-dev-ts 자체 GitHub Actions 없음 |
@@ -725,15 +757,17 @@ npm rebuild better-sqlite3
 
 ## 16. 로드맵
 
+> ✅ 완료: SSE 라이브 이벤트(§9.1), issue-tracker 연동(§8.2), rate-limit 회로차단기(§10.2),
+> LLM 프로바이더 seam(§4.2).
+
 | 우선순위 | 항목 | Java 버전 대응 |
 |---|---|---|
-| 高 | **SSE 라이브 이벤트** | `AgentEventBroadcaster` |
 | 高 | **runShell 위험 패턴 거부** | `WorkspaceTools.runShell` danger check |
 | 中 | **Planner 모드** (동적 plan 파싱) | `Plan.parse()` + planner 모드 분기 |
 | 中 | **review finding 구조화** | `ReviewFinding` 테이블 + dedup + verdict |
 | 中 | **인증 (API key middleware)** | Spring Security 대응 |
 | 中 | **실행 가드 DB 복원** | `DailyCostCircuitBreaker` DB 복원 |
-| 低 | **Jira 연동** | `JiraIssueTrackerHook` |
+| 低 | **이슈 카드 대시보드 UI** | issue-tracker API 연동(완료) 위 UI |
 | 低 | **출력 디렉토리 + summary.md** | `docs/output/<spec>-<ts>/` |
 
 ---
@@ -834,9 +868,13 @@ Bun 으로 런타임 교체도 가능.
 10. **SDK 패키지 수정** — `@anthropic-ai/claude-code` → `@anthropic-ai/claude-agent-sdk`
 11. **README** (영문 + 한국어)
 12. **ARCHITECTURE.md**
-13. **LLM 프로바이더 seam** — SDK 직접 호출을 `src/llm/` (AgentRunner / Completer /
+13. **운영 기능 확장** — SSE 라이브 이벤트(`run-events`), rate-limit 회로차단기,
+    issue-tracker 연동(`work`/`/api/issues`), 프로젝트명 기반 워크스페이스,
+    단발성 LLM 프록시(`/api/llm/complete`), 동적 모델 목록, 일일 한도 무제한 옵션
+14. **LLM 프로바이더 seam** — SDK 직접 호출을 `src/llm/` (AgentRunner / Completer /
     ModelCatalog 인터페이스 + registry + anthropic 구현) 뒤로 격리. `AUTO_DEV_PROVIDER`
-    로 프로바이더 선택. 인증/과금 방식 교체 가능 ← 현재
+    로 프로바이더 선택. 인증/과금 방식 교체 가능
+15. **문서 동기화** — 본 문서를 현재 구현에 맞춰 갱신 ← 현재
 
 ---
 
