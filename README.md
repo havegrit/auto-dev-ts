@@ -63,11 +63,23 @@ Input can be an inline string or a file path — auto-dev detects automatically.
 ./run status
 
 # HTTP API + dashboard
-./run serve
+./run serve          # or: npm run serve:user  (see "Running as non-root")
 
 # Scheduler only (daily worklog briefing)
 ./run daemon
 ```
+
+### Running as non-root
+
+The Claude Code SDK runs each agent with `--dangerously-skip-permissions`, which
+Claude Code **refuses under root/sudo**. Running auto-dev as root makes every SDK
+call fail with `Claude Code process exited with code 1` (model discovery, agent
+runs, completions). Run it as a regular user instead.
+
+For the server, `npm run serve:user` (→ `scripts/serve.sh`) auto-drops from root to
+a non-root user (`AUTO_DEV_RUN_AS_USER`, default `shin`) before starting; that user
+needs its own Claude credentials (`~/.claude/.credentials.json`). One-off workaround
+for sandboxed containers: set `IS_SANDBOX=1`.
 
 ## Spec workflow
 
@@ -86,7 +98,7 @@ The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline 
 - Live agent status and daily run count
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s
 - Running jobs update live over SSE; click a row to expand a detail panel
-- Submit form: agent picker + project name + model/effort settings
+- Submit form: agent picker + project dropdown (workspace projects) + model/effort settings
 
 If accessing from a remote machine over SSH, use local port forwarding:
 
@@ -120,6 +132,7 @@ All configuration is via environment variables (copy `.env.example` to `.env`):
 | `AUTO_DEV_MODEL` | (CLI default) | Claude model to use |
 | `AUTO_DEV_EFFORT` | `high` | Effort level (`low`–`max`) |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Root for project-name resolution |
+| `AUTO_DEV_RUN_AS_USER` | `shin` | Non-root user `scripts/serve.sh` drops to when started as root |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP server bind address |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP server port |
@@ -133,6 +146,7 @@ All configuration is via environment variables (copy `.env.example` to `.env`):
 ```
 auto-dev-ts/
 ├── prompts/          System prompts for each agent (Markdown)
+├── scripts/          Ops scripts (serve.sh — non-root server launcher)
 ├── static/           Dashboard frontend (vanilla HTML/JS)
 ├── src/
 │   ├── agents/       Agent implementations + registry

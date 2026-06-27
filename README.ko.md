@@ -63,11 +63,23 @@ cp .env.example .env
 ./run status
 
 # HTTP API + 대시보드
-./run serve
+./run serve          # 또는: npm run serve:user  ("비-root 실행" 참고)
 
 # 스케줄러만 실행 (일일 워크로그 브리핑)
 ./run daemon
 ```
+
+### 비-root 실행
+
+Claude Code SDK는 각 에이전트를 `--dangerously-skip-permissions`로 실행하는데,
+Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를 root로 실행하면
+모든 SDK 호출(모델 조회·에이전트 실행·완성)이 `Claude Code process exited with code 1`로
+실패합니다. 일반 유저로 실행하세요.
+
+서버는 `npm run serve:user`(→ `scripts/serve.sh`)가 root 감지 시 비-root 유저
+(`AUTO_DEV_RUN_AS_USER`, 기본 `shin`)로 권한을 낮춰 실행합니다. 해당 유저는 자체 Claude
+자격증명(`~/.claude/.credentials.json`)이 필요합니다. 샌드박스 컨테이너용 임시 우회책:
+`IS_SANDBOX=1` 설정.
 
 ## 스펙 워크플로우
 
@@ -86,7 +98,7 @@ clarifier → planner → scaffold → test → review → cicd
 - 에이전트 현황 및 일일 실행 횟수
 - 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신
 - 실행 중인 작업은 SSE로 라이브 갱신, 행 클릭 시 상세 패널 펼치기
-- 작업 제출: 에이전트 선택 + 프로젝트명 입력 + 모델/effort 설정
+- 작업 제출: 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
 
@@ -120,6 +132,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 |
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`~`max`) |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |
+| `AUTO_DEV_RUN_AS_USER` | `shin` | root로 시작 시 `scripts/serve.sh`가 권한을 낮출 비-root 유저 |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 서버 포트 |
@@ -133,6 +146,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 ```
 auto-dev-ts/
 ├── prompts/          각 에이전트 시스템 프롬프트 (Markdown)
+├── scripts/          운영 스크립트 (serve.sh — 비-root 서버 런처)
 ├── static/           대시보드 프론트엔드 (바닐라 HTML/JS)
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리
