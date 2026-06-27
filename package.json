@@ -17,6 +17,7 @@
     "spec": "tsx src/cli.ts spec",
     "status": "tsx src/cli.ts status",
     "serve": "tsx src/cli.ts serve",
+    "serve:user": "bash scripts/serve.sh",
     "test": "vitest run"
   },
   "dependencies": {
