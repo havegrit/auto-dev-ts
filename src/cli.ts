@@ -1,3 +1,4 @@
+import './env.js'; // 반드시 첫 번째 — 다른 모듈이 import 시점에 env를 읽기 전에 .env를 로드한다
 import { Command } from 'commander';
 import { readFileSync, existsSync } from 'fs';
 import { scaffold } from './agents/scaffold.js';
