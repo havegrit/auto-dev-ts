@@ -13,11 +13,13 @@ export interface CompleteOptions {
  * 모델 미지정 시 modelConfig의 현재 선택을 사용합니다.
  */
 export async function complete(opts: CompleteOptions): Promise<string> {
-  return getCompleter().complete({
+  const model = opts.model ?? modelConfig.getModel();
+  const providerModel = model.includes(':') ? model.slice(model.indexOf(':') + 1) : model;
+  return getCompleter(model).complete({
     system: opts.system,
     message: opts.message,
     json: opts.json,
-    model: opts.model ?? modelConfig.getModel(),
+    model: providerModel,
   });
 }
 

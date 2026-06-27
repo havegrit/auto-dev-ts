@@ -19,6 +19,8 @@ export type AgentEvent =
 export interface AgentRunOutcome {
   status: 'success' | 'error';
   output: string;
+  rawOutput?: string;
+  changedFiles?: string[];
   tokensIn: number;
   tokensOut: number;
   numTurns: number;
@@ -47,6 +49,8 @@ export interface Completer {
 
 export interface ModelSpec {
   id: string;
+  provider?: string;
+  providerModel?: string;
   displayName: string;
   description?: string;
   effortLevels: string[];
