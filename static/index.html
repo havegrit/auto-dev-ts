@@ -106,6 +106,28 @@
       padding: 0.75rem; font-family: monospace; font-size: 0.78rem; color: #c9d1d9;
       white-space: pre-wrap; max-height: 400px; overflow-y: auto;
     }
+    /* Rendered markdown output */
+    .result-output.md-body { font-family: inherit; font-size: 0.85rem; white-space: normal; line-height: 1.55; }
+    .md-body > *:first-child { margin-top: 0; }
+    .md-body > *:last-child { margin-bottom: 0; }
+    .md-body h1, .md-body h2, .md-body h3, .md-body h4 { color: #e6edf3; line-height: 1.3; margin: 1rem 0 0.5rem; font-weight: 600; }
+    .md-body h1 { font-size: 1.25rem; border-bottom: 1px solid #21262d; padding-bottom: 0.3rem; }
+    .md-body h2 { font-size: 1.1rem; border-bottom: 1px solid #21262d; padding-bottom: 0.25rem; }
+    .md-body h3 { font-size: 0.98rem; }
+    .md-body p { margin: 0.5rem 0; }
+    .md-body ul, .md-body ol { margin: 0.5rem 0; padding-left: 1.4rem; }
+    .md-body li { margin: 0.2rem 0; }
+    .md-body a { color: #58a6ff; text-decoration: none; }
+    .md-body a:hover { text-decoration: underline; }
+    .md-body code { background: #161b22; border: 1px solid #21262d; border-radius: 4px; padding: 0.1rem 0.3rem; font-family: monospace; font-size: 0.82em; }
+    .md-body pre { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 0.7rem; overflow-x: auto; margin: 0.6rem 0; }
+    .md-body pre code { background: none; border: none; padding: 0; font-size: 0.8rem; }
+    .md-body blockquote { margin: 0.6rem 0; padding: 0.1rem 0.8rem; border-left: 3px solid #30363d; color: #8b949e; }
+    .md-body table { border-collapse: collapse; margin: 0.6rem 0; font-size: 0.82rem; }
+    .md-body th, .md-body td { border: 1px solid #30363d; padding: 0.3rem 0.6rem; text-align: left; }
+    .md-body th { background: #161b22; }
+    .md-body hr { border: none; border-top: 1px solid #21262d; margin: 0.8rem 0; }
+    .md-body img { max-width: 100%; }
     .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .sub-runs { margin-top: 0.75rem; }
@@ -256,6 +278,7 @@
         <div id="result-spinner" class="spinner" style="display:none"></div>
         <span id="result-status-label">대기 중</span>
         <span id="result-run-id" style="font-family:monospace;font-size:0.72rem;color:#484f58"></span>
+        <button id="result-output-toggle" class="refresh" style="display:none;margin-left:auto" onclick="toggleOutput('result-output', this)">원본</button>
       </div>
       <div class="sub-runs" id="sub-runs"></div>
       <div class="result-output" id="result-output" style="display:none"></div>
@@ -296,11 +319,16 @@
 
     <!-- 완료 후 출력 -->
     <div id="run-detail-output-section">
-      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem">출력</div>
+      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem;display:flex;align-items:center;justify-content:space-between">
+        출력
+        <button id="run-detail-output-toggle" class="refresh" style="display:none" onclick="toggleOutput('run-detail-output', this)">원본</button>
+      </div>
       <div class="result-output" id="run-detail-output" style="max-height:400px"></div>
     </div>
   </div>
 
+  <script src="marked.min.js"></script>
+  <script src="purify.min.js"></script>
   <script>
     let currentTab = 'text';
     let selectedFile = null;
@@ -309,6 +337,51 @@
     let selectedEffort = 'high';
     let selectedRunId = null;
     let liveEventSource = null;
+
+    // ── 마크다운 출력 렌더링 ─────────────────────────────────────────
+    if (window.marked) marked.use({ gfm: true, breaks: true });
+
+    // 출력 요소에 raw 텍스트를 저장하고 현재 모드(rendered/raw)대로 그린다.
+    function applyOutput(el, mode) {
+      const raw = el.__raw ?? '';
+      if (mode === 'raw' || !window.marked || !window.DOMPurify) {
+        el.classList.remove('md-body');
+        el.textContent = raw;
+        el.__mode = 'raw';
+      } else {
+        el.classList.add('md-body');
+        el.innerHTML = DOMPurify.sanitize(marked.parse(raw));
+        el.__mode = 'rendered';
+      }
+    }
+
+    // 출력 텍스트 설정 + 토글 버튼 표시. 빈 문자열이면 토글 숨김.
+    function setOutput(elId, toggleId, text) {
+      const el = document.getElementById(elId);
+      el.__raw = text ?? '';
+      applyOutput(el, el.__mode ?? 'rendered');
+      const btn = document.getElementById(toggleId);
+      if (btn) {
+        const has = !!(text && text.trim());
+        btn.style.display = has ? '' : 'none';
+        btn.textContent = el.__mode === 'raw' ? '렌더' : '원본';
+      }
+    }
+
+    function clearOutput(elId, toggleId) {
+      const el = document.getElementById(elId);
+      el.__raw = '';
+      el.classList.remove('md-body');
+      el.textContent = '';
+      const btn = document.getElementById(toggleId);
+      if (btn) btn.style.display = 'none';
+    }
+
+    function toggleOutput(elId, btn) {
+      const el = document.getElementById(elId);
+      applyOutput(el, el.__mode === 'raw' ? 'rendered' : 'raw');
+      btn.textContent = el.__mode === 'raw' ? '렌더' : '원본';
+    }
 
     // agent 선택 시 spec-steps 표시
     document.getElementById('agent-select').addEventListener('change', function() {
@@ -443,7 +516,7 @@
       document.getElementById('result-run-id').textContent = '';
       document.getElementById('sub-runs').innerHTML = '';
       document.getElementById('result-output').style.display = 'none';
-      document.getElementById('result-output').textContent = '';
+      clearOutput('result-output', 'result-output-toggle');
 
       try {
         const res = await fetch('/api/submit', { method: 'POST', body: formData });
@@ -474,9 +547,8 @@
           statusEl.innerHTML = `<span class="status ${run.status}">${run.status}</span>`;
 
           if (run.output) {
-            const outEl = document.getElementById('result-output');
-            outEl.style.display = '';
-            outEl.textContent = run.output;
+            document.getElementById('result-output').style.display = '';
+            setOutput('result-output', 'result-output-toggle', run.output);
           }
 
           // 워크플로우면 sub-runs 폴링
@@ -602,7 +674,12 @@
       ].filter(Boolean).join(' ');
 
       document.getElementById('run-detail-meta').innerHTML = chips;
-      document.getElementById('run-detail-output').textContent = run.output ?? '(출력 없음)';
+      if (run.output && run.output.trim()) {
+        setOutput('run-detail-output', 'run-detail-output-toggle', run.output);
+      } else {
+        clearOutput('run-detail-output', 'run-detail-output-toggle');
+        document.getElementById('run-detail-output').textContent = '(출력 없음)';
+      }
 
       if (run.status !== 'RUNNING') {
         document.getElementById('live-log-section').style.display = 'none';
@@ -621,7 +698,7 @@
       panel.style.display = '';
       document.getElementById('run-detail-meta').innerHTML = '<span style="color:#8b949e">불러오는 중...</span>';
       document.getElementById('live-log-section').style.display = 'none';
-      document.getElementById('run-detail-output').textContent = '';
+      clearOutput('run-detail-output', 'run-detail-output-toggle');
 
       const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
       renderRunDetail(run);
