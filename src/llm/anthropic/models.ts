@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { ModelCatalog, ModelSpec } from '../types.js';
+import { createStderrCollector, withStderr } from './cli-stderr.js';
 
 /** SDK ModelInfo → ModelSpec. */
 function mapModelInfo(m: any): ModelSpec {
@@ -13,10 +14,13 @@ function mapModelInfo(m: any): ModelSpec {
 
 export const anthropicModelCatalog: ModelCatalog = {
   async listModels(): Promise<ModelSpec[]> {
-    const q = query({ prompt: 'hi', options: { allowedTools: [], permissionMode: 'bypassPermissions' } });
+    const cli = createStderrCollector();
+    const q = query({ prompt: 'hi', options: { allowedTools: [], permissionMode: 'bypassPermissions', stderr: cli.onStderr } });
     let models: any[];
     try {
       models = await (q as any).supportedModels();
+    } catch (err) {
+      throw withStderr(err, cli.text());
     } finally {
       await (q as any).interrupt().catch(() => {});
     }
