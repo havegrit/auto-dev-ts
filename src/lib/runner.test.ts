@@ -22,9 +22,10 @@ let fakeRunnerImpl: {
 } = {
   run: async () => ({ status: 'success', output: '', tokensIn: 0, tokensOut: 0, numTurns: 0, stopReason: null }),
 };
+const getAgentRunnerMock = vi.fn((_model?: string) => fakeRunnerImpl);
 
 vi.mock('../llm/registry.js', () => ({
-  getAgentRunner: () => fakeRunnerImpl,
+  getAgentRunner: (model?: string) => getAgentRunnerMock(model),
   getCompleter: () => ({ complete: vi.fn() }),
   getModelCatalog: () => ({ listModels: vi.fn(async () => []) }),
 }));
@@ -32,9 +33,11 @@ vi.mock('../llm/registry.js', () => ({
 // Import runner after mocks are registered.
 import { runAgent } from './runner.js';
 import { circuitBreaker } from './circuit-breaker.js';
+import { modelConfig } from './model-config.js';
 
 describe('runAgent dispatch', () => {
   beforeEach(() => {
+    getAgentRunnerMock.mockClear();
     circuitBreaker.reset();
   });
 
@@ -93,5 +96,64 @@ describe('runAgent dispatch', () => {
     expect(result.output).toBe('[error_max_turns]');
     expect(result.tokensIn).toBe(2);
     expect(result.tokensOut).toBe(3);
+  });
+
+  it('passes the agent-specific resolved model to the provider runner', async () => {
+    let receivedReq: any;
+    const getModelIdForAgent = vi.spyOn(modelConfig, 'getModelIdForAgent').mockReturnValue('codex-cli:agent-model');
+    const getModelForAgent = vi.spyOn(modelConfig, 'getModelForAgent').mockReturnValue('agent-model');
+    const getEffortOptionForAgent = vi.spyOn(modelConfig, 'getEffortOptionForAgent').mockReturnValue('medium');
+    fakeRunnerImpl = {
+      run: async (req, _onEvent) => {
+        receivedReq = req;
+        return { status: 'success', output: 'ok', tokensIn: 1, tokensOut: 1, numTurns: 1, stopReason: 'end_turn' };
+      },
+    };
+
+    await runAgent({ name: 'scaffold', prompt: 'build it' });
+
+    expect(getModelIdForAgent).toHaveBeenCalledWith('scaffold');
+    expect(getAgentRunnerMock).toHaveBeenCalledWith('codex-cli:agent-model');
+    expect(getModelForAgent).toHaveBeenCalledWith('scaffold');
+    expect(getEffortOptionForAgent).toHaveBeenCalledWith('scaffold');
+    expect(receivedReq.model).toBe('agent-model');
+    expect(receivedReq.effort).toBe('medium');
+    getModelIdForAgent.mockRestore();
+    getModelForAgent.mockRestore();
+    getEffortOptionForAgent.mockRestore();
+  });
+
+  it('retries once with the fallback model when the primary model hits a rate limit', async () => {
+    const requests: any[] = [];
+    const getModelIdForAgent = vi.spyOn(modelConfig, 'getModelIdForAgent').mockReturnValue('anthropic:opus');
+    const getModelForAgent = vi.spyOn(modelConfig, 'getModelForAgent').mockReturnValue('opus');
+    const getEffortOptionForAgent = vi.spyOn(modelConfig, 'getEffortOptionForAgent').mockReturnValue('xhigh');
+    const getFallbackModel = vi.spyOn(modelConfig, 'getFallbackModel').mockReturnValue('codex-cli:gpt-5.5');
+    const getModelForModelId = vi.spyOn(modelConfig, 'getModelForModelId').mockReturnValue('gpt-5.5');
+    const getEffortOptionForModelId = vi.spyOn(modelConfig, 'getEffortOptionForModelId').mockReturnValue('xhigh');
+    fakeRunnerImpl = {
+      run: async (req, onEvent) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          onEvent({ kind: 'rate_limit', resetsAt: Date.now() + 60_000 });
+          return { status: 'success', output: 'limit', tokensIn: 0, tokensOut: 0, numTurns: 1, stopReason: 'stop_sequence' };
+        }
+        return { status: 'success', output: 'fallback ok', tokensIn: 1, tokensOut: 1, numTurns: 1, stopReason: 'end_turn' };
+      },
+    };
+
+    const result = await runAgent({ name: 'clarifier', prompt: 'p' });
+
+    expect(result.output).toBe('fallback ok');
+    expect(getAgentRunnerMock).toHaveBeenNthCalledWith(1, 'anthropic:opus');
+    expect(getAgentRunnerMock).toHaveBeenNthCalledWith(2, 'codex-cli:gpt-5.5');
+    expect(requests.map(r => r.model)).toEqual(['opus', 'gpt-5.5']);
+    expect(circuitBreaker.isOpen()).toBe(false);
+    getModelIdForAgent.mockRestore();
+    getModelForAgent.mockRestore();
+    getEffortOptionForAgent.mockRestore();
+    getFallbackModel.mockRestore();
+    getModelForModelId.mockRestore();
+    getEffortOptionForModelId.mockRestore();
   });
 });

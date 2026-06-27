@@ -11,7 +11,6 @@ import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { modelConfig } from '../lib/model-config.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
-import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
 
@@ -193,13 +192,16 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/config', (c) => {
-    return c.json({ ...modelConfig.stats(), workspaceRoot: WORKSPACE_ROOT, projects: listProjects() });
+    return c.json({ ...modelConfig.stats(), agents: listAgents(), workspaceRoot: WORKSPACE_ROOT, projects: listProjects() });
   });
 
   app.post('/api/config', async (c) => {
-    const body = await c.req.json<{ model?: string; effort?: string }>();
+    const body = await c.req.json<{ model?: string; fallbackModel?: string; agentModels?: Record<string, string>; effort?: string }>();
     try {
-      modelConfig.set(body.model ?? modelConfig.getModel(), (body.effort ?? modelConfig.getEffort()) as EffortLevel);
+      const options: { fallbackModel?: string; agentModels?: Record<string, string>; persist: boolean } = { persist: true };
+      if (Object.prototype.hasOwnProperty.call(body, 'fallbackModel')) options.fallbackModel = body.fallbackModel || undefined;
+      if (Object.prototype.hasOwnProperty.call(body, 'agentModels')) options.agentModels = body.agentModels;
+      modelConfig.set(body.model ?? modelConfig.getModel(), body.effort ?? modelConfig.getEffort(), options);
       return c.json(modelConfig.stats());
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

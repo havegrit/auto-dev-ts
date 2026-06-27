@@ -140,6 +140,9 @@
     .config-row { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
     .config-group { display: flex; flex-direction: column; gap: 0.4rem; flex: 1; min-width: 200px; }
     .config-group label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+    .agent-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+    .agent-model-row { display: flex; flex-direction: column; gap: 0.35rem; }
+    .agent-model-row label { font-size: 0.72rem; color: #8b949e; font-family: monospace; }
     .effort-btns { display: flex; gap: 0.4rem; flex-wrap: wrap; }
     .effort-btn {
       background: #21262d; border: 1px solid #30363d; color: #8b949e;
@@ -209,12 +212,17 @@
         <select id="model-select"></select>
       </div>
       <div class="config-group">
+        <label>Fallback 모델</label>
+        <select id="fallback-model-select"></select>
+      </div>
+      <div class="config-group">
         <label>Effort</label>
         <div class="effort-btns" id="effort-btns"></div>
       </div>
       <button class="save-btn" onclick="saveConfig()">저장</button>
       <span class="save-status" id="save-status"></span>
     </div>
+    <div class="agent-model-grid" id="agent-model-grid"></div>
   </div>
 
   <!-- 새 요청 실행 -->
@@ -337,6 +345,7 @@
     let selectedEffort = 'high';
     let selectedRunId = null;
     let liveEventSource = null;
+    let configAgents = [];
 
     // ── 마크다운 출력 렌더링 ─────────────────────────────────────────
     if (window.marked) marked.use({ gfm: true, breaks: true });
@@ -391,19 +400,41 @@
     async function loadConfig() {
       const cfg = await fetch('/api/config').then(r => r.json());
       availableModels = cfg.availableModels ?? [];
+      configAgents = cfg.agents ?? [];
 
       // 모델 드롭다운 구성
       const sel = document.getElementById('model-select');
-      sel.innerHTML = availableModels.map(m => {
-        const label = m.description ? `${m.displayName} — ${m.description}` : m.displayName;
-        return `<option value="${m.id}" ${m.id === cfg.model ? 'selected' : ''}>${label}</option>`;
-      }).join('');
+      sel.innerHTML = modelOptions(cfg.model);
+      document.getElementById('fallback-model-select').innerHTML = modelOptions(cfg.fallbackModel, { includeEmpty: true, emptyLabel: '자동 선택' });
+      renderAgentModelSelectors(cfg.agentModels ?? {});
 
       // effort 버튼 구성 (선택된 모델 기준)
       selectedEffort = cfg.effort;
       renderEffortBtns(cfg.model, cfg.effort);
 
       sel.addEventListener('change', () => renderEffortBtns(sel.value, selectedEffort));
+    }
+
+    function modelOptions(selected, opts = {}) {
+      const empty = opts.includeEmpty ? `<option value="" ${!selected ? 'selected' : ''}>${opts.emptyLabel ?? '기본값'}</option>` : '';
+      return empty + availableModels.map(m => {
+        const label = m.description ? `${m.displayName} — ${m.description}` : m.displayName;
+        return `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${label}</option>`;
+      }).join('');
+    }
+
+    function renderAgentModelSelectors(agentModels) {
+      const grid = document.getElementById('agent-model-grid');
+      grid.innerHTML = configAgents
+        .filter(agent => agent !== 'spec')
+        .map(agent => `
+          <div class="agent-model-row">
+            <label>${agent}</label>
+            <select data-agent-model="${agent}">
+              ${modelOptions(agentModels[agent], { includeEmpty: true, emptyLabel: '전역/폴백 자동' })}
+            </select>
+          </div>
+        `).join('');
     }
 
     function renderEffortBtns(modelId, activeEffort) {
@@ -434,13 +465,18 @@
 
     async function saveConfig() {
       const model = document.getElementById('model-select').value;
+      const fallbackModel = document.getElementById('fallback-model-select').value;
+      const agentModels = {};
+      document.querySelectorAll('[data-agent-model]').forEach(sel => {
+        if (sel.value) agentModels[sel.dataset.agentModel] = sel.value;
+      });
       const statusEl = document.getElementById('save-status');
       statusEl.textContent = '저장 중...';
       try {
         const res = await fetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, effort: selectedEffort }),
+          body: JSON.stringify({ model, fallbackModel, agentModels, effort: selectedEffort }),
         });
         if (!res.ok) {
           const err = await res.json();
@@ -559,7 +595,7 @@
               <div class="sub-run-row">
                 <span class="agent-name">${c.agent_name}</span>
                 <span class="status ${c.status}">${c.status}</span>
-                <span class="duration">${c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '—'}</span>
+                <span class="duration">${formatDuration(c.duration_ms)}</span>
               </div>`).join('');
           }
 
@@ -596,9 +632,10 @@
       const circuit = statusRes.circuit;
       if (circuit) {
         const remaining = circuit.remainingMs > 0
-          ? ` (${Math.ceil(circuit.remainingMs / 1000)}초 남음)` : '';
+          ? ` (${formatDuration(circuit.remainingMs)} 남음)` : '';
+        const label = circuit.state === 'OPEN' ? '차단 중' : '정상';
         document.getElementById('circuit-status').innerHTML =
-          `<span class="circuit-badge circuit-${circuit.state}">${circuit.state}${remaining}</span>`;
+          `<span class="circuit-badge circuit-${circuit.state}">${label}${remaining}</span>`;
       }
 
       const agentsEl = document.getElementById('agents');
@@ -614,7 +651,7 @@
         return `<tr class="run-row${isSelected ? ' selected' : ''}" onclick="showRunDetail('${r.id}')">
           <td><span class="agent-name">${r.agent_name}</span></td>
           <td><span class="status ${r.status}">${r.status}</span></td>
-          <td><span class="duration">${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '—'}</span></td>
+          <td><span class="duration">${formatDuration(r.duration_ms)}</span></td>
           <td><span class="duration">${r.num_turns ?? '—'}</span></td>
           <td>${errorBadge}<span class="output-preview">${preview}</span></td>
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
@@ -630,6 +667,19 @@
       line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-type-${event.type}">${escHtml(event.data)}</span>`;
       el.appendChild(line);
       el.scrollTop = el.scrollHeight;
+    }
+
+    function formatDuration(ms) {
+      const value = Number(ms ?? 0);
+      if (!Number.isFinite(value) || value <= 0) return '—';
+      const totalSeconds = Math.ceil(value / 1000);
+      if (totalSeconds < 60) return `${totalSeconds}초`;
+      const totalMinutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      if (totalMinutes < 60) return seconds ? `${totalMinutes}분 ${seconds}초` : `${totalMinutes}분`;
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      return minutes ? `${hours}시간 ${minutes}분` : `${hours}시간`;
     }
 
     function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

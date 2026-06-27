@@ -9,6 +9,7 @@ import { log } from './logger.js';
 import { emitRunEvent, closeEmitter } from './run-events.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
+import type { AgentRunOutcome } from '../llm/types.js';
 
 export interface RunOptions {
   name: string;
@@ -27,6 +28,7 @@ export interface RunResult {
   tokensIn: number;
   tokensOut: number;
   durationMs: number;
+  status: 'DONE' | 'FAILED' | 'BLOCKED';
 }
 
 const DEFAULT_WORKSPACE = process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace';
@@ -44,6 +46,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     // (역할 경계는 src/agents/specs.ts 의 AGENT_SPECS 가 단일 출처).
     const tools = opts.tools ?? ['Read'];
     const now = () => new Date().toISOString();
+    let sawRateLimit = false;
+    let suppressCircuitForFallback = false;
 
     const onEvent = (e: AgentEvent) => {
       if (e.kind === 'text') {
@@ -53,6 +57,11 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       } else if (e.kind === 'tool_result') {
         emitRunEvent(runId, { type: 'tool_result', ts: now(), data: e.content.slice(0, 200) });
       } else if (e.kind === 'rate_limit') {
+        sawRateLimit = true;
+        if (suppressCircuitForFallback) {
+          log.warn({ ...ctx, resetsAt: e.resetsAt, retryDelayMs: e.retryDelayMs }, 'Rate limit — trying fallback model before opening circuit');
+          return;
+        }
         if (e.resetsAt != null) {
           circuitBreaker.openUntil(e.resetsAt);
           log.warn({ ...ctx, resetsAt: e.resetsAt }, 'Rate limit — circuit opened');
@@ -66,10 +75,31 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       }
     };
 
-    const outcome = await getAgentRunner().run(
-      { prompt: opts.prompt, cwd, tools, subagents: opts.subagents, model: modelConfig.getModel(), effort: modelConfig.getEffortOption() },
-      onEvent,
-    );
+    const runWithModel = async (modelId: string, model: string, effort: string | undefined): Promise<AgentRunOutcome> => {
+      return getAgentRunner(modelId).run({
+        prompt: opts.prompt,
+        cwd,
+        tools,
+        subagents: opts.subagents,
+        model,
+        effort,
+      }, onEvent);
+    };
+
+    const modelId = modelConfig.getModelIdForAgent(opts.name);
+    const fallbackModelId = modelConfig.getFallbackModel();
+    suppressCircuitForFallback = Boolean(fallbackModelId && fallbackModelId !== modelId);
+    let outcome = await runWithModel(modelId, modelConfig.getModelForAgent(opts.name), modelConfig.getEffortOptionForAgent(opts.name));
+    if (sawRateLimit && fallbackModelId && fallbackModelId !== modelId) {
+      log.warn({ ...ctx, modelId, fallbackModelId }, 'Primary model rate-limited — retrying fallback model');
+      sawRateLimit = false;
+      suppressCircuitForFallback = false;
+      outcome = await runWithModel(
+        fallbackModelId,
+        modelConfig.getModelForModelId(fallbackModelId),
+        modelConfig.getEffortOptionForModelId(fallbackModelId),
+      );
+    }
 
     const durationMs = Date.now() - start;
     if (outcome.status === 'success') {
@@ -81,7 +111,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       log.info({ ...ctx, tokensIn, tokensOut, durationMs, numTurns: outcome.numTurns, stopReason: outcome.stopReason }, 'Agent done');
       emitRunEvent(runId, { type: 'status', ts: now(), data: 'DONE' });
       closeEmitter(runId);
-      return { runId, output, tokensIn, tokensOut, durationMs };
+      return { runId, output, tokensIn, tokensOut, durationMs, status: 'DONE' };
     } else {
       output = outcome.output;
       tokensIn = outcome.tokensIn;
@@ -90,7 +120,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       log.error({ ...ctx, errorType: outcome.errorType, permDenials: outcome.permissionDenials, errors: outcome.errors, numTurns: outcome.numTurns, stopReason: outcome.stopReason, durationMs }, 'Agent result error');
       emitRunEvent(runId, { type: 'status', ts: now(), data: `FAILED:${outcome.errorType}` });
       closeEmitter(runId);
-      return { runId, output, tokensIn, tokensOut, durationMs };
+      return { runId, output, tokensIn, tokensOut, durationMs, status: 'FAILED' };
     }
   } catch (err) {
     const durationMs = Date.now() - start;
@@ -147,7 +177,7 @@ function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const init = _initRun(opts);
   if (init.blocked) {
-    return { runId: init.runId, output: init.blockedOutput, tokensIn: 0, tokensOut: 0, durationMs: 0 };
+    return { runId: init.runId, output: init.blockedOutput, tokensIn: 0, tokensOut: 0, durationMs: 0, status: 'BLOCKED' };
   }
   return _execute(init.runId, opts);
 }
