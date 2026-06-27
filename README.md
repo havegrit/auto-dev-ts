@@ -98,6 +98,7 @@ The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline 
 - Live agent status and daily run count
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s
 - Running jobs update live over SSE; click a row to expand a detail panel
+- Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - Submit form: agent picker + project dropdown (workspace projects) + model/effort settings
 
 If accessing from a remote machine over SSH, use local port forwarding:
