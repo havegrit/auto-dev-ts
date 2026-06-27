@@ -42,6 +42,33 @@
       border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; flex: 1;
     }
     select:focus, input[type="text"]:focus { outline: none; border-color: #58a6ff; }
+
+    /* Project combobox */
+    .combobox { position: relative; display: flex; flex: 1; min-width: 0; }
+    .combobox input[type="text"] {
+      flex: 1; min-width: 0;
+      border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none;
+    }
+    .combobox-toggle {
+      background: #0d1117; border: 1px solid #30363d; color: #8b949e;
+      border-radius: 0 6px 6px 0; padding: 0 0.65rem; cursor: pointer;
+      font-size: 0.65rem; line-height: 1; flex-shrink: 0;
+    }
+    .combobox-toggle:hover { color: #58a6ff; border-color: #58a6ff; }
+    .combobox.open .combobox-toggle { color: #58a6ff; border-color: #58a6ff; }
+    .combobox-menu {
+      position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      max-height: 240px; overflow-y: auto; display: none;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    }
+    .combobox.open .combobox-menu { display: block; }
+    .combobox-item {
+      padding: 0.45rem 0.7rem; font-size: 0.82rem; font-family: monospace;
+      color: #c9d1d9; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .combobox-item:hover, .combobox-item.active { background: #1c2d4a; color: #58a6ff; }
+    .combobox-empty { padding: 0.5rem 0.7rem; font-size: 0.78rem; color: #8b949e; }
     .tab-bar { display: flex; gap: 0; margin-bottom: 0.5rem; }
     .tab {
       background: none; border: 1px solid #30363d; color: #8b949e;
@@ -192,8 +219,11 @@
 
     <div class="form-row">
       <label>프로젝트명</label>
-      <input type="text" id="project-input" list="project-list" placeholder="프로젝트명 (비우면 워크스페이스 루트)" style="font-family:monospace;font-size:0.82rem" />
-      <datalist id="project-list"></datalist>
+      <div class="combobox" id="project-combobox">
+        <input type="text" id="project-input" autocomplete="off" placeholder="프로젝트명 (비우면 워크스페이스 루트)" style="font-family:monospace;font-size:0.82rem" />
+        <button type="button" class="combobox-toggle" id="project-toggle" aria-label="프로젝트 목록 열기">▼</button>
+        <div class="combobox-menu" id="project-menu"></div>
+      </div>
       <span id="workspace-hint" style="color:#8b949e;font-size:0.72rem;white-space:nowrap"></span>
     </div>
 
@@ -603,12 +633,95 @@
       panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    let projectList = [];
+    let projectActiveIdx = -1;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
+    function renderProjectMenu() {
+      const menu = document.getElementById('project-menu');
+      if (!menu) return;
+      const q = document.getElementById('project-input').value.trim().toLowerCase();
+      const items = q ? projectList.filter(p => p.toLowerCase().includes(q)) : projectList;
+      projectActiveIdx = -1;
+      if (items.length === 0) {
+        const msg = projectList.length === 0 ? '워크스페이스에 프로젝트가 없습니다' : '일치하는 프로젝트 없음';
+        menu.innerHTML = `<div class="combobox-empty">${msg}</div>`;
+        return;
+      }
+      menu.innerHTML = items.map(p =>
+        `<div class="combobox-item" data-value="${escapeHtml(p)}">${escapeHtml(p)}</div>`
+      ).join('');
+    }
+
+    function openProjectMenu() {
+      renderProjectMenu();
+      document.getElementById('project-combobox').classList.add('open');
+    }
+
+    function closeProjectMenu() {
+      document.getElementById('project-combobox').classList.remove('open');
+      projectActiveIdx = -1;
+    }
+
+    function isProjectMenuOpen() {
+      return document.getElementById('project-combobox').classList.contains('open');
+    }
+
+    function setProjectValue(value) {
+      document.getElementById('project-input').value = value;
+      closeProjectMenu();
+    }
+
+    function moveProjectActive(delta) {
+      const opts = [...document.querySelectorAll('#project-menu .combobox-item')];
+      if (opts.length === 0) return;
+      opts.forEach(o => o.classList.remove('active'));
+      projectActiveIdx = (projectActiveIdx + delta + opts.length) % opts.length;
+      const cur = opts[projectActiveIdx];
+      cur.classList.add('active');
+      cur.scrollIntoView({ block: 'nearest' });
+    }
+
+    function initProjectCombobox() {
+      const input = document.getElementById('project-input');
+      const toggle = document.getElementById('project-toggle');
+      const menu = document.getElementById('project-menu');
+
+      toggle.addEventListener('click', () => {
+        isProjectMenuOpen() ? closeProjectMenu() : openProjectMenu();
+      });
+      input.addEventListener('focus', openProjectMenu);
+      input.addEventListener('input', () => { renderProjectMenu(); document.getElementById('project-combobox').classList.add('open'); });
+      menu.addEventListener('mousedown', (e) => {
+        const item = e.target.closest('.combobox-item');
+        if (item) { e.preventDefault(); setProjectValue(item.dataset.value); }
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (!isProjectMenuOpen()) openProjectMenu(); else moveProjectActive(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); moveProjectActive(-1); }
+        else if (e.key === 'Enter') {
+          const opts = [...document.querySelectorAll('#project-menu .combobox-item')];
+          if (isProjectMenuOpen() && projectActiveIdx >= 0 && opts[projectActiveIdx]) {
+            e.preventDefault(); setProjectValue(opts[projectActiveIdx].dataset.value);
+          }
+        } else if (e.key === 'Escape') { closeProjectMenu(); }
+      });
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('#project-combobox')) closeProjectMenu();
+      });
+    }
+
     async function loadProjects() {
       const res = await fetch('/api/config').then(r => r.json());
       const hint = document.getElementById('workspace-hint');
       if (hint) hint.textContent = `루트: ${res.workspaceRoot ?? ''}`;
-      const dl = document.getElementById('project-list');
-      if (dl) dl.innerHTML = (res.projects ?? []).map(p => `<option value="${p}"></option>`).join('');
+      projectList = res.projects ?? [];
+      if (isProjectMenuOpen()) renderProjectMenu();
     }
 
     function closeRunDetail() {
@@ -620,6 +733,7 @@
     }
 
     loadConfig();
+    initProjectCombobox();
     loadProjects();
     loadStats();
     setInterval(loadStats, 10000);
