@@ -176,7 +176,8 @@ export function getModelCatalog(): ModelCatalog
 |---|---|---|
 | `lib/runner.ts` | `AgentRunner` | 에이전트 1회 실행 (clarifier~cicd) |
 | `lib/complete.ts` | `Completer` | 인터뷰 프록시 등 단발성 텍스트 (`POST /api/llm/complete`) |
-| `lib/model-config.ts` | `ModelCatalog` | 대시보드 모델 목록 동적 로딩 |
+| `lib/model-config.ts` | `ModelCatalog` | 대시보드 모델 목록 동적 로딩 + UI 저장 설정 적용 |
+| `lib/app-config.ts` | JSON file | 대시보드에서 저장한 런타임 설정 (`AUTO_DEV_CONFIG_PATH`, 기본 `./data/config.json`) |
 
 **anthropic 프로바이더 구현** (`src/llm/anthropic/`)이 실제 SDK 호출을 담당한다.
 `agent-runner.ts` 는 `query()` 로 Claude Code CLI 를 subprocess 구동하고,
@@ -201,7 +202,7 @@ for await (const msg of query({ prompt, options: {
 | `allowedTools` | `string[]` | 에이전트가 사용할 수 있는 도구 (`Read`, `Write`, `Bash`, `Agent`) |
 | `permissionMode` | string | `bypassPermissions` — 모든 권한 승인 없이 자동 실행 |
 | `cwd` | string | 에이전트 작업 디렉토리 (모든 파일 I/O 기준점) |
-| `model` / `effort` | string | `modelConfig` 가 주입 (`AUTO_DEV_MODEL` / `AUTO_DEV_EFFORT`) |
+| `model` / `effort` | string | `modelConfig` 가 에이전트별로 주입. UI 저장값이 env보다 우선하며, 모델은 `agent override` → `fallback` → `global/current` → 실행 가능한 모델 순서로 해석 |
 | `agents` | `{name, description}[]` | 서브에이전트 선언 (병렬 fan-out) |
 
 > 새 프로바이더(예: API 키 기반 직접 호출)는 `src/llm/<name>/` 에 세 인터페이스를
@@ -368,6 +369,8 @@ cursor = 0
 while cursor < len(STEP_ORDER):
     step = STEP_ORDER[cursor]
     result = await agent(step)(inputFor(step) + pendingFeedback)
+    if step == 'clarifier' and ready == false:
+        verdict = NEEDS-CLARIFICATION; break
     if step == 'planner': planOutput = result.output
 
     # test: 소스 코드 오류로 판정된 FAIL 만 되돌린다 (테스트 코드 오류는 test 가 직접 수정)
@@ -384,9 +387,12 @@ while cursor < len(STEP_ORDER):
     cursor += 1
 ```
 
-- **입력 분기** (`inputFor`): planner·clarifier 는 원본 스펙을, 그 외 단계는 planner
-  산출물(plan)을 입력으로 받는다. 라우팅된 경우 직전 단계 출력 전문이 피드백 블록으로
-  덧붙는다.
+- **clarifier 게이트**: clarifier JSON 이 `ready: false` 이면 planner/scaffold 로
+  넘어가지 않고 질문과 추천 답안을 반환한다. `ready: true` 이고 `summary` 가 있으면
+  planner 는 원본 대신 그 정리본을 입력으로 받는다.
+- **입력 분기** (`inputFor`): clarifier 는 원본 스펙을, planner 는 clarifier summary
+  또는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다. 라우팅된 경우
+  직전 단계 출력 전문이 피드백 블록으로 덧붙는다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
 - **무한 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 되돌리고, 그 외
@@ -479,7 +485,7 @@ data/
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
 | `GET` | `/api/runs/:id/events` | **SSE** — 실행 중 라이브 이벤트 (text/tool/status) |
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
-| `GET`/`POST` | `/api/config` | 모델/effort 조회·변경 + 워크스페이스/프로젝트 목록 |
+| `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
 | `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
 | `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거 |
 
@@ -609,7 +615,10 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 |---|---|---|
 | `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`src/llm/registry.ts`). 미등록 값이면 fail-fast |
 | `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 id/별칭. 미지정 시 CLI 디스커버리 결과의 default |
+| `AUTO_DEV_AGENT_<AGENT>_MODEL` | 미설정 | 에이전트별 모델 override. 예: `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
+| `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택 모델이 provider 목록에 없을 때 사용할 폴백 모델 |
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`/`medium`/`high`/`xhigh`/`max`). 모델이 미지원이면 무시 |
+| `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일. 저장값이 env보다 우선 |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd (프로젝트명 해석 기준 루트) |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |

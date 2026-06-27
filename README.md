@@ -23,7 +23,7 @@ All runs are persisted to a local SQLite database and visible through a built-in
 
 ## Requirements
 
-- [Claude Code](https://claude.ai/code) installed and authenticated (`claude` in PATH)
+- [Claude Code](https://claude.ai/code) installed and authenticated (`claude` in PATH), or Codex CLI installed and authenticated when using `AUTO_DEV_PROVIDER=codex-cli`
 - Node.js ≥ 22
 - npm
 
@@ -89,7 +89,7 @@ for sandboxed containers: set `IS_SANDBOX=1`.
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
+If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
 
 ## Dashboard
 
@@ -120,18 +120,23 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id` | Single run detail |
 | `GET` | `/api/runs/:id/events` | SSE — live events for a running job |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
-| `GET`/`POST` | `/api/config` | Get/set model & effort + project list |
+| `GET`/`POST` | `/api/config` | Get/set model, fallback, per-agent models & effort + project list |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
 
 ## Configuration
 
-All configuration is via environment variables (copy `.env.example` to `.env`):
+Configuration can be changed from the dashboard settings panel. Runtime changes are saved to `AUTO_DEV_CONFIG_PATH` (default `./data/config.json`) and take precedence over environment variables. Environment variables are still supported for bootstrapping:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection |
-| `AUTO_DEV_MODEL` | (CLI default) | Claude model to use |
-| `AUTO_DEV_EFFORT` | `high` | Effort level (`low`–`max`) |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection (`anthropic` or `codex-cli`) |
+| `AUTO_DEV_MODEL` | (provider default) | Provider model to use |
+| `AUTO_DEV_AGENT_<AGENT>_MODEL` | unset | Per-agent model override, e.g. `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
+| `AUTO_DEV_FALLBACK_MODEL` | unset | Model to use when the selected global or per-agent model is unavailable |
+| `AUTO_DEV_EFFORT` | `high` | Effort level (`low`–`max`; Codex currently exposes `low`/`medium`/`high`) |
+| `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | Dashboard-persisted runtime config file |
+| `AUTO_DEV_CODEX_COMMAND` | `codex` | Codex CLI command when `AUTO_DEV_PROVIDER=codex-cli` |
+| `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI execution timeout |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Root for project-name resolution |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | Non-root user `scripts/serve.sh` drops to when started as root |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |
@@ -153,7 +158,7 @@ auto-dev-ts/
 │   ├── agents/       Agent implementations + registry
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
 │   ├── workflows/    SpecWorkflow + issue-driven workflow
-│   ├── llm/          LLM provider seam (registry + anthropic impl)
+│   ├── llm/          LLM provider seam (registry + anthropic/codex impls)
 │   ├── integrations/ issue-tracker client
 │   ├── store/        SQLite schema + CRUD
 │   ├── lib/          Runner, guards, circuit breaker, SSE, workspace resolver

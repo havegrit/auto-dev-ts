@@ -23,7 +23,7 @@
 
 ## 요구사항
 
-- [Claude Code](https://claude.ai/code) 설치 및 인증 완료 (`claude`가 PATH에 있어야 함)
+- [Claude Code](https://claude.ai/code) 설치 및 인증 완료 (`claude`가 PATH에 있어야 함), 또는 `AUTO_DEV_PROVIDER=codex-cli` 사용 시 Codex CLI 설치 및 인증 완료
 - Node.js ≥ 22
 - npm
 
@@ -89,7 +89,7 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
+`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
 
 ## 대시보드
 
@@ -120,18 +120,23 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
-| `GET`/`POST` | `/api/config` | 모델/effort 조회·변경 + 프로젝트 목록 |
+| `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |
 
 ## 설정
 
-모든 설정은 환경 변수로 관리합니다 (`.env.example`을 `.env`로 복사):
+설정은 대시보드의 설정 패널에서 변경할 수 있습니다. 런타임 변경값은 `AUTO_DEV_CONFIG_PATH`(기본 `./data/config.json`)에 저장되며 환경 변수보다 우선합니다. 환경 변수는 초기 부트스트랩 설정으로 계속 사용할 수 있습니다:
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 |
-| `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 |
-| `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`~`max`) |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`anthropic` 또는 `codex-cli`) |
+| `AUTO_DEV_MODEL` | (프로바이더 기본) | 사용할 프로바이더 모델 |
+| `AUTO_DEV_AGENT_<AGENT>_MODEL` | 미설정 | 에이전트별 모델 override. 예: `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
+| `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택한 전역/에이전트별 모델을 사용할 수 없을 때 쓸 폴백 모델 |
+| `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`~`max`; Codex는 현재 `low`/`medium`/`high` 노출) |
+| `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일 |
+| `AUTO_DEV_CODEX_COMMAND` | `codex` | `AUTO_DEV_PROVIDER=codex-cli`일 때 사용할 Codex CLI 명령 |
+| `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI 실행 timeout |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | root로 시작 시 `scripts/serve.sh`가 권한을 낮출 비-root 유저 |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
@@ -153,7 +158,7 @@ auto-dev-ts/
 │   ├── agents/       에이전트 구현체 및 레지스트리
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
 │   ├── workflows/    SpecWorkflow + 이슈 기반 워크플로우
-│   ├── llm/          LLM 프로바이더 seam (registry + anthropic 구현)
+│   ├── llm/          LLM 프로바이더 seam (registry + anthropic/codex 구현)
 │   ├── integrations/ issue-tracker 클라이언트
 │   ├── store/        SQLite 스키마 + CRUD
 │   ├── lib/          러너, 가드, 회로차단기, SSE, 워크스페이스 해석 등
