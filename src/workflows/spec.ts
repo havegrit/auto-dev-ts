@@ -21,11 +21,24 @@ export interface SpecOptions {
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
 
+export interface ClarificationQuestion {
+  id: string;
+  category: string;
+  text: string;
+  recommendation: string;
+}
+
+export interface ClarificationResult {
+  summary: string;
+  questions: ClarificationQuestion[];
+}
+
 export interface SpecResult {
   workflowRunId: string;
   steps: Record<string, StepResult>;
   totalDurationMs: number;
   verdict?: string;
+  clarification?: ClarificationResult;
   /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
   routeCount?: number;
 }
@@ -62,6 +75,29 @@ function parseTests(output: string): 'PASS' | 'FAIL' | 'BLOCKED' | undefined {
   return 'FAIL';
 }
 
+function parseClarifierOutput(output: string): { ready: boolean; summary: string; questions: ClarificationQuestion[] } | undefined {
+  try {
+    const parsed = JSON.parse(output);
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.ready !== 'boolean') return undefined;
+    const questions = Array.isArray(parsed.questions)
+      ? parsed.questions.filter((q: any) =>
+        q &&
+        typeof q.id === 'string' &&
+        typeof q.category === 'string' &&
+        typeof q.text === 'string' &&
+        typeof q.recommendation === 'string',
+      )
+      : [];
+    return {
+      ready: parsed.ready,
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      questions,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function feedbackBlock(fromStep: Step, output: string): string {
   return `---\n\n## 직전 ${fromStep} 단계 피드백 — 수정 필요\n\n` +
     `아래는 ${fromStep} 단계가 발견한 문제다. 원인을 해소하도록 작업을 갱신하라.\n\n${output.trim()}`;
@@ -80,15 +116,17 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   };
 
   const baseSpec = specContent;
+  let clarifiedSpec = baseSpec;
   let planOutput: string | undefined;
   let pendingFeedback: string | undefined;
   let verdict: string | undefined;
+  let clarification: ClarificationResult | undefined;
   let routeCount = 0;
 
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
   // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
   const inputFor = (step: Step): string => {
-    const baseline = step === 'clarifier' || step === 'planner' ? baseSpec : (planOutput ?? baseSpec);
+    const baseline = step === 'clarifier' ? baseSpec : step === 'planner' ? clarifiedSpec : (planOutput ?? clarifiedSpec);
     return pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
   };
 
@@ -111,7 +149,25 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 
     const r = await agents[step](inputFor(step), runOpts);
     pendingFeedback = undefined;
-    results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'DONE' };
+    results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
+
+    if (r.status === 'BLOCKED' || r.status === 'FAILED') {
+      verdict = r.status;
+      break;
+    }
+
+    if (step === 'clarifier') {
+      const parsed = parseClarifierOutput(r.output);
+      if (parsed) {
+        if (!parsed.ready) {
+          clarification = { summary: parsed.summary, questions: parsed.questions };
+          results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'NEEDS-CLARIFICATION' };
+          verdict = 'NEEDS-CLARIFICATION';
+          break;
+        }
+        if (parsed.summary.trim()) clarifiedSpec = parsed.summary.trim();
+      }
+    }
 
     if (step === 'planner' && r.output) planOutput = r.output;
 
@@ -136,7 +192,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     cursor++;
   }
 
-  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, routeCount };
+  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, routeCount };
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
@@ -153,10 +209,13 @@ export function runSpecBackground(specContent: string, opts: SpecOptions = {}): 
 
   const wallStart = Date.now();
   runSpec(specContent, { ...opts, workflowRunId: runId }).then(result => {
-    const summary = Object.entries(result.steps)
+    const stepSummary = Object.entries(result.steps)
       .map(([k, v]) => `${k}: ${v.status}`)
       .join(', ');
-    updateRun(runId, { output: summary, status: 'DONE', durationMs: result.totalDurationMs });
+    const output = result.clarification?.questions.length
+      ? `${stepSummary}\n\n${JSON.stringify(result.clarification, null, 2)}`
+      : stepSummary;
+    updateRun(runId, { output, status: 'DONE', durationMs: result.totalDurationMs });
   }).catch(err => {
     updateRun(runId, {
       output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,
