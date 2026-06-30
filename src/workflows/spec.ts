@@ -39,6 +39,8 @@ export interface SpecResult {
   totalDurationMs: number;
   verdict?: string;
   clarification?: ClarificationResult;
+  /** planner 단계가 산출한 플랜 텍스트 (docs/plan 기록에 사용). */
+  planOutput?: string;
   /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
   routeCount?: number;
 }
@@ -192,7 +194,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     cursor++;
   }
 
-  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, routeCount };
+  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount };
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {

@@ -114,4 +114,16 @@ describe('runSpec clarification gate', () => {
     expect(result.steps.planner).toEqual({ runId: 'planner-run', durationMs: 0, status: 'BLOCKED' });
     expect(result.steps.scaffold).toBeUndefined();
   });
+
+  it('returns the planner output text as planOutput', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+
+    const result = await runSpec('명확한 요청', { steps: new Set(['clarifier', 'planner']) });
+
+    expect(result.planOutput).toBe('PLAN:\n1. scaffold | build\nEND.');
+  });
 });
