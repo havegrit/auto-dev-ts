@@ -5,7 +5,8 @@ import { resolveProjectDir, listProjects, WORKSPACE_ROOT } from '../lib/workspac
 import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
-import { runSpec, runSpecBackground } from '../workflows/spec.js';
+import { runSpec } from '../workflows/spec.js';
+import { startSpecSession, resumeSpecSession, pendingClarification } from '../workflows/spec-session.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
@@ -128,7 +129,7 @@ export function createRoutes(): Hono {
         ? new Set(stepsRaw.split(',').map((s: string) => s.trim()).filter(Boolean))
         : undefined;
       const iterations = body['iterations'] ? Number(body['iterations']) : undefined;
-      const runId = runSpecBackground(input, { steps, iterations, triggerSource: 'dashboard', cwd });
+      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, triggerSource: 'dashboard' });
       return c.json({ runId, type: 'workflow' });
     }
 
@@ -185,6 +186,25 @@ export function createRoutes(): Hono {
     const run = getRun(c.req.param('id'));
     if (!run) return c.json({ error: 'Not found' }, 404);
     return c.json(run);
+  });
+
+  // clarifier 가 멈춘 run 의 대기 중 질문(추천 답안 포함)을 반환한다.
+  app.get('/api/runs/:id/clarification', (c) => {
+    const pending = pendingClarification(c.req.param('id'));
+    return c.json({ questions: pending?.questions ?? [] });
+  });
+
+  // 질문 답변으로 워크플로우를 재개한다 (스펙 재입력 없이 연결된 새 run 생성).
+  app.post('/api/runs/:id/answers', async (c) => {
+    const body = await c.req.json<{ answers?: Record<string, string> }>();
+    const answers = body.answers ?? {};
+    if (Object.keys(answers).length === 0) return c.json({ error: 'answers is required' }, 400);
+    try {
+      const { runId } = resumeSpecSession(c.req.param('id'), answers);
+      return c.json({ runId, type: 'workflow' });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
   });
 
   app.get('/api/stats', (c) => {

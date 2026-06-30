@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS agent_run (
   workflow_run_id TEXT,
   error_type TEXT,
   stop_reason TEXT,
-  num_turns INTEGER DEFAULT 0
+  num_turns INTEGER DEFAULT 0,
+  clarification_state TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_run_started ON agent_run(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_run_workflow ON agent_run(workflow_run_id);

@@ -22,6 +22,7 @@ for (const col of [
   'ALTER TABLE agent_run ADD COLUMN error_type TEXT',
   'ALTER TABLE agent_run ADD COLUMN stop_reason TEXT',
   'ALTER TABLE agent_run ADD COLUMN num_turns INTEGER DEFAULT 0',
+  'ALTER TABLE agent_run ADD COLUMN clarification_state TEXT',
 ]) {
   try { db.exec(col); } catch { /* 이미 존재 */ }
 }

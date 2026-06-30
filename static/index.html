@@ -325,6 +325,16 @@
       <div class="live-log" id="live-log"></div>
     </div>
 
+    <!-- clarifier 질문 답변 (NEEDS-CLARIFICATION 일 때) -->
+    <div id="clarify-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;padding:0.85rem;background:#161b22">
+      <div style="font-size:0.8rem;color:#e3b341;margin-bottom:0.6rem">❓ clarifier 질문 — 답변하면 스펙 재입력 없이 이어서 진행됩니다</div>
+      <div id="clarify-questions"></div>
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
+        <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">이 답변으로 계속</button>
+        <span class="save-status" id="clarify-status"></span>
+      </div>
+    </div>
+
     <!-- 완료 후 출력 -->
     <div id="run-detail-output-section">
       <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem;display:flex;align-items:center;justify-content:space-between">
@@ -733,6 +743,63 @@
 
       if (run.status !== 'RUNNING') {
         document.getElementById('live-log-section').style.display = 'none';
+      }
+
+      renderClarification(run);
+    }
+
+    // clarifier 가 멈춘 spec run 이면 질문 답변 폼을 띄운다.
+    async function renderClarification(run) {
+      const section = document.getElementById('clarify-section');
+      section.style.display = 'none';
+      if (run.agent_name !== 'spec' || run.status === 'RUNNING') return;
+
+      let questions = [];
+      try {
+        const res = await fetch(`/api/runs/${run.id}/clarification`).then(r => r.json());
+        questions = res.questions ?? [];
+      } catch { return; }
+      if (questions.length === 0) return;
+
+      section.dataset.runId = run.id;
+      document.getElementById('clarify-questions').innerHTML = questions.map(q => `
+        <div class="agent-model-row" style="margin-bottom:0.7rem">
+          <label style="font-family:inherit;color:#c9d1d9;font-size:0.82rem">
+            <span style="color:#8b949e">[${escapeHtml(q.category)}]</span> ${escapeHtml(q.text)}
+          </label>
+          <input type="text" data-qid="${escapeHtml(q.id)}" value="${escapeHtml(q.recommendation || '')}"
+            style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.45rem 0.6rem;font-size:0.82rem" />
+        </div>
+      `).join('');
+      document.getElementById('clarify-status').textContent = '';
+      section.style.display = '';
+    }
+
+    async function submitAnswers() {
+      const section = document.getElementById('clarify-section');
+      const runId = section.dataset.runId;
+      const answers = {};
+      section.querySelectorAll('[data-qid]').forEach(inp => {
+        if (inp.value.trim()) answers[inp.dataset.qid] = inp.value.trim();
+      });
+      const statusEl = document.getElementById('clarify-status');
+      if (Object.keys(answers).length === 0) { statusEl.textContent = '답변을 입력하세요'; return; }
+
+      statusEl.textContent = '진행 중...';
+      document.getElementById('clarify-submit').disabled = true;
+      try {
+        const res = await fetch(`/api/runs/${runId}/answers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers }),
+        });
+        const data = await res.json();
+        if (!res.ok) { statusEl.textContent = data.error || '실패'; return; }
+        section.style.display = 'none';
+        loadStats();
+        showRunDetail(data.runId);
+      } finally {
+        document.getElementById('clarify-submit').disabled = false;
       }
     }
 
