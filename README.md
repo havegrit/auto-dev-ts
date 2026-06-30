@@ -89,7 +89,7 @@ for sandboxed containers: set `IS_SANDBOX=1`.
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
+If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
 
 ## Dashboard
 
@@ -99,6 +99,7 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s
 - Running jobs update live over SSE; click a row to expand a detail panel
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
+- When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - Submit form: agent picker + project dropdown (workspace projects) + model/effort settings
 
 If accessing from a remote machine over SSH, use local port forwarding:
@@ -118,6 +119,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
 | `GET` | `/api/runs` | Recent runs (`?limit=`) |
 | `GET` | `/api/runs/:id` | Single run detail |
+| `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
+| `POST` | `/api/runs/:id/answers` | Resume a clarified spec run with `{ answers }` (no spec re-entry) |
 | `GET` | `/api/runs/:id/events` | SSE — live events for a running job |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
 | `GET`/`POST` | `/api/config` | Get/set model, fallback, per-agent models & effort + project list |

@@ -89,7 +89,7 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
+`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
 
 ## 대시보드
 
@@ -99,6 +99,7 @@ clarifier → planner → scaffold → test → review → cicd
 - 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신
 - 실행 중인 작업은 SSE로 라이브 갱신, 행 클릭 시 상세 패널 펼치기
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
+- spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
 - 작업 제출: 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
@@ -118,6 +119,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?limit=`) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
+| `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 (스펙 재입력 불필요) |
 | `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
 | `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |

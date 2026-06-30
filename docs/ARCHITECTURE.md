@@ -390,6 +390,13 @@ while cursor < len(STEP_ORDER):
 - **clarifier 게이트**: clarifier JSON 이 `ready: false` 이면 planner/scaffold 로
   넘어가지 않고 질문과 추천 답안을 반환한다. `ready: true` 이고 `summary` 가 있으면
   planner 는 원본 대신 그 정리본을 입력으로 받는다.
+- **질문 답변 재개** (`workflows/spec-session.ts`): 대시보드에서 멈춘 run 에 답변을
+  입력하면 `resumeSpecSession` 이 `clarification_state`(원본 스펙 + 라운드별 Q&A)를
+  읽어 "스펙 + 누적 Q&A" 를 clarifier 에 재투입하는 **연결된 새 run** 을 시작한다
+  (원본 run 은 보존, 스펙 재입력 불필요). 게이트가 반복되면 라운드가 누적된다.
+  planner 는 `Read`-only 를 유지하고, **세션 코드**가 `<cwd>/docs/plan/<slug>.md` 에
+  원본 스펙 + 의사결정 히스토리 + planner 산출 플랜을 매 실행마다 전체 스냅샷으로 기록한다
+  (`workflows/clarification.ts` 가 slug·Q&A 합성·문서 렌더링 순수 함수를 제공).
 - **입력 분기** (`inputFor`): clarifier 는 원본 스펙을, planner 는 clarifier summary
   또는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다. 라우팅된 경우
   직전 단계 출력 전문이 피드백 블록으로 덧붙는다.
@@ -428,7 +435,10 @@ CREATE TABLE agent_run (
   duration_ms   INTEGER DEFAULT 0,
   trigger_source TEXT,                 -- cli / api / schedule / workflow
   trigger_detail TEXT,
-  workflow_run_id TEXT                 -- 워크플로우 내 자식 호출 그룹화
+  workflow_run_id TEXT,                -- 워크플로우 내 자식 호출 그룹화
+  -- 이하 마이그레이션으로 추가 (db.ts):
+  error_type TEXT, stop_reason TEXT, num_turns INTEGER DEFAULT 0,
+  clarification_state TEXT             -- spec 재개용 상태 JSON (원본 스펙 + 라운드별 Q&A)
 );
 ```
 
@@ -443,6 +453,8 @@ Java 버전 대비 제거된 컬럼:
 data/
 ├── auto-dev.db          # SQLite (gitignore)
 └── workspace/           # 에이전트 cwd (gitignore)
+
+<project>/docs/plan/<slug>.md   # spec 세션마다 누적 기록: 원본 스펙 + 의사결정 + 플랜
 ```
 
 ---
@@ -483,6 +495,8 @@ data/
 | `GET` | `/api/runs?limit=N` | 최근 N개 실행 (cap 없음) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
+| `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 (추천 답안 포함) |
+| `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 — 스펙 재입력 없이 연결된 새 run 생성 |
 | `GET` | `/api/runs/:id/events` | **SSE** — 실행 중 라이브 이벤트 (text/tool/status) |
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
 | `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
@@ -670,6 +684,8 @@ auto-dev-ts/
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
 │   │   ├── spec.ts                   # SpecWorkflow 파이프라인
+│   │   ├── spec-session.ts           # clarifier 답변 재개 + plan 문서 기록
+│   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
 │   │   └── from-issue.ts             # 이슈 1건 → 워크플로우 트리거
 │   ├── integrations/
 │   │   └── issue-tracker/            # 이슈 조회 클라이언트 (+ Noop 폴백)
@@ -684,7 +700,8 @@ auto-dev-ts/
 │   ├── store/
 │   │   ├── schema.sql                # DDL (IF NOT EXISTS)
 │   │   ├── db.ts                     # better-sqlite3 싱글턴 + WAL pragma
-│   │   └── runs.ts                   # insertRun / updateRun / getRun / getStats
+│   │   ├── runs.ts                   # insertRun / updateRun / getRun / getStats
+│   │   └── clarification.ts          # clarification_state 저장·조회 (재개용)
 │   ├── lib/
 │   │   ├── runner.ts                 # runAgent() — 공통 실행 파이프라인 (AgentRunner 소비)
 │   │   ├── complete.ts               # 단발성 생성 래퍼 (Completer 소비)
