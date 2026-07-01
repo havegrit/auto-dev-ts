@@ -179,7 +179,7 @@
   </style>
 </head>
 <body>
-  <h1>auto-dev <span>Claude Code SDK 에이전트</span></h1>
+  <h1>auto-dev <span>개발 자동화 에이전트</span></h1>
 
   <!-- 통계 카드 -->
   <div class="grid">
@@ -242,10 +242,6 @@
       </select>
     </div>
 
-    <div id="spec-steps-row" class="form-row" style="display:none">
-      <label>단계 (선택)</label>
-      <input type="text" id="spec-steps" placeholder="scaffold,test,review (비워두면 전체)" />
-    </div>
 
     <div class="form-row">
       <label>프로젝트명</label>
@@ -402,11 +398,6 @@
       btn.textContent = el.__mode === 'raw' ? '렌더' : '원본';
     }
 
-    // agent 선택 시 spec-steps 표시
-    document.getElementById('agent-select').addEventListener('change', function() {
-      document.getElementById('spec-steps-row').style.display = this.value === 'spec' ? 'flex' : 'none';
-    });
-
     async function loadConfig() {
       const cfg = await fetch('/api/config').then(r => r.json());
       availableModels = cfg.availableModels ?? [];
@@ -541,11 +532,6 @@
       } else {
         if (!selectedFile) { alert('파일을 선택하세요.'); return; }
         formData.append('file', selectedFile);
-      }
-
-      if (agent === 'spec') {
-        const steps = document.getElementById('spec-steps').value.trim();
-        if (steps) formData.append('steps', steps);
       }
 
       const project = document.getElementById('project-input').value.trim();
