@@ -100,6 +100,8 @@ clarifier → planner → scaffold → test → review → cicd
 - 실행 중인 작업은 SSE로 라이브 갱신, 행 클릭 시 상세 패널 펼치기
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
+- 이력 표에는 최상위 요청만 표시(워크플로우 하위 단계는 숨기고 상세 패널에서 확인 가능), 완료된 spec run에는 행에서 바로 **이어가기** 버튼 제공
+- 완료된 spec run은 자유 텍스트 후속 지시로 이어갈 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행
 - 작업 제출: 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
@@ -121,6 +123,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 (스펙 재입력 불필요) |
+| `POST` | `/api/runs/:id/continue` | `{ instruction }` 로 완료된 spec run 이어가기 (스펙 재입력 불필요) |
 | `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
 | `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |
