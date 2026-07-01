@@ -34,11 +34,16 @@ export function reduceMessage(
     return null;
   }
 
-  if (msg.type === 'tool_result') {
-    const content = Array.isArray(msg.content)
-      ? msg.content.map((c: any) => c.text ?? '').join('')
-      : String(msg.content ?? '');
-    if (content.trim()) onEvent({ kind: 'tool_result', content });
+  // SDK는 도구 결과를 type:'user' 메시지의 tool_result 블록으로 전달한다
+  // (top-level type:'tool_result' 메시지는 존재하지 않는다).
+  if (msg.type === 'user') {
+    for (const block of (msg.message?.content ?? [])) {
+      if (block?.type !== 'tool_result') continue;
+      const content = Array.isArray(block.content)
+        ? block.content.map((c: any) => c.text ?? '').join('')
+        : String(block.content ?? '');
+      if (content.trim()) onEvent({ kind: 'tool_result', content });
+    }
     return null;
   }
 

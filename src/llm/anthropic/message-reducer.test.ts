@@ -34,11 +34,29 @@ describe('reduceMessage', () => {
     expect(events).toEqual([]);
   });
 
-  it('emits tool_result content', () => {
+  it('emits tool_result content from a user message (real SDK shape)', () => {
     const { events } = collect([
-      { type: 'tool_result', content: [{ text: 'file body' }] },
+      { type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'file body' }] },
+      ] } },
     ]);
     expect(events).toEqual([{ kind: 'tool_result', content: 'file body' }]);
+  });
+
+  it('emits tool_result when content is a plain string', () => {
+    const { events } = collect([
+      { type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 't1', content: 'plain body' },
+      ] } },
+    ]);
+    expect(events).toEqual([{ kind: 'tool_result', content: 'plain body' }]);
+  });
+
+  it('ignores user messages that carry no tool_result blocks', () => {
+    const { events } = collect([
+      { type: 'user', message: { content: [{ type: 'text', text: 'hi' }] } },
+    ]);
+    expect(events).toEqual([]);
   });
 
   it('maps a rejected rate_limit_event with resetsAt', () => {
