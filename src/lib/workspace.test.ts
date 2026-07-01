@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 
 describe('listProjects', () => {
@@ -43,5 +43,32 @@ describe('listProjects', () => {
   it('returns [] when the root does not exist', async () => {
     const listProjects = await load(join(root, 'does-not-exist'));
     expect(listProjects()).toEqual([]);
+  });
+});
+
+describe('resolveProjectDir', () => {
+  const orig = process.env.AUTO_DEV_WORKSPACE_ROOT;
+
+  afterEach(() => {
+    if (orig === undefined) delete process.env.AUTO_DEV_WORKSPACE_ROOT;
+    else process.env.AUTO_DEV_WORKSPACE_ROOT = orig;
+    vi.resetModules();
+  });
+
+  async function load(r: string) {
+    process.env.AUTO_DEV_WORKSPACE_ROOT = r;
+    vi.resetModules();
+    return (await import('./workspace.js')).resolveProjectDir;
+  }
+
+  it('expands a leading ~ in the workspace root to the home directory', async () => {
+    const resolveProjectDir = await load('~/workspace');
+    expect(resolveProjectDir()).toBe(join(homedir(), 'workspace'));
+    expect(resolveProjectDir('docs')).toBe(join(homedir(), 'workspace', 'docs'));
+  });
+
+  it('treats a bare ~ as the home directory', async () => {
+    const resolveProjectDir = await load('~');
+    expect(resolveProjectDir()).toBe(homedir());
   });
 });

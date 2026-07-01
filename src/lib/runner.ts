@@ -7,6 +7,7 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { modelConfig } from './model-config.js';
 import { log } from './logger.js';
 import { emitRunEvent, closeEmitter } from './run-events.js';
+import { expandHome } from './workspace.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 import type { AgentRunOutcome } from '../llm/types.js';
@@ -31,7 +32,7 @@ export interface RunResult {
   status: 'DONE' | 'FAILED' | 'BLOCKED';
 }
 
-const DEFAULT_WORKSPACE = process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace';
+const DEFAULT_WORKSPACE = expandHome(process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace');
 
 async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   const start = Date.now();

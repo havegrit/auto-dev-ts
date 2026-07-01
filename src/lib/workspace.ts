@@ -1,15 +1,31 @@
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
+import { homedir } from 'os';
 
 /** 모든 작업 디렉토리의 기준이 되는 워크스페이스 루트 (환경변수로 제어). */
 export const WORKSPACE_ROOT = process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace';
+
+/**
+ * 선행 `~`(또는 `~/`)를 사용자 홈 디렉토리로 확장한다.
+ * path.resolve 는 `~`를 확장하지 않아 cwd 하위로 잘못 결합되므로 먼저 처리한다.
+ */
+export function expandHome(p: string): string {
+  if (p === '~') return homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2));
+  return p;
+}
+
+/** 환경변수에서 읽은 워크스페이스 루트의 절대경로 (~ 확장 적용). */
+function rootAbsPath(): string {
+  return resolve(expandHome(WORKSPACE_ROOT));
+}
 
 /**
  * 프로젝트명을 워크스페이스 루트 하위의 절대경로로 변환한다.
  * 비어 있으면 루트 자체를 반환한다. 경로 탈출(..)은 거부한다.
  */
 export function resolveProjectDir(project?: string): string {
-  const rootAbs = resolve(WORKSPACE_ROOT);
+  const rootAbs = rootAbsPath();
   const name = (project ?? '').trim();
   if (!name) return rootAbs;
 
@@ -35,7 +51,7 @@ const JUNK_NAMES = new Set([
  * 숨김(.)·언더스코어(_) 접두 항목과 알려진 정크 디렉토리는 제외한다.
  */
 export function listProjects(): string[] {
-  const rootAbs = resolve(WORKSPACE_ROOT);
+  const rootAbs = rootAbsPath();
   if (!existsSync(rootAbs)) return [];
   try {
     const entries = readdirSync(rootAbs, { withFileTypes: true })
