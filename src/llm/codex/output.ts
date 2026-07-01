@@ -10,9 +10,12 @@ interface CodexJsonResult {
 
 export interface NormalizeInput {
   exitCode: number;
+  /** 에이전트의 최종 응답 텍스트(JSONL 모드에서는 마지막 agent_message). JSON 계약 추출 대상. */
   stdout: string;
   stderr: string;
   gitChangedFiles: string[];
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 function stripFence(text: string): string {
@@ -51,6 +54,37 @@ function authFailure(stderr: string, stdout: string): boolean {
   return /auth|login|logged in|sign in|인증|로그인/i.test(`${stderr}\n${stdout}`);
 }
 
+interface CodexTests {
+  command?: string;
+  result?: string;
+}
+
+/**
+ * 계약 JSON을 대시보드 마크다운 렌더러가 보기 좋게 그릴 수 있는 섹션 형태로 포맷한다.
+ * (raw JSON 덩어리를 그대로 노출하지 않기 위함 — UX 개선)
+ */
+export function formatCodexMarkdown(parsed: CodexJsonResult, changedFiles: string[]): string {
+  const parts: string[] = [];
+  const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+  if (summary) parts.push(summary);
+
+  if (changedFiles.length > 0) {
+    parts.push(['**변경된 파일**', ...changedFiles.map((f) => `- \`${f}\``)].join('\n'));
+  }
+
+  const tests = (parsed.tests ?? undefined) as CodexTests | undefined;
+  if (tests && (tests.command || tests.result)) {
+    const cmd = tests.command ? `\`${tests.command}\`` : '';
+    const res = tests.result ? `${cmd ? ' → ' : ''}${tests.result}` : '';
+    parts.push(`**테스트**: ${cmd}${res}`.trim());
+  }
+
+  const notes = arrayOfStrings(parsed.notes);
+  if (notes.length > 0) parts.push(['**참고**', ...notes.map((n) => `- ${n}`)].join('\n'));
+
+  return parts.join('\n\n');
+}
+
 export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
   const parsed = extractJsonObject(input.stdout);
   const jsonChangedFiles = arrayOfStrings(parsed?.changedFiles);
@@ -58,15 +92,15 @@ export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
   const isSuccess = input.exitCode === 0 && parsed?.status !== 'failed' && parsed?.status !== 'error';
   const combinedOutput = outputWithStderr(input.stdout, input.stderr);
   const errorText = input.stderr.trim() || input.stdout.trim() || combinedOutput;
-  const output = parsed?.summary && isSuccess ? parsed.summary : combinedOutput;
+  const output = parsed && isSuccess ? formatCodexMarkdown(parsed, changedFiles) : combinedOutput;
 
   return {
     status: isSuccess ? 'success' : 'error',
     output,
     rawOutput: combinedOutput,
     changedFiles,
-    tokensIn: 0,
-    tokensOut: 0,
+    tokensIn: input.tokensIn ?? 0,
+    tokensOut: input.tokensOut ?? 0,
     numTurns: 1,
     stopReason: `codex_cli_exit_${input.exitCode}`,
     ...(isSuccess ? {} : {

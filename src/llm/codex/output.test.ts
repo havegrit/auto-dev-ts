@@ -35,6 +35,27 @@ describe('codex output parsing', () => {
     });
   });
 
+  it('renders a successful JSON contract as readable markdown sections (not raw JSON)', () => {
+    const result = normalizeCodexResult({
+      exitCode: 0,
+      stdout: '{"status":"success","summary":"기능 추가 완료","changedFiles":["src/a.ts"],"tests":{"command":"npm test","result":"passed"},"notes":["후속 리팩터 필요"]}',
+      stderr: '',
+      gitChangedFiles: ['src/b.ts'],
+      tokensIn: 1200,
+      tokensOut: 340,
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.output).not.toContain('"status"');
+    expect(result.output).toContain('기능 추가 완료');
+    expect(result.output).toContain('**변경된 파일**');
+    expect(result.output).toContain('`src/a.ts`');
+    expect(result.output).toContain('`src/b.ts`');
+    expect(result.output).toContain('**테스트**: `npm test` → passed');
+    expect(result.output).toContain('후속 리팩터 필요');
+    expect(result).toMatchObject({ tokensIn: 1200, tokensOut: 340 });
+  });
+
   it('marks non-zero exits as errors and preserves stderr', () => {
     const result = normalizeCodexResult({
       exitCode: 2,

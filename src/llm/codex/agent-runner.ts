@@ -2,10 +2,11 @@ import type { AgentRunner, AgentRunRequest, AgentEvent, AgentRunOutcome } from '
 import { collectGitChangedFiles } from './git.js';
 import { shouldPassModelToCodex } from './model.js';
 import { appendCodexJsonContract, normalizeCodexResult } from './output.js';
-import { execCommand, type ExecCommand } from './process.js';
+import { execStream, type ExecStream } from './process.js';
+import { newCodexStreamState, foldCodexLine, resultText } from './stream.js';
 
 interface CodexAgentRunnerDeps {
-  exec?: ExecCommand;
+  exec?: ExecStream;
   collectChangedFiles?: (repoPath: string) => Promise<string[]>;
 }
 
@@ -16,32 +17,40 @@ function timeoutMs(): number {
 }
 
 function codexArgs(req: AgentRunRequest): string[] {
-  const args = ['exec', '--cd', req.cwd];
+  // --json: 이벤트를 JSONL 로 흘려 실행 중 진행 상황을 라이브로 받는다.
+  const args = ['exec', '--json', '--cd', req.cwd];
   if (shouldPassModelToCodex(req.model)) args.push('--model', req.model);
   args.push(appendCodexJsonContract(req.prompt));
   return args;
 }
 
 export function createCodexAgentRunner(deps: CodexAgentRunnerDeps = {}): AgentRunner {
-  const exec = deps.exec ?? execCommand;
-  const collectChangedFiles = deps.collectChangedFiles ?? ((repoPath) => collectGitChangedFiles(repoPath, exec));
+  const exec = deps.exec ?? execStream;
+  // git 조회는 버퍼링 실행기(execCommand)를 그대로 쓴다(스트리밍 불필요).
+  const collectChangedFiles = deps.collectChangedFiles ?? ((repoPath) => collectGitChangedFiles(repoPath));
 
   return {
     async run(req: AgentRunRequest, onEvent: (e: AgentEvent) => void): Promise<AgentRunOutcome> {
-      const result = await exec(process.env.AUTO_DEV_CODEX_COMMAND ?? 'codex', codexArgs(req), {
-        cwd: req.cwd,
-        timeoutMs: timeoutMs(),
-      });
+      const state = newCodexStreamState();
+      const result = await exec(
+        process.env.AUTO_DEV_CODEX_COMMAND ?? 'codex',
+        codexArgs(req),
+        { cwd: req.cwd, timeoutMs: timeoutMs() },
+        (line) => {
+          for (const event of foldCodexLine(line, state)) onEvent(event);
+        },
+      );
+
       const gitChangedFiles = await collectChangedFiles(req.cwd).catch(() => []);
-      const outcome = normalizeCodexResult({
+      return normalizeCodexResult({
         exitCode: result.exitCode,
-        stdout: result.stdout,
+        // JSON 계약 추출 대상은 에이전트의 마지막 메시지. 없으면 raw stdout 로 폴백.
+        stdout: resultText(state) || result.stdout,
         stderr: result.stderr,
         gitChangedFiles,
+        tokensIn: state.tokensIn,
+        tokensOut: state.tokensOut,
       });
-
-      if (outcome.output) onEvent({ kind: 'text', text: outcome.output });
-      return outcome;
     },
   };
 }

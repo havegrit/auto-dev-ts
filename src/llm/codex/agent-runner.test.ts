@@ -2,18 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { createCodexAgentRunner } from './agent-runner.js';
 import type { AgentEvent } from '../types.js';
 
+/** JSONL 라인들을 onStdoutLine 으로 흘려보내는 가짜 스트리밍 실행기. */
+function fakeExec(lines: string[], result: { exitCode?: number; stderr?: string } = {}) {
+  const calls: any[] = [];
+  const exec = async (cmd: string, args: string[], options: any, onLine: (l: string) => void) => {
+    calls.push({ cmd, args, options });
+    for (const line of lines) onLine(line);
+    const stdout = lines.join('\n') + '\n';
+    return { exitCode: result.exitCode ?? 0, stdout, stderr: result.stderr ?? '' };
+  };
+  return { exec, calls };
+}
+
 describe('codexAgentRunner', () => {
-  it('runs codex exec in the requested repository and merges git changed files', async () => {
-    const calls: any[] = [];
+  it('streams events live and merges git changed files', async () => {
+    const { exec, calls } = fakeExec([
+      '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"작업 시작"}}',
+      '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"npm test","aggregated_output":"ok","exit_code":0}}',
+      '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"{\\"status\\":\\"success\\",\\"summary\\":\\"done\\",\\"changedFiles\\":[\\"src/model.ts\\"],\\"notes\\":[]}"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":120}}',
+    ]);
     const runner = createCodexAgentRunner({
-      exec: async (cmd, args, options) => {
-        calls.push({ cmd, args, options });
-        return {
-          exitCode: 0,
-          stdout: '{"status":"success","summary":"done","changedFiles":["src/model.ts"],"notes":[]}',
-          stderr: '',
-        };
-      },
+      exec,
       collectChangedFiles: async () => ['src/model.ts', 'src/actual.ts'],
     });
     const events: AgentEvent[] = [];
@@ -25,27 +35,29 @@ describe('codexAgentRunner', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].cmd).toBe('codex');
-    expect(calls[0].args.slice(0, 2)).toEqual(['exec', '--cd']);
-    expect(calls[0].args[2]).toBe('/repo');
+    expect(calls[0].args.slice(0, 4)).toEqual(['exec', '--json', '--cd', '/repo']);
     expect(calls[0].args).toContain('--model');
-    expect(calls[0].options.cwd).toBe('/repo');
     expect(calls[0].args.at(-1)).toContain('implement feature');
     expect(calls[0].args.at(-1)).toContain('"changedFiles"');
+
+    // 실행 도중 단계별로 라이브 이벤트가 흘러나온다
+    expect(events).toContainEqual({ kind: 'text', text: '작업 시작' });
+    expect(events).toContainEqual({ kind: 'tool_call', name: 'shell', input: 'npm test' });
+    expect(events).toContainEqual({ kind: 'text', text: 'done' }); // 계약 JSON 대신 summary
+
     expect(outcome).toMatchObject({
       status: 'success',
-      output: 'done',
       changedFiles: ['src/model.ts', 'src/actual.ts'],
-      tokensIn: 0,
-      tokensOut: 0,
+      tokensIn: 900,
+      tokensOut: 120,
     });
-    expect(events).toContainEqual({ kind: 'text', text: 'done' });
+    expect(outcome.output).toContain('done');
+    expect(outcome.output).not.toContain('"status"');
   });
 
   it('maps codex process failures to an error outcome instead of throwing', async () => {
-    const runner = createCodexAgentRunner({
-      exec: async () => ({ exitCode: 124, stdout: '', stderr: 'timed out' }),
-      collectChangedFiles: async () => [],
-    });
+    const { exec } = fakeExec([], { exitCode: 124, stderr: 'timed out' });
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
 
     const outcome = await runner.run(
       { prompt: 'p', cwd: '/repo', tools: [], model: 'gpt-5' },
@@ -60,21 +72,15 @@ describe('codexAgentRunner', () => {
   });
 
   it('does not pass Anthropic fallback model ids to Codex CLI', async () => {
-    let args: string[] = [];
-    const runner = createCodexAgentRunner({
-      exec: async (_cmd, receivedArgs) => {
-        args = receivedArgs;
-        return { exitCode: 0, stdout: 'ok', stderr: '' };
-      },
-      collectChangedFiles: async () => [],
-    });
+    const { exec, calls } = fakeExec(['{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}']);
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
 
     await runner.run(
       { prompt: 'p', cwd: '/repo', tools: [], model: 'claude-opus-4-8' },
       () => {},
     );
 
-    expect(args).not.toContain('--model');
-    expect(args).not.toContain('claude-opus-4-8');
+    expect(calls[0].args).not.toContain('--model');
+    expect(calls[0].args).not.toContain('claude-opus-4-8');
   });
 });
