@@ -12,6 +12,7 @@ export interface SpecSessionOptions {
   steps?: Set<string>;
   iterations?: number;
   triggerSource?: string;
+  triggerDetail?: string;
 }
 
 export interface SpecSessionHandle {
@@ -56,6 +57,28 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
   });
 }
 
+/**
+ * 완료된(또는 실패한) spec run 을 사용자 후속 수정 지시로 이어간다.
+ * 원본 스펙을 다시 입력할 필요 없이, 누적 히스토리 뒤에 새 지시를 한 라운드로 더해
+ * "스펙 + 누적 Q&A + 누적 후속지시" 로 파이프라인을 처음부터 다시 실행한다.
+ */
+export function continueSpecSession(parentRunId: string, instruction: string): SpecSessionHandle {
+  const text = instruction.trim();
+  if (!text) throw new Error('instruction is required');
+
+  const prev = getClarificationState(parentRunId);
+  if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
+
+  const rounds: ClarificationRound[] = [...prev.rounds.map((r) => ({ ...r })), { questions: [], followup: text }];
+  const state: ClarificationState = { ...prev, rounds };
+  return launch(state, {
+    project: prev.project,
+    cwd: prev.cwd,
+    triggerSource: 'dashboard',
+    triggerDetail: `continue:${parentRunId.slice(0, 8)}`,
+  });
+}
+
 /** 멈춘 run 의 아직 답하지 않은 마지막 라운드(=대시보드에 띄울 질문)를 반환한다. */
 export function pendingClarification(runId: string): ClarificationRound | undefined {
   const state = getClarificationState(runId);
@@ -79,7 +102,11 @@ function launch(state: ClarificationState, opts: SpecSessionOptions): SpecSessio
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     triggerSource: opts.triggerSource ?? 'dashboard',
+    triggerDetail: opts.triggerDetail,
   });
+  // 모든 spec run 의 상태를 영속화해 나중에 후속 수정 지시로 이어갈 수 있게 한다.
+  // (게이트에서 멈추면 finalize 가 질문 라운드를 더해 다시 저장한다.)
+  saveClarificationState(runId, state);
 
   const done = finalize(runId, state, opts, input);
   return { runId, done };

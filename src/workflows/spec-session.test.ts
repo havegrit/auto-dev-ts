@@ -31,7 +31,7 @@ vi.mock('fs', () => ({
   mkdirSync: vi.fn(),
 }));
 
-import { startSpecSession, resumeSpecSession, pendingClarification } from './spec-session.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification } from './spec-session.js';
 
 const Q1 = { id: 'q1', category: 'scope', text: '범위는?', recommendation: '핵심 CRUD' };
 
@@ -105,7 +105,55 @@ describe('resumeSpecSession (round N)', () => {
     expect(plan!.content).toContain('1. scaffold | build');
 
     expect(updates.find(u => u.id === runId && u.status === 'DONE')).toBeDefined();
-    expect(saveClarificationState).not.toHaveBeenCalled();
+    // launch 가 항상 상태를 영속화하므로 재개한 run 도 이어갈 수 있다.
+    expect(saveClarificationState).toHaveBeenCalled();
+    expect(stateStore.get(runId).rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
+  });
+});
+
+describe('continueSpecSession', () => {
+  it('appends a follow-up round, re-runs the full spec, and stays continuable', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD' } }],
+    });
+
+    specResult = {
+      workflowRunId: 'z',
+      steps: { scaffold: { runId: 's', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { runId, done } = continueSpecSession('parent', '삭제는 soft delete 로');
+    await done;
+
+    // 원본 spec + 이전 Q&A + 새 후속지시가 합쳐져 워크플로우에 전달된다
+    expect(specInputs[0]).toContain('사용자 관리 기능');
+    expect(specInputs[0]).toContain('답: CRUD');
+    expect(specInputs[0]).toContain('삭제는 soft delete 로');
+
+    // 새 run 은 부모와 다른 id 이고, 추적용 triggerDetail 을 기록한다
+    expect(runId).not.toBe('parent');
+    expect(inserted.find(r => r.id === runId).triggerDetail).toBe('continue:parent');
+
+    // 새 run 도 상태가 저장돼 다시 이어갈 수 있다 (후속지시 라운드 포함)
+    expect(stateStore.get(runId).rounds.at(-1).followup).toBe('삭제는 soft delete 로');
+
+    const plan = writes.find(w => w.path === '/tmp/proj/docs/plan/my-api.md');
+    expect(plan!.content).toContain('삭제는 soft delete 로');
+  });
+
+  it('throws when the parent run has no stored state', () => {
+    expect(() => continueSpecSession('missing', '뭔가')).toThrow(/No clarification state/);
+  });
+
+  it('rejects a blank instruction', () => {
+    expect(() => continueSpecSession('parent', '   ')).toThrow(/instruction is required/);
   });
 });
 

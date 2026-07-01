@@ -6,6 +6,8 @@ export interface ClarificationRound {
   questions: ClarificationQuestion[];
   /** 질문 id → 사용자 답변. 아직 답하지 않은 라운드는 비어 있다. */
   answers?: Record<string, string>;
+  /** 사용자가 직접 입력한 후속 수정 지시(질문 없이 스레드를 이어갈 때). */
+  followup?: string;
 }
 
 /** 문자열을 파일명에 안전한 slug 로 변환한다 (영문 소문자화, 공백→하이픈, 한글 등 유지). */
@@ -55,17 +57,32 @@ function answeredPairs(rounds: ClarificationRound[]): Array<{ q: ClarificationQu
   return pairs;
 }
 
+/** 답변이 채워진 라운드의 후속 수정 지시만 시간순으로 반환한다. */
+function followups(rounds: ClarificationRound[]): string[] {
+  return rounds
+    .map((r) => (r.followup ?? '').trim())
+    .filter((f) => f.length > 0);
+}
+
 /**
- * 원본 스펙 뒤에 지금까지의 의사결정(Q&A) 블록을 덧붙여 clarifier 재입력 문자열을 만든다.
- * 답변된 라운드가 없으면 스펙을 그대로 반환한다.
+ * 원본 스펙 뒤에 지금까지의 의사결정(Q&A)과 사용자 후속 수정 지시를 덧붙여
+ * clarifier 재입력 문자열을 만든다. 덧붙일 내용이 없으면 스펙을 그대로 반환한다.
  * clarifier.system.md 가 기대하는 "이전 Q&A:" 포맷을 따른다.
  */
 export function composeClarifierInput(spec: string, rounds: ClarificationRound[]): string {
   const pairs = answeredPairs(rounds);
-  if (pairs.length === 0) return spec;
+  const follows = followups(rounds);
+  if (pairs.length === 0 && follows.length === 0) return spec;
 
-  const lines = pairs.map(({ q, answer }) => `- ${q.id} (${q.category}): ${q.text} → 답: ${answer}`);
-  return `${spec}\n\n## 이전 Q&A (사용자 의사결정)\n${lines.join('\n')}`;
+  const sections = [spec];
+  if (pairs.length > 0) {
+    const lines = pairs.map(({ q, answer }) => `- ${q.id} (${q.category}): ${q.text} → 답: ${answer}`);
+    sections.push(`## 이전 Q&A (사용자 의사결정)\n${lines.join('\n')}`);
+  }
+  if (follows.length > 0) {
+    sections.push(`## 추가 수정 지시 (사용자 후속)\n${follows.map((f) => `- ${f}`).join('\n')}`);
+  }
+  return sections.join('\n\n');
 }
 
 /**
@@ -87,13 +104,15 @@ export function renderPlanDoc(opts: {
     `## 원본 스펙\n\n${opts.spec.trim()}`,
   ];
 
-  const decided = opts.rounds.filter(r => answeredPairs([r]).length > 0);
+  const decided = opts.rounds.filter(r => answeredPairs([r]).length > 0 || (r.followup ?? '').trim());
   if (decided.length > 0) {
     const rounds = decided.map((round, i) => {
-      const entries = answeredPairs([round])
-        .map(({ q, answer }) => `- **${q.id} (${q.category})** ${q.text}\n  - 답변: ${answer}`)
-        .join('\n');
-      return `### Round ${i + 1}\n\n${entries}`;
+      const body = (round.followup ?? '').trim()
+        ? `- 후속 수정 지시: ${(round.followup ?? '').trim()}`
+        : answeredPairs([round])
+            .map(({ q, answer }) => `- **${q.id} (${q.category})** ${q.text}\n  - 답변: ${answer}`)
+            .join('\n');
+      return `### Round ${i + 1}\n\n${body}`;
     });
     sections.push(`## 의사결정 히스토리\n\n${rounds.join('\n\n')}`);
   }

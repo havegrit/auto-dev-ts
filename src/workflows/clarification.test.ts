@@ -42,6 +42,31 @@ describe('composeClarifierInput', () => {
     expect(out).toContain('q1 (scope): 어떤 범위까지? → 답: CRUD만');
     expect(out).not.toContain('q2');
   });
+
+  it('appends accumulated follow-up instructions in order', () => {
+    const out = composeClarifierInput(spec, [
+      { questions: [], followup: '검색에 페이지네이션 추가해줘' },
+      { questions: [], followup: '삭제는 soft delete 로' },
+    ]);
+    expect(out.startsWith(spec)).toBe(true);
+    expect(out).toContain('추가 수정 지시');
+    const first = out.indexOf('검색에 페이지네이션 추가해줘');
+    const second = out.indexOf('삭제는 soft delete 로');
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+  });
+
+  it('combines Q&A and follow-up blocks together', () => {
+    const out = composeClarifierInput(spec, [round, { questions: [], followup: '에러 처리 보강' }]);
+    expect(out).toContain('이전 Q&A');
+    expect(out).toContain('q1 (scope): 어떤 범위까지? → 답: CRUD + 검색');
+    expect(out).toContain('추가 수정 지시');
+    expect(out).toContain('에러 처리 보강');
+  });
+
+  it('ignores blank follow-up instructions', () => {
+    expect(composeClarifierInput(spec, [{ questions: [], followup: '   ' }])).toBe(spec);
+  });
 });
 
 describe('renderPlanDoc', () => {
@@ -69,5 +94,13 @@ describe('renderPlanDoc', () => {
   it('includes the planner output as the plan section when provided', () => {
     const doc = renderPlanDoc({ ...base, planOutput: 'PLAN:\n1. scaffold | build\nEND.' });
     expect(doc).toContain('1. scaffold | build');
+  });
+
+  it('lists follow-up instructions in the decision history', () => {
+    const doc = renderPlanDoc({
+      ...base,
+      rounds: [...base.rounds, { questions: [], followup: '삭제는 soft delete 로' }],
+    });
+    expect(doc).toContain('삭제는 soft delete 로');
   });
 });

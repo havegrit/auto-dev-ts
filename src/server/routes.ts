@@ -6,7 +6,7 @@ import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec } from '../workflows/spec.js';
-import { startSpecSession, resumeSpecSession, pendingClarification } from '../workflows/spec-session.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification } from '../workflows/spec-session.js';
 import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
@@ -201,6 +201,19 @@ export function createRoutes(): Hono {
     if (Object.keys(answers).length === 0) return c.json({ error: 'answers is required' }, 400);
     try {
       const { runId } = resumeSpecSession(c.req.param('id'), answers);
+      return c.json({ runId, type: 'workflow' });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // 완료된 spec run 을 사용자 후속 수정 지시로 이어 실행한다 (스펙 재입력 없이 새 run 생성).
+  app.post('/api/runs/:id/continue', async (c) => {
+    const body = await c.req.json<{ instruction?: string }>();
+    const instruction = (body.instruction ?? '').trim();
+    if (!instruction) return c.json({ error: 'instruction is required' }, 400);
+    try {
+      const { runId } = continueSpecSession(c.req.param('id'), instruction);
       return c.json({ runId, type: 'workflow' });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
