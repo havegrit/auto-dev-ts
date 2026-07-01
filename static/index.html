@@ -242,7 +242,6 @@
       </select>
     </div>
 
-
     <div class="form-row">
       <label>프로젝트명</label>
       <div class="combobox" id="project-combobox">
@@ -297,7 +296,7 @@
     <table>
       <thead>
         <tr>
-          <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th>
+          <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th><th>동작</th>
         </tr>
       </thead>
       <tbody id="runs"></tbody>
@@ -311,6 +310,12 @@
       <button class="refresh" onclick="closeRunDetail()">닫기</button>
     </div>
     <div id="run-detail-meta" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.78rem;color:#8b949e"></div>
+
+    <!-- 워크플로우 단계 내역 (자식 run) -->
+    <div id="run-detail-subruns-section" style="display:none;margin-bottom:0.75rem">
+      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem">단계 내역</div>
+      <div class="sub-runs" id="run-detail-subruns"></div>
+    </div>
 
     <!-- 실시간 로그 (RUNNING 상태일 때) -->
     <div id="live-log-section" style="display:none;margin-bottom:0.75rem">
@@ -328,6 +333,17 @@
       <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
         <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">이 답변으로 계속</button>
         <span class="save-status" id="clarify-status"></span>
+      </div>
+    </div>
+
+    <!-- 이어서 수정 요청 (완료된 spec run) -->
+    <div id="continue-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;padding:0.85rem;background:#161b22">
+      <div style="font-size:0.8rem;color:#58a6ff;margin-bottom:0.6rem">↻ 이어서 수정 요청 — 스펙 재입력 없이 추가 지시로 이 워크플로우를 다시 실행합니다</div>
+      <textarea id="continue-input" rows="3" placeholder="예: 삭제는 soft delete 로 바꾸고 검색에 페이지네이션 추가해줘"
+        style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.5rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical"></textarea>
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
+        <button class="save-btn" id="continue-submit" onclick="submitContinue()">이어서 재실행</button>
+        <span class="save-status" id="continue-status"></span>
       </div>
     </div>
 
@@ -638,12 +654,20 @@
       agentsEl.innerHTML = (statusRes.agents ?? []).map(a => `<span class="badge">${a}</span>`).join('');
 
       const tbody = document.getElementById('runs');
-      tbody.innerHTML = runsRes.map(r => {
+      // 워크플로우 하위 단계 run(자식)은 숨겨 최상위 요청만 보여준다. 단계 내역은 상세 패널에서 확인.
+      const topLevel = runsRes.filter(r => !r.workflow_run_id);
+      tbody.innerHTML = topLevel.map(r => {
         const errorBadge = r.error_type
           ? `<span style="font-size:0.7rem;color:#f85149;font-family:monospace">${r.error_type}</span> `
           : '';
         const preview = (r.output ?? '').replace(/</g,'&lt;').slice(0, 120);
         const isSelected = r.id === selectedRunId;
+        // 완료된 spec 워크플로우 중 상태가 저장된 것만 표에서 바로 이어갈 수 있다.
+        const continuable = r.agent_name === 'spec' && (r.status === 'DONE' || r.status === 'FAILED') && !!r.clarification_state;
+        // 대기 중인 clarifier 질문이 있으면 '답변하기', 아니면 '이어가기'로 라벨을 구분한다.
+        const action = continuable
+          ? `<button class="refresh" onclick="continueFromRow(event, '${r.id}')">${hasPendingQuestions(r.clarification_state) ? '답변하기' : '이어가기'}</button>`
+          : '';
         return `<tr class="run-row${isSelected ? ' selected' : ''}" onclick="showRunDetail('${r.id}')">
           <td><span class="agent-name">${r.agent_name}</span></td>
           <td><span class="status ${r.status}">${r.status}</span></td>
@@ -651,8 +675,37 @@
           <td><span class="duration">${r.num_turns ?? '—'}</span></td>
           <td>${errorBadge}<span class="output-preview">${preview}</span></td>
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
+          <td>${action}</td>
         </tr>`;
       }).join('');
+    }
+
+    // clarification_state(JSON 문자열)를 파싱해 아직 답하지 않은 질문 라운드가 남았는지 본다.
+    // 백엔드 pendingClarification/roundIsAnswered 와 동일한 판정.
+    function hasPendingQuestions(stateJson) {
+      try {
+        const state = typeof stateJson === 'string' ? JSON.parse(stateJson) : stateJson;
+        const last = state?.rounds?.[state.rounds.length - 1];
+        if (!last || !(last.questions?.length > 0)) return false;
+        const answered = Object.values(last.answers ?? {}).some(a => a != null && String(a).trim());
+        return !answered;
+      } catch { return false; }
+    }
+
+    // 이력 표에서 바로 이어가기: 상세를 열고, 대기 질문이 있으면 답변 폼으로,
+    // 없으면 "이어서 수정 요청" 입력란으로 스크롤·포커스한다.
+    async function continueFromRow(event, runId) {
+      event.stopPropagation();
+      if (selectedRunId !== runId) await showRunDetail(runId);
+      const cont = document.getElementById('continue-section');
+      const clarify = document.getElementById('clarify-section');
+      if (cont.style.display !== 'none') {
+        cont.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        document.getElementById('continue-input').focus();
+      } else if (clarify.style.display !== 'none') {
+        clarify.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        clarify.querySelector('[data-qid]')?.focus();
+      }
     }
 
     function appendLiveLog(event) {
@@ -707,6 +760,27 @@
       renderRunDetail(run);
     }
 
+    // 워크플로우(spec) 부모 run 이면 단계 내역(자식 run)을 불러와 클릭 가능한 목록으로 보여준다.
+    async function renderDetailChildren(run) {
+      const section = document.getElementById('run-detail-subruns-section');
+      const el = document.getElementById('run-detail-subruns');
+      section.style.display = 'none';
+      el.innerHTML = '';
+      if (run.workflow_run_id) return; // 자식 run 자체는 내역 표시 안 함
+      let children = [];
+      try {
+        children = await fetch(`/api/runs/${run.id}/children`).then(r => r.json());
+      } catch { return; }
+      if (!Array.isArray(children) || children.length === 0) return;
+      el.innerHTML = children.map(c => `
+        <div class="sub-run-row run-row" style="cursor:pointer" onclick="showRunDetail('${c.id}')">
+          <span class="agent-name">${c.agent_name}</span>
+          <span class="status ${c.status}">${c.status}</span>
+          <span class="duration">${formatDuration(c.duration_ms)}</span>
+        </div>`).join('');
+      section.style.display = '';
+    }
+
     function renderRunDetail(run) {
       const chips = [
         `<span class="detail-chip">${run.agent_name}</span>`,
@@ -720,6 +794,7 @@
       ].filter(Boolean).join(' ');
 
       document.getElementById('run-detail-meta').innerHTML = chips;
+      renderDetailChildren(run);
       if (run.output && run.output.trim()) {
         setOutput('run-detail-output', 'run-detail-output-toggle', run.output);
       } else {
@@ -734,18 +809,29 @@
       renderClarification(run);
     }
 
-    // clarifier 가 멈춘 spec run 이면 질문 답변 폼을 띄운다.
+    // spec run 이면: 대기 중 질문이 있으면 답변 폼을, 없으면 "이어서 수정 요청" 폼을 띄운다.
     async function renderClarification(run) {
       const section = document.getElementById('clarify-section');
+      const cont = document.getElementById('continue-section');
       section.style.display = 'none';
+      cont.style.display = 'none';
       if (run.agent_name !== 'spec' || run.status === 'RUNNING') return;
 
       let questions = [];
       try {
         const res = await fetch(`/api/runs/${run.id}/clarification`).then(r => r.json());
         questions = res.questions ?? [];
-      } catch { return; }
-      if (questions.length === 0) return;
+      } catch { /* 무시하고 이어가기 폼으로 폴백 */ }
+
+      if (questions.length === 0) {
+        // 대기 질문이 없고 상태가 저장돼 있으면 후속 수정 지시로 이어갈 수 있게 한다.
+        if (!run.clarification_state) return;
+        cont.dataset.runId = run.id;
+        document.getElementById('continue-input').value = '';
+        document.getElementById('continue-status').textContent = '';
+        cont.style.display = '';
+        return;
+      }
 
       section.dataset.runId = run.id;
       document.getElementById('clarify-questions').innerHTML = questions.map(q => `
@@ -786,6 +872,31 @@
         showRunDetail(data.runId);
       } finally {
         document.getElementById('clarify-submit').disabled = false;
+      }
+    }
+
+    async function submitContinue() {
+      const section = document.getElementById('continue-section');
+      const runId = section.dataset.runId;
+      const instruction = document.getElementById('continue-input').value.trim();
+      const statusEl = document.getElementById('continue-status');
+      if (!instruction) { statusEl.textContent = '수정 지시를 입력하세요'; return; }
+
+      statusEl.textContent = '진행 중...';
+      document.getElementById('continue-submit').disabled = true;
+      try {
+        const res = await fetch(`/api/runs/${runId}/continue`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instruction }),
+        });
+        const data = await res.json();
+        if (!res.ok) { statusEl.textContent = data.error || '이어갈 수 없는 실행입니다'; return; }
+        section.style.display = 'none';
+        loadStats();
+        showRunDetail(data.runId);
+      } finally {
+        document.getElementById('continue-submit').disabled = false;
       }
     }
 
