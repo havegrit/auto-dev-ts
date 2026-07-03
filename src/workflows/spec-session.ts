@@ -39,15 +39,18 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
  * 멈춰 있던 세션을 사용자 답변으로 재개한다. 원본 스펙을 다시 입력할 필요 없이,
  * 마지막(미답변) 라운드에 답을 채워 "스펙 + 누적 Q&A" 로 새 워크플로우를 시작한다.
  */
-export function resumeSpecSession(parentRunId: string, answers: Record<string, string>): SpecSessionHandle {
+export function resumeSpecSession(parentRunId: string, answers: Record<string, string>, followup?: string): SpecSessionHandle {
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
   const rounds = prev.rounds.map((r) => ({ ...r }));
   const last = rounds[rounds.length - 1];
+  const extra = (followup ?? '').trim();
   if (last && !roundIsAnswered(last)) {
     last.answers = { ...(last.answers ?? {}), ...answers };
   }
+  // 질문 답변 외에 사용자가 덧붙인 추가 요청을 같은 라운드에 실어 보낸다.
+  if (last && extra) last.followup = extra;
 
   const state: ClarificationState = { ...prev, rounds };
   return launch(state, {
@@ -85,6 +88,21 @@ export function pendingClarification(runId: string): ClarificationRound | undefi
   const last = state?.rounds[state.rounds.length - 1];
   if (!last || roundIsAnswered(last)) return undefined;
   return last;
+}
+
+/**
+ * run 에 저장된 상태로부터 plan 문서(원본 스펙 + 의사결정 히스토리 + 플랜)를 재생성한다.
+ * 대시보드에서 이어가기 전에 이전 플랜을 보여주는 데 쓴다. 상태가 없으면 undefined.
+ */
+export function specRunPlan(runId: string): string | undefined {
+  const state = getClarificationState(runId);
+  if (!state) return undefined;
+  return renderPlanDoc({
+    project: state.project,
+    spec: state.spec,
+    rounds: state.rounds,
+    planOutput: state.planOutput,
+  });
 }
 
 function roundIsAnswered(round: ClarificationRound): boolean {
@@ -125,9 +143,13 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
 
     writePlanDoc(state, result);
 
+    // 이 run 의 플랜을 상태에 남겨 나중에 이어갈 때 대시보드에서 볼 수 있게 한다.
+    // 이번 run 이 플랜을 산출하지 못했으면(게이트에서 멈춤) 직전 플랜을 유지한다.
+    const planOutput = result.planOutput ?? state.planOutput;
+
     if (result.verdict === 'NEEDS-CLARIFICATION' && result.clarification) {
       const rounds: ClarificationRound[] = [...state.rounds, { questions: result.clarification.questions }];
-      saveClarificationState(runId, { ...state, rounds });
+      saveClarificationState(runId, { ...state, rounds, planOutput });
       updateRun(runId, {
         output: `${stepSummary(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`,
         status: 'DONE',
@@ -136,6 +158,7 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       return;
     }
 
+    saveClarificationState(runId, { ...state, planOutput });
     updateRun(runId, {
       output: stepSummary(result),
       status: result.verdict === 'BLOCKED' || result.verdict === 'FAILED' ? 'FAILED' : 'DONE',

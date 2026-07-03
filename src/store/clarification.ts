@@ -14,6 +14,8 @@ export interface ClarificationState {
   /** 에이전트 실행 cwd (프로젝트 절대경로). */
   cwd: string;
   rounds: ClarificationRound[];
+  /** 이 run 의 planner 산출 플랜. 나중에 대시보드에서 이전 플랜을 보여주는 데 쓴다. */
+  planOutput?: string;
 }
 
 export function saveClarificationState(runId: string, state: ClarificationState): void {

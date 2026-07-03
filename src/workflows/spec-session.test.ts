@@ -31,7 +31,7 @@ vi.mock('fs', () => ({
   mkdirSync: vi.fn(),
 }));
 
-import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification } from './spec-session.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification, specRunPlan } from './spec-session.js';
 
 const Q1 = { id: 'q1', category: 'scope', text: '범위는?', recommendation: '핵심 CRUD' };
 
@@ -111,6 +111,53 @@ describe('resumeSpecSession (round N)', () => {
   });
 });
 
+describe('resumeSpecSession with extra instruction', () => {
+  it('attaches an extra instruction alongside the answers', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 10, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD' }, '검색에 페이지네이션도 넣어줘');
+    await done;
+
+    expect(specInputs[0]).toContain('답: CRUD');
+    expect(specInputs[0]).toContain('검색에 페이지네이션도 넣어줘');
+    const last = stateStore.get(runId).rounds.at(-1);
+    expect(last.answers).toEqual({ q1: 'CRUD' });
+    expect(last.followup).toBe('검색에 페이지네이션도 넣어줘');
+  });
+
+  it('allows resuming with only an extra instruction (no answers)', async () => {
+    stateStore.set('parent', {
+      spec: 's', project: 'p', slug: 'p', planFile: 'docs/plan/p.md', cwd: '/c',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', {}, '방향을 바꿔줘');
+    await done;
+
+    expect(specInputs[0]).toContain('방향을 바꿔줘');
+    expect(stateStore.get(runId).rounds.at(-1).followup).toBe('방향을 바꿔줘');
+  });
+
+  it('ignores a blank extra instruction', async () => {
+    stateStore.set('parent', {
+      spec: 's', project: 'p', slug: 'p', planFile: 'docs/plan/p.md', cwd: '/c',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD' }, '   ');
+    await done;
+
+    expect(stateStore.get(runId).rounds.at(-1).followup).toBeUndefined();
+  });
+});
+
 describe('continueSpecSession', () => {
   it('appends a follow-up round, re-runs the full spec, and stays continuable', async () => {
     stateStore.set('parent', {
@@ -154,6 +201,60 @@ describe('continueSpecSession', () => {
 
   it('rejects a blank instruction', () => {
     expect(() => continueSpecSession('parent', '   ')).toThrow(/instruction is required/);
+  });
+});
+
+describe('plan persistence + retrieval', () => {
+  it('persists planOutput in the run state so the plan can be shown later', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = {
+      workflowRunId: 'y', steps: {}, totalDurationMs: 10, verdict: 'SHIP',
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD + 검색' });
+    await done;
+
+    expect(stateStore.get(runId).planOutput).toBe('PLAN:\n1. scaffold | build\nEND.');
+  });
+
+  it('keeps the previous plan when this run produced none (gate stop)', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD' } }],
+      planOutput: '이전 플랜',
+    });
+    specResult = {
+      workflowRunId: 'g', steps: {}, totalDurationMs: 5, verdict: 'NEEDS-CLARIFICATION',
+      clarification: { summary: '', questions: [Q1] },
+    };
+
+    const { runId, done } = continueSpecSession('parent', '추가 지시');
+    await done;
+
+    expect(stateStore.get(runId).planOutput).toBe('이전 플랜');
+  });
+
+  it('specRunPlan renders the stored plan doc (spec + Q&A + plan)', () => {
+    stateStore.set('run', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD + 검색' } }],
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    });
+    const doc = specRunPlan('run');
+    expect(doc).toContain('사용자 관리 기능');
+    expect(doc).toContain('CRUD + 검색');
+    expect(doc).toContain('1. scaffold | build');
+  });
+
+  it('specRunPlan returns undefined when the run has no stored state', () => {
+    expect(specRunPlan('missing')).toBeUndefined();
   });
 });
 

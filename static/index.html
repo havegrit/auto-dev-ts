@@ -28,7 +28,7 @@
     .agent-name { font-family: monospace; color: #79c0ff; }
     .duration { color: #8b949e; font-size: 0.78rem; }
     .output-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 0.78rem; }
-    .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; }
+    .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; white-space: nowrap; }
     .refresh:hover { border-color: #58a6ff; color: #58a6ff; }
     .section-title { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; }
 
@@ -326,10 +326,24 @@
       <div class="live-log" id="live-log"></div>
     </div>
 
+    <!-- 이전 플랜 (spec run 을 이어갈 때 참고용, 접이식) -->
+    <details id="prev-plan-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;background:#161b22">
+      <summary style="cursor:pointer;padding:0.6rem 0.85rem;font-size:0.8rem;color:#8b949e;user-select:none;display:flex;align-items:center;justify-content:space-between">
+        <span>📄 이전 플랜 보기 — 원본 스펙 · 의사결정 히스토리 · 플랜</span>
+        <button id="prev-plan-toggle" class="refresh" style="display:none" onclick="event.preventDefault();toggleOutput('prev-plan-output', this)">원본</button>
+      </summary>
+      <div class="result-output" id="prev-plan-output" style="max-height:400px;margin:0 0.85rem 0.85rem"></div>
+    </details>
+
     <!-- clarifier 질문 답변 (NEEDS-CLARIFICATION 일 때) -->
     <div id="clarify-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;padding:0.85rem;background:#161b22">
       <div style="font-size:0.8rem;color:#e3b341;margin-bottom:0.6rem">❓ clarifier 질문 — 답변하면 스펙 재입력 없이 이어서 진행됩니다</div>
       <div id="clarify-questions"></div>
+      <div style="margin-top:0.7rem">
+        <label style="display:block;font-size:0.78rem;color:#8b949e;margin-bottom:0.35rem">추가 요청 (선택) — 질문 답변 외에 더 지시할 내용</label>
+        <textarea id="clarify-extra" rows="2" placeholder="예: 검색에 페이지네이션도 추가해줘"
+          style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.5rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical"></textarea>
+      </div>
       <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
         <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">이 답변으로 계속</button>
         <span class="save-status" id="clarify-status"></span>
@@ -809,12 +823,29 @@
       renderClarification(run);
     }
 
+    // spec run 을 이어갈 때, 이 run 의 이전 플랜(스펙+의사결정+플랜)을 접이식으로 보여준다.
+    async function renderPrevPlan(run) {
+      const details = document.getElementById('prev-plan-section');
+      details.style.display = 'none';
+      details.open = false;
+      clearOutput('prev-plan-output', 'prev-plan-toggle');
+      if (run.agent_name !== 'spec' || !run.clarification_state) return;
+      let plan = null;
+      try {
+        plan = (await fetch(`/api/runs/${run.id}/plan`).then(r => r.json())).plan;
+      } catch { return; }
+      if (!plan || !plan.trim()) return;
+      setOutput('prev-plan-output', 'prev-plan-toggle', plan);
+      details.style.display = '';
+    }
+
     // spec run 이면: 대기 중 질문이 있으면 답변 폼을, 없으면 "이어서 수정 요청" 폼을 띄운다.
     async function renderClarification(run) {
       const section = document.getElementById('clarify-section');
       const cont = document.getElementById('continue-section');
       section.style.display = 'none';
       cont.style.display = 'none';
+      renderPrevPlan(run);
       if (run.agent_name !== 'spec' || run.status === 'RUNNING') return;
 
       let questions = [];
@@ -843,6 +874,7 @@
             style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.45rem 0.6rem;font-size:0.82rem" />
         </div>
       `).join('');
+      document.getElementById('clarify-extra').value = '';
       document.getElementById('clarify-status').textContent = '';
       section.style.display = '';
     }
@@ -854,8 +886,9 @@
       section.querySelectorAll('[data-qid]').forEach(inp => {
         if (inp.value.trim()) answers[inp.dataset.qid] = inp.value.trim();
       });
+      const instruction = document.getElementById('clarify-extra').value.trim();
       const statusEl = document.getElementById('clarify-status');
-      if (Object.keys(answers).length === 0) { statusEl.textContent = '답변을 입력하세요'; return; }
+      if (Object.keys(answers).length === 0 && !instruction) { statusEl.textContent = '답변 또는 추가 요청을 입력하세요'; return; }
 
       statusEl.textContent = '진행 중...';
       document.getElementById('clarify-submit').disabled = true;
@@ -863,7 +896,7 @@
         const res = await fetch(`/api/runs/${runId}/answers`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ answers }),
+          body: JSON.stringify({ answers, instruction }),
         });
         const data = await res.json();
         if (!res.ok) { statusEl.textContent = data.error || '실패'; return; }
