@@ -167,7 +167,13 @@ export function createRoutes(): Hono {
 
           const ee = getOrCreateEmitter(runId);
           const onEvent = (e: object) => { try { send(e); } catch {} };
-          const onDone = () => { try { controller.close(); } catch {} };
+          const onDone = () => {
+            try {
+              const finished = getRun(runId);
+              send({ type: 'status', ts: new Date().toISOString(), data: finished?.status ?? 'DONE' });
+              controller.close();
+            } catch {}
+          };
 
           ee.on('event', onEvent);
           ee.once('done', onDone);
