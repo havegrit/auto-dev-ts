@@ -5,6 +5,9 @@ import { anthropicModelCatalog } from './anthropic/models.js';
 import { codexAgentRunner } from './codex/agent-runner.js';
 import { codexCompleter } from './codex/completer.js';
 import { codexModelCatalog } from './codex/models.js';
+import { openaiAgentRunner } from './openai/agent-runner.js';
+import { openaiCompleter } from './openai/completer.js';
+import { openaiModelCatalog } from './openai/models.js';
 
 interface Provider {
   agentRunner: AgentRunner;
@@ -22,6 +25,11 @@ const PROVIDERS: Record<string, Provider> = {
     agentRunner: codexAgentRunner,
     completer: codexCompleter,
     modelCatalog: codexModelCatalog,
+  },
+  'openai-compatible': {
+    agentRunner: openaiAgentRunner,
+    completer: openaiCompleter,
+    modelCatalog: openaiModelCatalog,
   },
 };
 

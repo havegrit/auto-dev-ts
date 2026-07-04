@@ -135,7 +135,7 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection (`anthropic` or `codex-cli`) |
+| `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection (`anthropic`, `codex-cli`, or `openai-compatible`) |
 | `AUTO_DEV_MODEL` | (provider default) | Provider model to use |
 | `AUTO_DEV_AGENT_<AGENT>_MODEL` | unset | Per-agent model override, e.g. `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
 | `AUTO_DEV_FALLBACK_MODEL` | unset | Model to use when the selected global or per-agent model is unavailable |
@@ -143,6 +143,10 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | Dashboard-persisted runtime config file |
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | Codex CLI command when `AUTO_DEV_PROVIDER=codex-cli` |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI execution timeout |
+| `AUTO_DEV_OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint (NVIDIA NIM / DeepSeek / OpenRouter / vLLM). Text completion only — not tool-using agent steps |
+| `AUTO_DEV_OPENAI_API_KEY` | unset | Bearer key for the OpenAI-compatible endpoint (unset ⇒ provider hidden) |
+| `AUTO_DEV_OPENAI_MODELS` | unset | Comma-separated model ids to expose, e.g. `deepseek-ai/deepseek-v4-pro` |
+| `AUTO_DEV_OPENAI_MAX_TOKENS` | unset | Optional `max_tokens` sent with each request |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Root for project-name resolution |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | Non-root user `scripts/serve.sh` drops to when started as root |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |

@@ -4,6 +4,8 @@ import { anthropicAgentRunner } from './anthropic/agent-runner.js';
 import { anthropicCompleter } from './anthropic/completer.js';
 import { codexAgentRunner } from './codex/agent-runner.js';
 import { codexCompleter } from './codex/completer.js';
+import { openaiAgentRunner } from './openai/agent-runner.js';
+import { openaiCompleter } from './openai/completer.js';
 
 describe('registry', () => {
   it('defaults to the anthropic implementations', () => {
@@ -39,6 +41,8 @@ describe('registry', () => {
     expect(getCompleter('anthropic:default')).toBe(anthropicCompleter);
     expect(getAgentRunner('codex-cli:gpt-5')).toBe(codexAgentRunner);
     expect(getCompleter('codex-cli:gpt-5')).toBe(codexCompleter);
+    expect(getAgentRunner('openai-compatible:deepseek-ai/deepseek-v4-pro')).toBe(openaiAgentRunner);
+    expect(getCompleter('openai-compatible:deepseek-ai/deepseek-v4-pro')).toBe(openaiCompleter);
   });
 
   it('fails fast when a qualified model uses an unknown provider', () => {
