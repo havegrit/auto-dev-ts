@@ -16,6 +16,7 @@
     .stat-sub { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
     .agents { display: flex; flex-wrap: wrap; gap: 0.4rem; }
     .badge { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #79c0ff; }
+    .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     th { text-align: left; padding: 0.5rem 0.75rem; color: #8b949e; font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #21262d; }
     td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #21262d; color: #c9d1d9; vertical-align: middle; }
@@ -24,13 +25,19 @@
     .DONE    { background: #1a4731; color: #3fb950; }
     .FAILED  { background: #3b1219; color: #f85149; }
     .RUNNING { background: #1c2d4a; color: #58a6ff; }
-    .BLOCKED { background: #2d2800; color: #e3b341; }
+    .BLOCKED { background: #3b2f00; color: #f2cc60; }
+    .NEEDS-CLARIFICATION { background: #3b2f00; color: #f2cc60; }
     .agent-name { font-family: monospace; color: #79c0ff; }
-    .duration { color: #8b949e; font-size: 0.78rem; }
+    .sub-arrow { color: #6e7681; margin-right: 0.3rem; font-family: monospace; }
+    .tree-toggle { display: inline-block; width: 1.1em; cursor: pointer; color: #8b949e; user-select: none; margin-right: 0.15rem; font-size: 0.7rem; }
+    .tree-toggle:hover { color: #c9d1d9; }
+    .child-count { color: #6e7681; font-size: 0.72rem; margin-left: 0.4rem; }
+    .duration { color: #8b949e; font-size: 0.78rem; white-space: nowrap; }
     .output-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 0.78rem; }
     .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; white-space: nowrap; }
     .refresh:hover { border-color: #58a6ff; color: #58a6ff; }
     .section-title { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; }
+    .load-more-wrap { display: flex; justify-content: center; margin-top: 0.75rem; }
 
     /* Submit panel */
     .submit-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
@@ -160,11 +167,17 @@
     .circuit-badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     .circuit-CLOSED { background: #1a4731; color: #3fb950; }
     .circuit-OPEN   { background: #3b1219; color: #f85149; }
+    .intent-row { display: flex; align-items: center; gap: 0.5rem; color: #c9d1d9; font-size: 0.82rem; white-space: normal; }
     tr.run-row { cursor: pointer; }
     tr.run-row:hover td { background: #1c2128; }
     tr.run-row.selected td { background: #1c2d4a; }
     .detail-chip { background: #21262d; border-radius: 4px; padding: 0.15rem 0.5rem; font-family: monospace; font-size: 0.75rem; color: #c9d1d9; }
     .detail-chip.error { background: #3b1219; color: #f85149; }
+    .clarify-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 0.75rem; }
+    .clarify-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
+    .clarify-card-title { color: #e6edf3; font-size: 0.82rem; line-height: 1.5; }
+    .clarify-card-meta { color: #8b949e; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .clarify-card-hint { color: #8b949e; font-size: 0.74rem; margin-top: 0.35rem; }
     .live-log { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto; }
     .log-line { padding: 0.15rem 0; border-bottom: 1px solid #161b22; display: flex; gap: 0.5rem; align-items: flex-start; }
     .log-line:last-child { border-bottom: none; }
@@ -231,14 +244,14 @@
 
     <div class="form-row">
       <label>에이전트</label>
-      <select id="agent-select">
+      <select id="agent-select" onchange="toggleAutoClarifyRow()">
         <option value="spec">전체 워크플로우 (clarifier → planner → scaffold → test → review → cicd)</option>
-        <option value="scaffold">scaffold — 코드 스캐폴딩</option>
-        <option value="review">review — 코드 리뷰</option>
-        <option value="test">test — 테스트 생성</option>
-        <option value="cicd">cicd — CI/CD 설정</option>
-        <option value="planner">planner — 개발 계획</option>
         <option value="clarifier">clarifier — 스펙 명확화</option>
+        <option value="planner">planner — 개발 계획</option>
+        <option value="scaffold">scaffold — 코드 스캐폴딩</option>
+        <option value="test">test — 테스트 생성</option>
+        <option value="review">review — 코드 리뷰</option>
+        <option value="cicd">cicd — CI/CD 설정</option>
       </select>
     </div>
 
@@ -250,6 +263,20 @@
         <div class="combobox-menu" id="project-menu"></div>
       </div>
       <span id="workspace-hint" style="color:#8b949e;font-size:0.72rem;white-space:nowrap"></span>
+    </div>
+
+    <div class="form-row" id="auto-clarify-row">
+      <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;color:#c9d1d9;font-size:0.82rem;white-space:normal">
+        <input type="checkbox" id="auto-clarify" style="flex:0 0 auto;width:auto;margin:0" />
+        구체화 자동 진행 — clarifier 질문을 AI 추천 답안으로 자동 채워 멈추지 않고 진행 (전체 워크플로우 전용)
+      </label>
+    </div>
+
+    <div class="form-row" id="delivery-intent-row">
+      <label class="intent-row">
+        <input type="checkbox" id="include-cd" style="flex:0 0 auto;width:auto;margin:0" />
+        배포 포함(CD) — 배포/릴리스 파일까지 생성
+      </label>
     </div>
 
     <div class="tab-bar">
@@ -279,7 +306,7 @@
     <div class="result-panel" id="result-panel">
       <div class="result-header">
         <div id="result-spinner" class="spinner" style="display:none"></div>
-        <span id="result-status-label">대기 중</span>
+        <span id="result-status-label">IDLE</span>
         <span id="result-run-id" style="font-family:monospace;font-size:0.72rem;color:#484f58"></span>
         <button id="result-output-toggle" class="refresh" style="display:none;margin-left:auto" onclick="toggleOutput('result-output', this)">원본</button>
       </div>
@@ -293,14 +320,19 @@
     <div class="section-title">
       최근 실행 <button class="refresh" onclick="loadStats()">새로고침</button>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th><th>동작</th>
-        </tr>
-      </thead>
-      <tbody id="runs"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th><th>동작</th>
+          </tr>
+        </thead>
+        <tbody id="runs"></tbody>
+      </table>
+    </div>
+    <div class="load-more-wrap">
+      <button class="refresh" id="runs-more-btn" onclick="loadMoreRuns()" style="display:none">더 보기</button>
+    </div>
   </div>
 
   <!-- 실행 상세 패널 -->
@@ -320,8 +352,8 @@
     <!-- 실시간 로그 (RUNNING 상태일 때) -->
     <div id="live-log-section" style="display:none;margin-bottom:0.75rem">
       <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem;display:flex;align-items:center;gap:0.5rem">
-        실시간 활동
-        <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+        실시간 활동 내역
+        <span class="live-badge" id="live-badge" style="display:none"><span class="live-dot"></span>LIVE</span>
       </div>
       <div class="live-log" id="live-log"></div>
     </div>
@@ -337,26 +369,33 @@
 
     <!-- clarifier 질문 답변 (NEEDS-CLARIFICATION 일 때) -->
     <div id="clarify-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;padding:0.85rem;background:#161b22">
-      <div style="font-size:0.8rem;color:#e3b341;margin-bottom:0.6rem">❓ clarifier 질문 — 답변하면 스펙 재입력 없이 이어서 진행됩니다</div>
-      <div id="clarify-questions"></div>
-      <div style="margin-top:0.7rem">
-        <label style="display:block;font-size:0.78rem;color:#8b949e;margin-bottom:0.35rem">추가 요청 (선택) — 질문 답변 외에 더 지시할 내용</label>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;margin-bottom:0.75rem">
+        <div>
+          <div style="font-size:0.8rem;color:#f2cc60;margin-bottom:0.25rem">NEEDS-CLARIFICATION</div>
+          <div style="font-size:0.78rem;color:#8b949e">질문에 답하고 추가 지시가 있으면 함께 넣은 뒤 계속 진행합니다.</div>
+        </div>
+        <span class="detail-chip" id="clarify-question-count">0 QUESTIONS</span>
+      </div>
+      <div id="clarify-questions" style="display:grid;gap:0.65rem"></div>
+      <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid #30363d">
+        <label style="display:block;font-size:0.78rem;color:#8b949e;margin-bottom:0.35rem">추가 요청 (선택)</label>
         <textarea id="clarify-extra" rows="2" placeholder="예: 검색에 페이지네이션도 추가해줘"
           style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.5rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical"></textarea>
       </div>
-      <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem;flex-wrap:wrap">
         <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">이 답변으로 계속</button>
         <span class="save-status" id="clarify-status"></span>
       </div>
     </div>
 
-    <!-- 이어서 수정 요청 (완료된 spec run) -->
+    <!-- 재실행 요청 (완료된 spec run) -->
     <div id="continue-section" style="display:none;margin-bottom:0.75rem;border:1px solid #30363d;border-radius:6px;padding:0.85rem;background:#161b22">
-      <div style="font-size:0.8rem;color:#58a6ff;margin-bottom:0.6rem">↻ 이어서 수정 요청 — 스펙 재입력 없이 추가 지시로 이 워크플로우를 다시 실행합니다</div>
+      <div style="font-size:0.8rem;color:#58a6ff;margin-bottom:0.6rem">↻ 재실행 — 추가 지시가 있으면 반영하고, 비우면 같은 상태로 다시 실행합니다</div>
       <textarea id="continue-input" rows="3" placeholder="예: 삭제는 soft delete 로 바꾸고 검색에 페이지네이션 추가해줘"
         style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.5rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical"></textarea>
       <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem">
-        <button class="save-btn" id="continue-submit" onclick="submitContinue()">이어서 재실행</button>
+        <button class="save-btn" id="continue-submit" onclick="submitContinue()">재실행</button>
+        <button class="refresh" id="resume-last-submit" onclick="submitResumeLast()">마지막 단계부터 재개</button>
         <span class="save-status" id="continue-status"></span>
       </div>
     </div>
@@ -382,6 +421,14 @@
     let selectedRunId = null;
     let liveEventSource = null;
     let configAgents = [];
+    // 최근 실행 버튼 로드 상태: 한 번에 유닛(spec 워크플로우 또는 단독 실행) 10개씩.
+    const RUNS_UNIT_BATCH = 10;
+    let loadedUnits = RUNS_UNIT_BATCH;
+    let hasMoreRuns = false;
+    let loadingMore = false;
+    // 펼쳐진 spec 부모 run id 집합(기본은 접힘). 마지막으로 렌더한 행 데이터.
+    const expandedRuns = new Set();
+    let lastRunRows = [];
 
     // ── 마크다운 출력 렌더링 ─────────────────────────────────────────
     if (window.marked) marked.use({ gfm: true, breaks: true });
@@ -426,6 +473,34 @@
       const el = document.getElementById(elId);
       applyOutput(el, el.__mode === 'raw' ? 'rendered' : 'raw');
       btn.textContent = el.__mode === 'raw' ? '렌더' : '원본';
+    }
+
+    const requestDraftKey = 'auto-dev.request-draft.v1';
+
+    function loadRequestDraft() {
+      try {
+        const raw = localStorage.getItem(requestDraftKey);
+        if (!raw) return;
+        const draft = JSON.parse(raw);
+        if (typeof draft?.text === 'string') document.getElementById('text-input').value = draft.text;
+        if (typeof draft?.project === 'string') document.getElementById('project-input').value = draft.project;
+      } catch {}
+    }
+
+    function saveRequestDraft() {
+      try {
+        localStorage.setItem(requestDraftKey, JSON.stringify({
+          text: document.getElementById('text-input').value,
+          project: document.getElementById('project-input').value,
+        }));
+      } catch {}
+    }
+
+    function bindRequestDraftPersistence() {
+      const textInput = document.getElementById('text-input');
+      const projectInput = document.getElementById('project-input');
+      textInput.addEventListener('input', saveRequestDraft);
+      projectInput.addEventListener('input', saveRequestDraft);
     }
 
     async function loadConfig() {
@@ -522,6 +597,13 @@
       }
     }
 
+    // 구체화 자동 진행 옵션은 spec(전체 워크플로우)일 때만 노출한다.
+    function toggleAutoClarifyRow() {
+      const isSpec = document.getElementById('agent-select').value === 'spec';
+      document.getElementById('auto-clarify-row').style.display = isSpec ? '' : 'none';
+      document.getElementById('delivery-intent-row').style.display = (isSpec || document.getElementById('agent-select').value === 'cicd') ? '' : 'none';
+    }
+
     function setTab(tab) {
       currentTab = tab;
       document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
@@ -567,14 +649,22 @@
       const project = document.getElementById('project-input').value.trim();
       if (project) formData.append('project', project);
 
+      // spec(전체 워크플로우)일 때만 구체화 자동 진행 옵션을 전달한다.
+      if (agent === 'spec' && document.getElementById('auto-clarify').checked) {
+        formData.append('autoClarify', 'true');
+      }
+      if (document.getElementById('include-cd').checked) {
+        formData.append('deliveryIntent', 'cd');
+      }
+
       // UI 초기화
       const btn = document.getElementById('run-btn');
       btn.disabled = true;
-      btn.textContent = '실행 중...';
+      btn.textContent = 'RUNNING...';
       const panel = document.getElementById('result-panel');
       panel.style.display = '';
       document.getElementById('result-spinner').style.display = '';
-      document.getElementById('result-status-label').textContent = '요청 전송 중...';
+      document.getElementById('result-status-label').textContent = 'SENDING...';
       document.getElementById('result-run-id').textContent = '';
       document.getElementById('sub-runs').innerHTML = '';
       document.getElementById('result-output').style.display = 'none';
@@ -588,11 +678,11 @@
         }
         const { runId, type } = await res.json();
         document.getElementById('result-run-id').textContent = runId.slice(0, 8) + '…';
-        document.getElementById('result-status-label').textContent = '실행 중';
+        document.getElementById('result-status-label').textContent = 'RUNNING';
         pollRun(runId, type);
       } catch (err) {
         document.getElementById('result-spinner').style.display = 'none';
-        document.getElementById('result-status-label').textContent = '오류: ' + err.message;
+        document.getElementById('result-status-label').textContent = 'ERROR: ' + err.message;
         btn.disabled = false;
         btn.textContent = '실행';
       }
@@ -638,11 +728,13 @@
     }
 
     async function loadStats() {
-      const [statusRes, statsRes, runsRes] = await Promise.all([
+      const [statusRes, statsRes, runsPage] = await Promise.all([
         fetch('/api/status').then(r => r.json()),
         fetch('/api/stats').then(r => r.json()),
-        fetch('/api/runs?limit=30').then(r => r.json()),
+        fetch(`/api/runs?units=${loadedUnits}`).then(r => r.json()),
       ]);
+      const runsRes = runsPage.rows ?? [];
+      hasMoreRuns = !!runsPage.hasMore;
 
       document.getElementById('today-runs').textContent = statsRes.todayCount ?? '—';
       const g = statusRes.guard;
@@ -667,23 +759,68 @@
       const agentsEl = document.getElementById('agents');
       agentsEl.innerHTML = (statusRes.agents ?? []).map(a => `<span class="badge">${a}</span>`).join('');
 
+      renderRuns(runsRes);
+      loadingMore = false;
+    }
+
+    async function loadMoreRuns() {
+      if (loadingMore || !hasMoreRuns) return;
+      loadingMore = true;
+      const moreBtn = document.getElementById('runs-more-btn');
+      if (moreBtn) {
+        moreBtn.disabled = true;
+        moreBtn.textContent = '불러오는 중...';
+      }
+      loadedUnits += RUNS_UNIT_BATCH;
+      await loadStats();
+    }
+
+    // 최근 실행 표를 그린다. spec 부모(자식이 있는 최상위 run)는 캐럿으로 하위 에이전트 행을
+    // 접었다 펼 수 있고(기본 접힘), 펼침 상태(expandedRuns)는 자동 갱신 후에도 유지된다.
+    function renderRuns(rows) {
+      lastRunRows = rows;
+      // 이번 페이지에 자식이 존재하는 부모 id 와 부모별 자식 수.
+      const childCounts = {};
+      for (const r of rows) {
+        if (r.workflow_run_id) childCounts[r.workflow_run_id] = (childCounts[r.workflow_run_id] ?? 0) + 1;
+      }
+
       const tbody = document.getElementById('runs');
-      // 워크플로우 하위 단계 run(자식)은 숨겨 최상위 요청만 보여준다. 단계 내역은 상세 패널에서 확인.
-      const topLevel = runsRes.filter(r => !r.workflow_run_id);
-      tbody.innerHTML = topLevel.map(r => {
+      tbody.innerHTML = rows.map(r => {
         const errorBadge = r.error_type
           ? `<span style="font-size:0.7rem;color:#f85149;font-family:monospace">${r.error_type}</span> `
           : '';
         const preview = (r.output ?? '').replace(/</g,'&lt;').slice(0, 120);
         const isSelected = r.id === selectedRunId;
+        const isChild = !!r.workflow_run_id;
+        const hasKids = childCounts[r.id] > 0;
+        const collapsed = !expandedRuns.has(r.id);
+
+        let agentCell;
+        if (hasKids) {
+          // 접기/펼치기 캐럿. 접힘일 때 숨긴 하위 개수를 함께 보여준다.
+          const caret = `<span class="tree-toggle" onclick="toggleSpecChildren(event, '${r.id}')">${collapsed ? '▶' : '▼'}</span>`;
+          const count = collapsed ? `<span class="child-count">하위 ${childCounts[r.id]}개</span>` : '';
+          agentCell = `${caret}<span class="agent-name">${r.agent_name}</span>${count}`;
+        } else if (isChild) {
+          agentCell = `<span class="sub-arrow">↳</span><span class="agent-name">${r.agent_name}</span>`;
+        } else {
+          agentCell = `<span class="agent-name">${r.agent_name}</span>`;
+        }
+
+        // 부모가 펼쳐져 있지 않으면(기본 접힘) 그 자식 행은 숨긴다.
+        const hidden = isChild && !expandedRuns.has(r.workflow_run_id);
+        const dataParent = isChild ? ` data-parent="${r.workflow_run_id}"` : '';
+        const rowStyle = hidden ? ' style="display:none"' : '';
+
         // 완료된 spec 워크플로우 중 상태가 저장된 것만 표에서 바로 이어갈 수 있다.
         const continuable = r.agent_name === 'spec' && (r.status === 'DONE' || r.status === 'FAILED') && !!r.clarification_state;
         // 대기 중인 clarifier 질문이 있으면 '답변하기', 아니면 '이어가기'로 라벨을 구분한다.
         const action = continuable
           ? `<button class="refresh" onclick="continueFromRow(event, '${r.id}')">${hasPendingQuestions(r.clarification_state) ? '답변하기' : '이어가기'}</button>`
           : '';
-        return `<tr class="run-row${isSelected ? ' selected' : ''}" onclick="showRunDetail('${r.id}')">
-          <td><span class="agent-name">${r.agent_name}</span></td>
+        return `<tr class="run-row${isSelected ? ' selected' : ''}"${dataParent}${rowStyle} onclick="showRunDetail('${r.id}')">
+          <td style="white-space:nowrap">${agentCell}</td>
           <td><span class="status ${r.status}">${r.status}</span></td>
           <td><span class="duration">${formatDuration(r.duration_ms)}</span></td>
           <td><span class="duration">${r.num_turns ?? '—'}</span></td>
@@ -692,6 +829,21 @@
           <td>${action}</td>
         </tr>`;
       }).join('');
+
+      const moreBtn = document.getElementById('runs-more-btn');
+      if (moreBtn) {
+        moreBtn.style.display = hasMoreRuns ? '' : 'none';
+        moreBtn.disabled = loadingMore;
+        moreBtn.textContent = loadingMore ? '불러오는 중...' : '더 보기';
+      }
+    }
+
+    // spec 부모의 하위 에이전트 행을 접거나 편다. 상태만 바꾸고 마지막 데이터로 다시 렌더한다.
+    function toggleSpecChildren(event, parentId) {
+      event.stopPropagation();
+      if (expandedRuns.has(parentId)) expandedRuns.delete(parentId);
+      else expandedRuns.add(parentId);
+      renderRuns(lastRunRows);
     }
 
     // clarification_state(JSON 문자열)를 파싱해 아직 답하지 않은 질문 라운드가 남았는지 본다.
@@ -704,6 +856,18 @@
         const answered = Object.values(last.answers ?? {}).some(a => a != null && String(a).trim());
         return !answered;
       } catch { return false; }
+    }
+
+    function extractPendingQuestions(stateJson) {
+      try {
+        const state = typeof stateJson === 'string' ? JSON.parse(stateJson) : stateJson;
+        const last = state?.rounds?.[state.rounds.length - 1];
+        if (!last || !(last.questions?.length > 0)) return [];
+        const answered = Object.values(last.answers ?? {}).some(a => a != null && String(a).trim());
+        return answered ? [] : last.questions;
+      } catch {
+        return [];
+      }
     }
 
     // 이력 표에서 바로 이어가기: 상세를 열고, 대기 질문이 있으면 답변 폼으로,
@@ -722,13 +886,18 @@
       }
     }
 
-    function appendLiveLog(event) {
-      const el = document.getElementById('live-log');
+    function renderActivityEntry(event) {
       const ts = event.ts ? new Date(event.ts).toLocaleTimeString('ko-KR') : '';
       const line = document.createElement('div');
       line.className = 'log-line';
       line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-type-${event.type}">${escHtml(event.data)}</span>`;
-      el.appendChild(line);
+      return line;
+    }
+
+    function appendLiveLog(event) {
+      const el = document.getElementById('live-log');
+      if (el.querySelector('.log-type-text')?.textContent === '활동 내역 없음') el.innerHTML = '';
+      el.appendChild(renderActivityEntry(event));
       el.scrollTop = el.scrollHeight;
     }
 
@@ -747,10 +916,31 @@
 
     function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+    function renderActivityHistory(events, running) {
+      const section = document.getElementById('live-log-section');
+      const badge = document.getElementById('live-badge');
+      const el = document.getElementById('live-log');
+      section.style.display = '';
+      badge.style.display = running ? '' : 'none';
+
+      el.innerHTML = '';
+      if (!Array.isArray(events) || events.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'log-line';
+        empty.innerHTML = '<span class="log-ts">—</span><span class="log-type-text">활동 내역 없음</span>';
+        el.appendChild(empty);
+        return;
+      }
+
+      for (const event of events) {
+        el.appendChild(renderActivityEntry(event));
+      }
+      el.scrollTop = el.scrollHeight;
+    }
+
     function startLiveStream(runId) {
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
-      document.getElementById('live-log').innerHTML = '';
-      document.getElementById('live-log-section').style.display = '';
+      document.getElementById('live-badge').style.display = '';
 
       const es = new EventSource(`/api/runs/${runId}/events`);
       liveEventSource = es;
@@ -759,7 +949,7 @@
         if (evt.type === 'status') {
           es.close();
           liveEventSource = null;
-          document.querySelector('.live-dot')?.remove();
+          document.getElementById('live-badge').style.display = 'none';
           loadStats();
           setTimeout(() => refreshRunDetail(runId), 500);
         } else {
@@ -771,7 +961,7 @@
 
     async function refreshRunDetail(runId) {
       const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
-      renderRunDetail(run);
+      await renderRunDetail(run);
     }
 
     // 워크플로우(spec) 부모 run 이면 단계 내역(자식 run)을 불러와 클릭 가능한 목록으로 보여준다.
@@ -795,7 +985,7 @@
       section.style.display = '';
     }
 
-    function renderRunDetail(run) {
+    async function renderRunDetail(run) {
       const chips = [
         `<span class="detail-chip">${run.agent_name}</span>`,
         `<span class="detail-chip"><span class="status ${run.status}" style="font-size:0.7rem">${run.status}</span></span>`,
@@ -808,7 +998,7 @@
       ].filter(Boolean).join(' ');
 
       document.getElementById('run-detail-meta').innerHTML = chips;
-      renderDetailChildren(run);
+      await renderDetailChildren(run);
       if (run.output && run.output.trim()) {
         setOutput('run-detail-output', 'run-detail-output-toggle', run.output);
       } else {
@@ -816,9 +1006,13 @@
         document.getElementById('run-detail-output').textContent = '(출력 없음)';
       }
 
-      if (run.status !== 'RUNNING') {
-        document.getElementById('live-log-section').style.display = 'none';
-      }
+      let events = [];
+      try {
+        const res = await fetch(`/api/runs/${run.id}/events/history`).then(r => r.json());
+        events = res.events ?? [];
+      } catch {}
+      renderActivityHistory(events, run.status === 'RUNNING');
+      if (run.status === 'RUNNING') startLiveStream(run.id);
 
       renderClarification(run);
     }
@@ -853,6 +1047,9 @@
         const res = await fetch(`/api/runs/${run.id}/clarification`).then(r => r.json());
         questions = res.questions ?? [];
       } catch { /* 무시하고 이어가기 폼으로 폴백 */ }
+      if ((!Array.isArray(questions) || questions.length === 0) && run.clarification_state) {
+        questions = extractPendingQuestions(run.clarification_state);
+      }
 
       if (questions.length === 0) {
         // 대기 질문이 없고 상태가 저장돼 있으면 후속 수정 지시로 이어갈 수 있게 한다.
@@ -860,18 +1057,23 @@
         cont.dataset.runId = run.id;
         document.getElementById('continue-input').value = '';
         document.getElementById('continue-status').textContent = '';
+        document.getElementById('resume-last-submit').style.display = run.status === 'RUNNING' ? 'none' : '';
         cont.style.display = '';
         return;
       }
 
       section.dataset.runId = run.id;
-      document.getElementById('clarify-questions').innerHTML = questions.map(q => `
-        <div class="agent-model-row" style="margin-bottom:0.7rem">
-          <label style="font-family:inherit;color:#c9d1d9;font-size:0.82rem">
-            <span style="color:#8b949e">[${escapeHtml(q.category)}]</span> ${escapeHtml(q.text)}
-          </label>
-          <input type="text" data-qid="${escapeHtml(q.id)}" value="${escapeHtml(q.recommendation || '')}"
-            style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.45rem 0.6rem;font-size:0.82rem" />
+      document.getElementById('clarify-question-count').textContent = `${questions.length} QUESTIONS`;
+      document.getElementById('clarify-questions').innerHTML = questions.map((q, idx) => `
+        <div class="clarify-card">
+          <div class="clarify-card-head">
+            <div class="clarify-card-meta">${escapeHtml(q.category)} · Q${idx + 1}</div>
+            <div class="detail-chip">NEEDS-CLARIFICATION</div>
+          </div>
+          <div class="clarify-card-title">${escapeHtml(q.text)}</div>
+          <div class="clarify-card-hint">Recommended: ${escapeHtml(q.recommendation || '—')}</div>
+          <textarea data-qid="${escapeHtml(q.id)}" rows="2"
+            style="width:100%;margin-top:0.65rem;max-height:8rem;overflow-y:auto;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.45rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical;line-height:1.5">${escapeHtml(q.recommendation || '')}</textarea>
         </div>
       `).join('');
       document.getElementById('clarify-extra').value = '';
@@ -890,7 +1092,7 @@
       const statusEl = document.getElementById('clarify-status');
       if (Object.keys(answers).length === 0 && !instruction) { statusEl.textContent = '답변 또는 추가 요청을 입력하세요'; return; }
 
-      statusEl.textContent = '진행 중...';
+      statusEl.textContent = 'RUNNING...';
       document.getElementById('clarify-submit').disabled = true;
       try {
         const res = await fetch(`/api/runs/${runId}/answers`, {
@@ -899,7 +1101,7 @@
           body: JSON.stringify({ answers, instruction }),
         });
         const data = await res.json();
-        if (!res.ok) { statusEl.textContent = data.error || '실패'; return; }
+        if (!res.ok) { statusEl.textContent = data.error || 'FAILED'; return; }
         section.style.display = 'none';
         loadStats();
         showRunDetail(data.runId);
@@ -913,9 +1115,8 @@
       const runId = section.dataset.runId;
       const instruction = document.getElementById('continue-input').value.trim();
       const statusEl = document.getElementById('continue-status');
-      if (!instruction) { statusEl.textContent = '수정 지시를 입력하세요'; return; }
 
-      statusEl.textContent = '진행 중...';
+      statusEl.textContent = 'RUNNING...';
       document.getElementById('continue-submit').disabled = true;
       try {
         const res = await fetch(`/api/runs/${runId}/continue`, {
@@ -924,7 +1125,7 @@
           body: JSON.stringify({ instruction }),
         });
         const data = await res.json();
-        if (!res.ok) { statusEl.textContent = data.error || '이어갈 수 없는 실행입니다'; return; }
+        if (!res.ok) { statusEl.textContent = data.error || 'CONTINUE FAILED'; return; }
         section.style.display = 'none';
         loadStats();
         showRunDetail(data.runId);
@@ -933,10 +1134,41 @@
       }
     }
 
+    async function submitResumeLast() {
+      const section = document.getElementById('continue-section');
+      const runId = section.dataset.runId;
+      const instruction = document.getElementById('continue-input').value.trim();
+      const statusEl = document.getElementById('continue-status');
+
+      statusEl.textContent = 'RESUMING LAST STEP...';
+      document.getElementById('resume-last-submit').disabled = true;
+      document.getElementById('continue-submit').disabled = true;
+      try {
+        const res = await fetch(`/api/runs/${runId}/resume-last`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instruction }),
+        });
+        const data = await res.json();
+        if (!res.ok) { statusEl.textContent = data.error || 'RESUME FAILED'; return; }
+        section.style.display = 'none';
+        loadStats();
+        showRunDetail(data.runId);
+      } finally {
+        document.getElementById('resume-last-submit').disabled = false;
+        document.getElementById('continue-submit').disabled = false;
+      }
+    }
+
     async function showRunDetail(runId) {
       if (selectedRunId === runId) { closeRunDetail(); return; }
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
       selectedRunId = runId;
+      // spec 부모 상세를 열면 하위 에이전트 기록을 자동으로 펼친다.
+      if (lastRunRows.some(r => r.workflow_run_id === runId) && !expandedRuns.has(runId)) {
+        expandedRuns.add(runId);
+        renderRuns(lastRunRows);
+      }
       document.querySelectorAll('tr.run-row').forEach(tr => {
         tr.classList.toggle('selected', tr.getAttribute('onclick') === `showRunDetail('${runId}')`);
       });
@@ -948,11 +1180,7 @@
       clearOutput('run-detail-output', 'run-detail-output-toggle');
 
       const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
-      renderRunDetail(run);
-
-      if (run.status === 'RUNNING') {
-        startLiveStream(runId);
-      }
+      await renderRunDetail(run);
 
       panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
@@ -1058,8 +1286,11 @@
 
     loadConfig();
     initProjectCombobox();
+    loadRequestDraft();
+    bindRequestDraftPersistence();
     loadProjects();
     loadStats();
+    toggleAutoClarifyRow();
     setInterval(loadStats, 10000);
   </script>
 </body>
