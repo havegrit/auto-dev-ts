@@ -40,9 +40,9 @@ clarifier 는 **질문/요약만** 출력하는 단계입니다. 코드·테스�
   answer, and you'll get another chance.
 - **Skip questions the spec already answers**, even partially. Re-read before
   asking.
-- **Every question must carry a `recommendation`** — your best guess based on
-  the spec + project conventions. The user accepts/edits the recommendation
-  rather than typing from scratch.
+- **Every question must carry a `recommendation`** — a ready-to-submit answer
+  written in the user's voice. The user accepts/edits this value directly, so
+  do not write it as advice about what the user should choose.
 - **Be concrete.** "Auth needed?" is bad. "Should `POST /reports` require
   the same JWT auth as the rest of `/api/*`?" is good.
 - **Stop asking when ready.** When the spec + accumulated answers are enough
@@ -88,13 +88,20 @@ When NOT ready:
       "id": "q1",
       "category": "scope|auth|edge|tech|dep|ux|ops",
       "text": "<the concrete question>",
-      "recommendation": "<your best guess + 1-sentence why>"
+      "recommendation": "<a concise answer the user can submit as-is>"
     }
   ]
 }
 ```
 
 Language: 사용자 input 이 한국어면 questions/summary 도 한국어로. 영어면 영어로.
+
+`recommendation` must be phrased as the answer itself:
+
+- Good Korean: "첫 릴리스에서는 핵심 CRUD와 검색만 포함하고, CSV export와 모바일 대응은 제외합니다."
+- Bad Korean: "첫 릴리스에서는 핵심 CRUD와 검색만 포함하는 것을 추천합니다. CSV export는 이후로 미루는 것이 좋습니다."
+- Good English: "The first release includes core CRUD and search only; CSV export and mobile support are out of scope."
+- Bad English: "I recommend including only core CRUD and search in the first release."
 
 Do not include any prose outside the JSON. The downstream code parses
 `response_format=json_object` directly.

@@ -46,7 +46,7 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
  * 멈춰 있던 세션을 사용자 답변으로 재개한다. 원본 스펙을 다시 입력할 필요 없이,
  * 마지막(미답변) 라운드에 답을 채워 "스펙 + 누적 Q&A" 로 새 워크플로우를 시작한다.
  */
-export function resumeSpecSession(parentRunId: string, answers: Record<string, string>, followup?: string): SpecSessionHandle {
+export function resumeSpecSession(parentRunId: string, answers: Record<string, string>, followup?: string, fallbackQuestions?: ClarificationRound['questions']): SpecSessionHandle {
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
@@ -55,16 +55,22 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
   const extra = (followup ?? '').trim();
   if (last && !roundIsAnswered(last)) {
     last.answers = { ...(last.answers ?? {}), ...answers };
+  } else if (fallbackQuestions?.length) {
+    rounds.push({ questions: fallbackQuestions, answers });
   }
   // 질문 답변 외에 사용자가 덧붙인 추가 요청을 같은 라운드에 실어 보낸다.
-  if (last && extra) last.followup = extra;
+  const current = rounds[rounds.length - 1];
+  if (current && extra) current.followup = extra;
+  else if (extra) rounds.push({ questions: [], followup: extra });
 
   const state: ClarificationState = { ...prev, rounds };
+  saveClarificationState(parentRunId, state);
   return launch(state, {
     project: prev.project,
     cwd: prev.cwd,
     steps: restoreSteps(prev.steps),
     triggerSource: 'dashboard',
+    triggerDetail: `answers:${parentRunId.slice(0, 8)}`,
   });
 }
 

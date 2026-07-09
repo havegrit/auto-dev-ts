@@ -7,6 +7,7 @@ import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
+import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
 import { costGuard } from '../lib/cost-guard.js';
@@ -217,14 +218,14 @@ export function createRoutes(): Hono {
 
   // 질문 답변으로 워크플로우를 재개한다 (스펙 재입력 없이 연결된 새 run 생성).
   app.post('/api/runs/:id/answers', async (c) => {
-    const body = await c.req.json<{ answers?: Record<string, string>; instruction?: string }>();
+    const body = await c.req.json<{ answers?: Record<string, string>; instruction?: string; questions?: ClarificationRound['questions'] }>();
     const answers = body.answers ?? {};
     const instruction = (body.instruction ?? '').trim();
     if (Object.keys(answers).length === 0 && !instruction) {
       return c.json({ error: 'answers or instruction is required' }, 400);
     }
     try {
-      const { runId } = resumeSpecSession(c.req.param('id'), answers, instruction || undefined);
+      const { runId } = resumeSpecSession(c.req.param('id'), answers, instruction || undefined, body.questions);
       return c.json({ runId, type: 'workflow' });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

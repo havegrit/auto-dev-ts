@@ -126,6 +126,34 @@ describe('runSpec clarification gate', () => {
     });
   });
 
+  it('accepts clarifier JSON wrapped in markdown fences', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: '```json\n' + JSON.stringify({
+        ready: false,
+        summary: '',
+        questions: [
+          {
+            id: 'q1',
+            category: 'scope',
+            text: '어떤 범위까지 구현할까요?',
+            recommendation: '핵심 CRUD만 포함합니다.',
+          },
+        ],
+      }) + '\n```',
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 10,
+      status: 'DONE',
+    };
+
+    const result = await runSpec('명확하지 않은 요청');
+
+    expect(result.verdict).toBe('NEEDS-CLARIFICATION');
+    expect(result.clarification?.questions).toHaveLength(1);
+    expect(result.steps.clarifier.status).toBe('NEEDS-CLARIFICATION');
+  });
+
   it('records BLOCKED child status and stops the workflow', async () => {
     clarifierResult = {
       runId: 'clarifier-run',

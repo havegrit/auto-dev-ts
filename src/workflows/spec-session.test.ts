@@ -158,7 +158,32 @@ describe('resumeSpecSession (round N)', () => {
     expect(updates.find(u => u.id === runId && u.status === 'DONE')).toBeDefined();
     // launch 가 항상 상태를 영속화하므로 재개한 run 도 이어갈 수 있다.
     expect(saveClarificationState).toHaveBeenCalled();
+    expect(inserted.find(r => r.id === runId).workflowRunId).toBeUndefined();
+    expect(inserted.find(r => r.id === runId).triggerDetail).toBe('answers:parent');
+    expect(specOptions[0].workflowRunId).toBe(runId);
+    expect(stateStore.get('parent').rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
     expect(stateStore.get(runId).rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
+  });
+
+  it('recovers a missing pending round with fallback questions from the UI', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD + 검색' }, undefined, [Q1]);
+    await done;
+
+    expect(specInputs[0]).toContain('범위는?');
+    expect(specInputs[0]).toContain('답: CRUD + 검색');
+    expect(inserted.find(r => r.id === runId).workflowRunId).toBeUndefined();
+    expect(stateStore.get('parent').rounds).toEqual([{ questions: [Q1], answers: { q1: 'CRUD + 검색' } }]);
+    expect(stateStore.get(runId).rounds).toEqual([{ questions: [Q1], answers: { q1: 'CRUD + 검색' } }]);
   });
 });
 

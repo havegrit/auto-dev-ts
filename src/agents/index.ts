@@ -6,8 +6,9 @@ import { planner } from './planner.js';
 import { clarifier } from './clarifier.js';
 import { AGENT_ORDER } from './specs.js';
 import type { RunResult } from '../lib/runner.js';
+import type { AgentRunOpts } from './dispatch.js';
 
-type AgentFn = (input: string, opts?: { triggerSource?: string; triggerDetail?: string; workflowRunId?: string; cwd?: string }) => Promise<RunResult>;
+type AgentFn = (input: string, opts?: AgentRunOpts) => Promise<RunResult>;
 
 const registry: Record<string, AgentFn> = { scaffold, review, test, cicd, planner, clarifier };
 

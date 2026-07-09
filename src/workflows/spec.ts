@@ -93,9 +93,19 @@ function parseTests(output: string): 'PASS' | 'FAIL' | 'BLOCKED' | undefined {
   return 'FAIL';
 }
 
+function extractJsonObjectText(output: string): string {
+  const text = output.trim();
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = (fenced ? fenced[1] : text).trim();
+  if (candidate.startsWith('{')) return candidate;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  return start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate;
+}
+
 function parseClarifierOutput(output: string): { ready: boolean; summary: string; questions: ClarificationQuestion[] } | undefined {
   try {
-    const parsed = JSON.parse(output);
+    const parsed = JSON.parse(extractJsonObjectText(output));
     if (typeof parsed !== 'object' || parsed === null || typeof parsed.ready !== 'boolean') return undefined;
     const questions = Array.isArray(parsed.questions)
       ? parsed.questions.filter((q: any) =>
@@ -169,7 +179,9 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     if (!stepsFilter.has(target) || routeCount >= maxRoutes) return false;
     routeCount++;
     pendingFeedback = feedbackBlock(fromStep, output);
-    cursor = STEP_ORDER.indexOf(target);
+    const targetIndex = STEP_ORDER.indexOf(target);
+    for (const staleStep of STEP_ORDER.slice(targetIndex)) delete results[staleStep];
+    cursor = targetIndex;
     return true;
   };
 
