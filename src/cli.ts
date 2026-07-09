@@ -132,7 +132,7 @@ program.command('serve')
     const { startServer } = await import('./server/index.js');
     const { startBriefingSchedule } = await import('./schedule/briefing.js');
     startBriefingSchedule();
-    startServer();
+    await startServer();
   });
 
 program.command('daemon')
@@ -141,7 +141,7 @@ program.command('daemon')
     const { startServer } = await import('./server/index.js');
     const { startBriefingSchedule } = await import('./schedule/briefing.js');
     startBriefingSchedule();
-    startServer();
+    await startServer();
   });
 
 program.parseAsync(process.argv).catch((err) => {
