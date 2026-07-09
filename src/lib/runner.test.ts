@@ -43,10 +43,13 @@ vi.mock('../llm/registry.js', () => ({
 import { runAgent } from './runner.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { modelConfig } from './model-config.js';
+import { insertRun, updateRun } from '../store/runs.js';
 
 describe('runAgent dispatch', () => {
   beforeEach(() => {
     getAgentRunnerMock.mockClear();
+    vi.mocked(insertRun).mockClear();
+    vi.mocked(updateRun).mockClear();
     circuitBreaker.reset();
   });
 
@@ -127,6 +130,8 @@ describe('runAgent dispatch', () => {
     expect(getEffortOptionForAgent).toHaveBeenCalledWith('scaffold');
     expect(receivedReq.model).toBe('agent-model');
     expect(receivedReq.effort).toBe('medium');
+    expect(insertRun).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'codex-cli:agent-model' }));
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:agent-model' }));
     getModelIdForAgent.mockRestore();
     getModelForAgent.mockRestore();
     getEffortOptionForAgent.mockRestore();
@@ -157,6 +162,7 @@ describe('runAgent dispatch', () => {
     expect(getAgentRunnerMock).toHaveBeenNthCalledWith(1, 'anthropic:opus');
     expect(getAgentRunnerMock).toHaveBeenNthCalledWith(2, 'codex-cli:gpt-5.5');
     expect(requests.map(r => r.model)).toEqual(['opus', 'gpt-5.5']);
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:gpt-5.5' }));
     expect(circuitBreaker.isOpen()).toBe(false);
     getModelIdForAgent.mockRestore();
     getModelForAgent.mockRestore();

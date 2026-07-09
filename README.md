@@ -97,12 +97,13 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 
 - Live agent status and daily run count
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
-- Running jobs update live over SSE; click a row to expand a detail panel
+- Running jobs update live over SSE; click any run row to anchor the detail panel
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
-- The history table lists top-level requests only (workflow sub-steps are hidden but reachable from the detail panel); completed spec runs get inline **continue** and **resume last step** buttons
+- The detail panel includes a workflow summary, per-agent navigation, and token debug breakdown by agent/model/input/output
+- The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
 - Any completed spec run can be continued with a free-text follow-up instruction, or resumed from the last executed step — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
-- Submit form: agent picker + project dropdown (workspace projects) + model/effort settings
+- Submit form: agent picker + project dropdown (workspace projects) + model/effort settings + request reset
 
 If accessing from a remote machine over SSH, use local port forwarding:
 

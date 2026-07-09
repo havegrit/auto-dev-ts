@@ -16,8 +16,8 @@
     .stat-sub { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
     .agents { display: flex; flex-wrap: wrap; gap: 0.4rem; }
     .badge { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #79c0ff; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .table-wrap { overflow-x: hidden; }
+    table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.85rem; }
     th { text-align: left; padding: 0.5rem 0.75rem; color: #8b949e; font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #21262d; }
     td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #21262d; color: #c9d1d9; vertical-align: middle; }
     tr:last-child td { border-bottom: none; }
@@ -26,6 +26,7 @@
     .FAILED  { background: #3b1219; color: #f85149; }
     .RUNNING { background: #1c2d4a; color: #58a6ff; }
     .BLOCKED { background: #3b2f00; color: #f2cc60; }
+    .PENDING { background: #3b2f00; color: #f2cc60; }
     .NEEDS-CLARIFICATION { background: #3b2f00; color: #f2cc60; }
     .agent-name { font-family: monospace; color: #79c0ff; }
     .sub-arrow { color: #6e7681; margin-right: 0.3rem; font-family: monospace; }
@@ -33,11 +34,14 @@
     .tree-toggle:hover { color: #c9d1d9; }
     .child-count { color: #6e7681; font-size: 0.72rem; margin-left: 0.4rem; }
     .duration { color: #8b949e; font-size: 0.78rem; white-space: nowrap; }
-    .output-preview { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 0.78rem; }
+    .output-preview { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 0.78rem; }
+    tr.run-row td { overflow: hidden; text-overflow: ellipsis; }
     .refresh { background: none; border: 1px solid #30363d; color: #8b949e; padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; float: right; white-space: nowrap; }
     .refresh:hover { border-color: #58a6ff; color: #58a6ff; }
     .section-title { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; }
     .load-more-wrap { display: flex; justify-content: center; margin-top: 0.75rem; }
+    .run-action-cell { text-align: left; }
+    .run-action-cell .refresh { float: none; display: inline-flex; align-items: center; justify-content: flex-start; }
 
     /* Submit panel */
     .submit-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
@@ -104,6 +108,14 @@
     }
     .run-btn:hover { background: #388bfd; }
     .run-btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+    .request-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+    .request-actions .run-btn { margin-top: 0; }
+    .reset-btn {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.85rem; cursor: pointer;
+      white-space: nowrap;
+    }
+    .reset-btn:hover { border-color: #8b949e; color: #e6edf3; }
 
     /* Result panel */
     .result-panel { display: none; margin-top: 1rem; border-top: 1px solid #21262d; padding-top: 1rem; }
@@ -173,11 +185,40 @@
     tr.run-row.selected td { background: #1c2d4a; }
     .detail-chip { background: #21262d; border-radius: 4px; padding: 0.15rem 0.5rem; font-family: monospace; font-size: 0.75rem; color: #c9d1d9; }
     .detail-chip.error { background: #3b1219; color: #f85149; }
-    .clarify-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 0.75rem; }
-    .clarify-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
-    .clarify-card-title { color: #e6edf3; font-size: 0.82rem; line-height: 1.5; }
-    .clarify-card-meta { color: #8b949e; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
-    .clarify-card-hint { color: #8b949e; font-size: 0.74rem; margin-top: 0.35rem; }
+    .workflow-nav { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; padding: 0.65rem 0.75rem; margin-bottom: 0.75rem; }
+    .workflow-nav-label { color: #8b949e; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 0.2rem; }
+    .workflow-nav .refresh { float: none; }
+    .workflow-nav .current-step { border-color: #58a6ff; color: #58a6ff; cursor: default; }
+    .workflow-nav-arrow { color: #6e7681; font-family: monospace; font-size: 0.9rem; }
+    .run-summary { border: 1px solid #30363d; border-radius: 8px; background: #0d1117; padding: 0.85rem; margin-bottom: 0.75rem; }
+    .run-summary-title { color: #e6edf3; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.55rem; }
+    .run-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.55rem; margin-bottom: 0.65rem; }
+    .run-summary-item { border: 1px solid #21262d; border-radius: 6px; padding: 0.55rem 0.65rem; background: #161b22; min-width: 0; }
+    .run-summary-label { color: #8b949e; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25rem; }
+    .run-summary-value { color: #c9d1d9; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run-summary-steps { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .run-summary-step-btn { float: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.22rem 0.55rem; font-family: monospace; font-size: 0.75rem; }
+    .token-debug { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #21262d; }
+    .token-debug-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
+    .token-debug-title { color: #e6edf3; font-size: 0.8rem; font-weight: 600; }
+    .token-debug-total { color: #8b949e; font-size: 0.75rem; font-family: monospace; white-space: nowrap; }
+    .token-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.76rem; }
+    .token-table th, .token-table td { padding: 0.35rem 0.45rem; border-bottom: 1px solid #21262d; }
+    .token-table th { color: #8b949e; font-size: 0.68rem; }
+    .token-table td { color: #c9d1d9; }
+    .token-table td:not(:first-child), .token-table th:not(:first-child) { text-align: right; font-family: monospace; }
+    .token-table td:nth-child(2), .token-table th:nth-child(2) { text-align: left; }
+    .token-hints { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+    .token-hint { background: #15120a; border: 1px solid #5f4b16; color: #e3b341; border-radius: 999px; padding: 0.18rem 0.55rem; font-size: 0.7rem; }
+    .clarify-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 0.85rem; }
+    .clarify-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.55rem; }
+    .clarify-card-title { color: #e6edf3; font-size: 0.9rem; line-height: 1.55; margin-bottom: 0.7rem; }
+    .clarify-card-meta { color: #f2cc60; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; font-family: monospace; }
+    .clarify-card-hint { color: #8b949e; font-size: 0.74rem; margin-bottom: 0.3rem; }
+    .clarify-recommendation { background: #15120a; border: 1px solid #5f4b16; border-radius: 6px; color: #e3b341; font-size: 0.8rem; line-height: 1.45; padding: 0.55rem 0.65rem; }
+    .clarify-answer-label { display: block; color: #c9d1d9; font-size: 0.78rem; font-weight: 600; margin: 0.75rem 0 0.35rem; }
+    .clarify-answer { width: 100%; max-height: 8rem; overflow-y: auto; background: #0d1117; border: 1px solid #3d444d; border-radius: 6px; color: #c9d1d9; padding: 0.55rem 0.65rem; font-size: 0.84rem; font-family: inherit; resize: vertical; line-height: 1.5; }
+    .clarify-answer:focus { outline: none; border-color: #f2cc60; box-shadow: 0 0 0 2px rgba(242, 204, 96, 0.12); }
     .live-log { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto; }
     .log-line { padding: 0.15rem 0; border-bottom: 1px solid #161b22; display: flex; gap: 0.5rem; align-items: flex-start; }
     .log-line:last-child { border-bottom: none; }
@@ -300,7 +341,10 @@
       <div class="file-name" id="file-name"></div>
     </div>
 
-    <button class="run-btn" id="run-btn" onclick="submitRequest()">실행</button>
+    <div class="request-actions">
+      <button class="run-btn" id="run-btn" onclick="submitRequest()">실행</button>
+      <button class="reset-btn" type="button" onclick="resetRequestInput()">초기화</button>
+    </div>
 
     <!-- 결과 패널 -->
     <div class="result-panel" id="result-panel">
@@ -322,6 +366,15 @@
     </div>
     <div class="table-wrap">
       <table>
+        <colgroup>
+          <col style="width:15%">
+          <col style="width:8%">
+          <col style="width:8%">
+          <col style="width:5%">
+          <col style="width:40%">
+          <col style="width:16%">
+          <col style="width:8%">
+        </colgroup>
         <thead>
           <tr>
             <th>에이전트</th><th>상태</th><th>소요시간</th><th>턴</th><th>출력 / 원인</th><th>시작시간</th><th>동작</th>
@@ -342,12 +395,10 @@
       <button class="refresh" onclick="closeRunDetail()">닫기</button>
     </div>
     <div id="run-detail-meta" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.78rem;color:#8b949e"></div>
+    <div id="workflow-nav-section" class="workflow-nav" style="display:none"></div>
 
-    <!-- 워크플로우 단계 내역 (자식 run) -->
-    <div id="run-detail-subruns-section" style="display:none;margin-bottom:0.75rem">
-      <div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.4rem">단계 내역</div>
-      <div class="sub-runs" id="run-detail-subruns"></div>
-    </div>
+    <!-- 종료된 실행 요약 -->
+    <div id="run-summary-section" class="run-summary" style="display:none"></div>
 
     <!-- 실시간 로그 (RUNNING 상태일 때) -->
     <div id="live-log-section" style="display:none;margin-bottom:0.75rem">
@@ -372,18 +423,18 @@
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;margin-bottom:0.75rem">
         <div>
           <div style="font-size:0.8rem;color:#f2cc60;margin-bottom:0.25rem">NEEDS-CLARIFICATION</div>
-          <div style="font-size:0.78rem;color:#8b949e">질문에 답하고 추가 지시가 있으면 함께 넣은 뒤 계속 진행합니다.</div>
+          <div style="font-size:0.78rem;color:#8b949e">아래 질문별로 답변을 제출하면, 그 답변이 스펙에 합쳐진 뒤 다음 단계로 진행됩니다.</div>
         </div>
         <span class="detail-chip" id="clarify-question-count">0 QUESTIONS</span>
       </div>
       <div id="clarify-questions" style="display:grid;gap:0.65rem"></div>
       <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid #30363d">
-        <label style="display:block;font-size:0.78rem;color:#8b949e;margin-bottom:0.35rem">추가 요청 (선택)</label>
-        <textarea id="clarify-extra" rows="2" placeholder="예: 검색에 페이지네이션도 추가해줘"
+        <label style="display:block;font-size:0.78rem;color:#8b949e;margin-bottom:0.35rem">추가 지시 (선택, 질문 답변과 함께 반영)</label>
+        <textarea id="clarify-extra" rows="2" placeholder="예: 위 답변 외에 검색에는 페이지네이션도 포함해줘"
           style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.5rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical"></textarea>
       </div>
       <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem;flex-wrap:wrap">
-        <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">이 답변으로 계속</button>
+        <button class="save-btn" id="clarify-submit" onclick="submitAnswers()">답변 제출하고 계속</button>
         <span class="save-status" id="clarify-status"></span>
       </div>
     </div>
@@ -420,6 +471,7 @@
     let selectedEffort = 'high';
     let selectedRunId = null;
     let liveEventSource = null;
+    let detailElapsedTimer = null;
     let configAgents = [];
     // 최근 실행 버튼 로드 상태: 한 번에 유닛(spec 워크플로우 또는 단독 실행) 10개씩.
     const RUNS_UNIT_BATCH = 10;
@@ -476,6 +528,7 @@
     }
 
     const requestDraftKey = 'auto-dev.request-draft.v1';
+    const clarifyDraftPrefix = 'auto-dev.clarify-draft.v1.';
 
     function loadRequestDraft() {
       try {
@@ -501,6 +554,51 @@
       const projectInput = document.getElementById('project-input');
       textInput.addEventListener('input', saveRequestDraft);
       projectInput.addEventListener('input', saveRequestDraft);
+    }
+
+    function resetRequestInput() {
+      selectedFile = null;
+      document.getElementById('text-input').value = '';
+      document.getElementById('file-input').value = '';
+      document.getElementById('file-name').textContent = '';
+      document.getElementById('drop-zone').innerHTML = '파일을 끌어다 놓거나 클릭해서 선택<br><small style="color:#484f58">(.md .txt .json .yaml .yml)</small>';
+      saveRequestDraft();
+    }
+
+    function clarifyDraftKey(runId) {
+      return `${clarifyDraftPrefix}${runId}`;
+    }
+
+    function loadClarifyDraft(runId) {
+      try {
+        const raw = localStorage.getItem(clarifyDraftKey(runId));
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function saveClarifyDraft(section) {
+      const runId = section.dataset.runId;
+      if (!runId) return;
+      const answers = {};
+      section.querySelectorAll('[data-qid]').forEach(inp => {
+        answers[inp.dataset.qid] = inp.value;
+      });
+      const instruction = document.getElementById('clarify-extra').value;
+      try {
+        localStorage.setItem(clarifyDraftKey(runId), JSON.stringify({
+          answers,
+          instruction,
+          updatedAt: new Date().toISOString(),
+        }));
+        const statusEl = document.getElementById('clarify-status');
+        if (statusEl) statusEl.textContent = '임시 저장됨';
+      } catch {}
+    }
+
+    function clearClarifyDraft(runId) {
+      try { localStorage.removeItem(clarifyDraftKey(runId)); } catch {}
     }
 
     async function loadConfig() {
@@ -696,7 +794,7 @@
           const statusEl = document.getElementById('result-status-label');
           const spinnerEl = document.getElementById('result-spinner');
 
-          statusEl.innerHTML = `<span class="status ${run.status}">${run.status}</span>`;
+          statusEl.innerHTML = statusBadge(run);
 
           if (run.output) {
             document.getElementById('result-output').style.display = '';
@@ -710,7 +808,7 @@
             subEl.innerHTML = children.map(c => `
               <div class="sub-run-row">
                 <span class="agent-name">${c.agent_name}</span>
-                <span class="status ${c.status}">${c.status}</span>
+                ${statusBadge(c)}
                 <span class="duration">${formatDuration(c.duration_ms)}</span>
               </div>`).join('');
           }
@@ -814,19 +912,19 @@
         const rowStyle = hidden ? ' style="display:none"' : '';
 
         // 완료된 spec 워크플로우 중 상태가 저장된 것만 표에서 바로 이어갈 수 있다.
-        const continuable = r.agent_name === 'spec' && (r.status === 'DONE' || r.status === 'FAILED') && !!r.clarification_state;
+        const continuable = !r.workflow_run_id && r.agent_name === 'spec' && (r.status === 'DONE' || r.status === 'FAILED') && !!r.clarification_state;
         // 대기 중인 clarifier 질문이 있으면 '답변하기', 아니면 '이어가기'로 라벨을 구분한다.
         const action = continuable
           ? `<button class="refresh" onclick="continueFromRow(event, '${r.id}')">${hasPendingQuestions(r.clarification_state) ? '답변하기' : '이어가기'}</button>`
           : '';
         return `<tr class="run-row${isSelected ? ' selected' : ''}"${dataParent}${rowStyle} onclick="showRunDetail('${r.id}')">
           <td style="white-space:nowrap">${agentCell}</td>
-          <td><span class="status ${r.status}">${r.status}</span></td>
+          <td>${statusBadge(r)}</td>
           <td><span class="duration">${formatDuration(r.duration_ms)}</span></td>
           <td><span class="duration">${r.num_turns ?? '—'}</span></td>
           <td>${errorBadge}<span class="output-preview">${preview}</span></td>
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
-          <td>${action}</td>
+          <td class="run-action-cell">${action}</td>
         </tr>`;
       }).join('');
 
@@ -868,6 +966,53 @@
       } catch {
         return [];
       }
+    }
+
+    function displayStatus(run) {
+      if (run?.agent_name === 'spec' && hasPendingQuestions(run.clarification_state)) return 'PENDING';
+      return run?.status ?? 'UNKNOWN';
+    }
+
+    function statusBadge(run, style = '') {
+      const status = typeof run === 'string' ? run : displayStatus(run);
+      return `<span class="status ${status}"${style ? ` style="${style}"` : ''}>${status}</span>`;
+    }
+
+    function extractJsonObjectText(output) {
+      const text = String(output ?? '').trim();
+      const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+      const candidate = (fenced ? fenced[1] : text).trim();
+      if (candidate.startsWith('{')) return candidate;
+      const start = candidate.indexOf('{');
+      const end = candidate.lastIndexOf('}');
+      return start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate;
+    }
+
+    function extractClarifierQuestionsFromOutput(output) {
+      try {
+        const parsed = typeof output === 'string' ? JSON.parse(extractJsonObjectText(output)) : output;
+        if (!parsed || parsed.ready !== false || !Array.isArray(parsed.questions)) return [];
+        return parsed.questions
+          .filter(q => q && typeof q.id === 'string' && typeof q.text === 'string')
+          .map(q => ({
+            id: q.id,
+            category: typeof q.category === 'string' ? q.category : 'scope',
+            text: q.text,
+            recommendation: typeof q.recommendation === 'string' ? q.recommendation : '',
+          }));
+      } catch {
+        return [];
+      }
+    }
+
+    function applyClarifyRecommendation(btn) {
+      const card = btn.closest('.clarify-card');
+      const textarea = card?.querySelector('[data-qid]');
+      if (!textarea) return;
+      textarea.value = btn.dataset.recommendation ?? '';
+      textarea.focus();
+      const section = document.getElementById('clarify-section');
+      saveClarifyDraft(section);
     }
 
     // 이력 표에서 바로 이어가기: 상세를 열고, 대기 질문이 있으면 답변 폼으로,
@@ -912,6 +1057,23 @@
       const hours = Math.floor(totalMinutes / 60);
       const minutes = totalMinutes % 60;
       return minutes ? `${hours}시간 ${minutes}분` : `${hours}시간`;
+    }
+
+    function elapsedMs(run) {
+      if (run?.status === 'RUNNING' && run.started_at) {
+        const started = new Date(run.started_at).getTime();
+        if (Number.isFinite(started)) return Math.max(0, Date.now() - started);
+      }
+      return run?.duration_ms ?? 0;
+    }
+
+    function startDetailElapsedTimer(run) {
+      if (detailElapsedTimer) { clearInterval(detailElapsedTimer); detailElapsedTimer = null; }
+      const el = document.getElementById('run-detail-elapsed');
+      if (!el) return;
+      const update = () => { el.textContent = formatDuration(elapsedMs(run)); };
+      update();
+      if (run.status === 'RUNNING') detailElapsedTimer = setInterval(update, 1000);
     }
 
     function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -964,31 +1126,188 @@
       await renderRunDetail(run);
     }
 
-    // 워크플로우(spec) 부모 run 이면 단계 내역(자식 run)을 불러와 클릭 가능한 목록으로 보여준다.
-    async function renderDetailChildren(run) {
-      const section = document.getElementById('run-detail-subruns-section');
-      const el = document.getElementById('run-detail-subruns');
+    async function renderWorkflowNav(run) {
+      const section = document.getElementById('workflow-nav-section');
       section.style.display = 'none';
-      el.innerHTML = '';
-      if (run.workflow_run_id) return; // 자식 run 자체는 내역 표시 안 함
-      let children = [];
+      section.innerHTML = '';
+      if (!run.workflow_run_id) return;
+
+      let parent = null;
+      let siblings = [];
       try {
-        children = await fetch(`/api/runs/${run.id}/children`).then(r => r.json());
-      } catch { return; }
-      if (!Array.isArray(children) || children.length === 0) return;
-      el.innerHTML = children.map(c => `
-        <div class="sub-run-row run-row" style="cursor:pointer" onclick="showRunDetail('${c.id}')">
-          <span class="agent-name">${c.agent_name}</span>
-          <span class="status ${c.status}">${c.status}</span>
-          <span class="duration">${formatDuration(c.duration_ms)}</span>
-        </div>`).join('');
+        parent = await fetch(`/api/runs/${run.workflow_run_id}`).then(r => r.json());
+        siblings = await fetch(`/api/runs/${run.workflow_run_id}/children`).then(r => r.json());
+      } catch {
+        return;
+      }
+      if (!parent || !Array.isArray(siblings) || siblings.length === 0) return;
+
+      const idx = siblings.findIndex(s => s.id === run.id);
+      const prev = idx > 0 ? siblings[idx - 1] : null;
+      const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+      const btn = (label, target, extra = '') => target
+        ? `<button class="refresh ${extra}" type="button" onclick="showRunDetail('${target.id}')">${label}</button>`
+        : '';
+      const arrow = (visible, mark) => visible ? `<span class="workflow-nav-arrow">${mark}</span>` : '';
+
+      section.innerHTML = `
+        <span class="workflow-nav-label">Workflow</span>
+        ${btn(prev?.agent_name ?? '', prev)}
+        ${arrow(Boolean(prev), '←')}
+        <button class="refresh current-step" type="button" disabled>${escapeHtml(run.agent_name)}</button>
+        ${arrow(Boolean(next), '→')}
+        ${btn(next?.agent_name ?? '', next)}
+        <button class="refresh" type="button" onclick="showRunDetail('${parent.id}')">상위 spec</button>
+      `;
+      section.style.display = '';
+    }
+
+    function workflowVerdict(output) {
+      const text = String(output ?? '');
+      const verdict = text.match(/^verdict:\s*(.+)$/mi)?.[1]?.trim();
+      if (verdict) return verdict;
+      return text.includes('scaffold: FAILED') || text.includes('test: FAILED') || text.includes('review: FAILED') || text.includes('cicd: FAILED')
+        ? 'FAILED'
+        : undefined;
+    }
+
+    function tokenTotal(row) {
+      return Number(row?.tokens_in ?? 0) + Number(row?.tokens_out ?? 0);
+    }
+
+    function formatTokens(value) {
+      const n = Number(value ?? 0);
+      if (!Number.isFinite(n) || n <= 0) return '0';
+      if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 1 : 2)}M`;
+      if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 1 : 2)}k`;
+      return String(n);
+    }
+
+    function formatModelId(modelId) {
+      const value = String(modelId ?? '').trim();
+      if (!value) return '—';
+      const short = value.includes(':') ? value.slice(value.indexOf(':') + 1) : value;
+      return short.length > 28 ? `${short.slice(0, 25)}...` : short;
+    }
+
+    function tokenDebugHints(rows) {
+      const active = rows.filter(r => tokenTotal(r) > 0);
+      if (active.length === 0) return [];
+      const totalInput = active.reduce((sum, r) => sum + Number(r.tokens_in ?? 0), 0);
+      const totalOutput = active.reduce((sum, r) => sum + Number(r.tokens_out ?? 0), 0);
+      const byTotal = [...active].sort((a, b) => tokenTotal(b) - tokenTotal(a));
+      const top = byTotal[0];
+      const hints = [];
+
+      if (tokenTotal(top) >= active.reduce((sum, r) => sum + tokenTotal(r), 0) * 0.5 && active.length > 1) {
+        hints.push(`${top.agent_name} token 집중`);
+      }
+      if (totalInput >= totalOutput * 4 && totalInput > 0) {
+        hints.push('input 중심: 컨텍스트 과다 여부 확인');
+      }
+      if (totalOutput >= totalInput * 0.6 && totalOutput > 0) {
+        hints.push('output 비중 높음: 응답 장황함 확인');
+      }
+
+      const verbose = active.find(r => Number(r.tokens_out ?? 0) >= 3000);
+      if (verbose) hints.push(`${verbose.agent_name} output verbose`);
+      return hints.slice(0, 3);
+    }
+
+    function renderTokenDebug(rows) {
+      const tokenRows = rows.filter(r => tokenTotal(r) > 0);
+      if (tokenRows.length === 0) return '';
+      const totalIn = tokenRows.reduce((sum, r) => sum + Number(r.tokens_in ?? 0), 0);
+      const totalOut = tokenRows.reduce((sum, r) => sum + Number(r.tokens_out ?? 0), 0);
+      const hints = tokenDebugHints(tokenRows);
+      return `
+        <div class="token-debug">
+          <div class="token-debug-head">
+            <div class="token-debug-title">Token Debug</div>
+            <div class="token-debug-total">total ${formatTokens(totalIn + totalOut)} · in ${formatTokens(totalIn)} / out ${formatTokens(totalOut)}</div>
+          </div>
+          <table class="token-table">
+            <colgroup>
+              <col style="width:22%">
+              <col style="width:34%">
+              <col style="width:14%">
+              <col style="width:14%">
+              <col style="width:16%">
+            </colgroup>
+            <thead><tr><th>agent</th><th>model</th><th>input</th><th>output</th><th>total</th></tr></thead>
+            <tbody>
+              ${tokenRows.map(r => `
+                <tr>
+                  <td>${escapeHtml(r.agent_name)}</td>
+                  <td title="${escapeHtml(r.model_id || '')}">${escapeHtml(formatModelId(r.model_id))}</td>
+                  <td>${formatTokens(r.tokens_in)}</td>
+                  <td>${formatTokens(r.tokens_out)}</td>
+                  <td>${formatTokens(tokenTotal(r))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ${hints.length ? `<div class="token-hints">${hints.map(h => `<span class="token-hint">${escapeHtml(h)}</span>`).join('')}</div>` : ''}
+        </div>
+      `;
+    }
+
+    async function renderRunSummary(run) {
+      const section = document.getElementById('run-summary-section');
+      section.style.display = 'none';
+      section.innerHTML = '';
+      if (run.status === 'RUNNING') return;
+
+      let children = [];
+      if (!run.workflow_run_id) {
+        try {
+          children = await fetch(`/api/runs/${run.id}/children`).then(r => r.json());
+        } catch {}
+      }
+
+      const isWorkflow = run.agent_name === 'spec' && Array.isArray(children) && children.length > 0;
+      const verdict = workflowVerdict(run.output) ?? displayStatus(run);
+      const failed = isWorkflow ? children.filter(c => displayStatus(c) === 'FAILED' || c.error_type) : [];
+      const completed = isWorkflow ? children.filter(c => displayStatus(c) === 'DONE').length : 0;
+      const title = isWorkflow ? '실행 요약' : '단일 실행 요약';
+      const tokenRows = isWorkflow ? children : [run];
+      const summaryItems = [
+        ['결과', verdict],
+        ['소요시간', formatDuration(elapsedMs(run))],
+        ['토큰', formatTokens(tokenRows.reduce((sum, r) => sum + tokenTotal(r), 0))],
+        ...(isWorkflow ? [['단계', `${completed}/${children.length} 완료`]] : []),
+        ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
+        ...(run.error_type ? [['오류', run.error_type]] : []),
+      ];
+      const steps = isWorkflow
+        ? `<div class="run-summary-steps">${children.map(c => `
+            <button class="refresh run-summary-step-btn" type="button" onclick="showRunDetail('${c.id}')">
+              ${escapeHtml(c.agent_name)} ${statusBadge(c, 'font-size:0.65rem')}
+            </button>
+          `).join('')}</div>`
+        : '';
+
+      section.innerHTML = `
+        <div class="run-summary-title">${title}</div>
+        <div class="run-summary-grid">
+          ${summaryItems.map(([label, value]) => `
+            <div class="run-summary-item">
+              <div class="run-summary-label">${escapeHtml(label)}</div>
+              <div class="run-summary-value" title="${escapeHtml(value)}">${escapeHtml(value || '—')}</div>
+            </div>
+          `).join('')}
+        </div>
+        ${steps}
+        ${renderTokenDebug(tokenRows)}
+      `;
       section.style.display = '';
     }
 
     async function renderRunDetail(run) {
       const chips = [
         `<span class="detail-chip">${run.agent_name}</span>`,
-        `<span class="detail-chip"><span class="status ${run.status}" style="font-size:0.7rem">${run.status}</span></span>`,
+        `<span class="detail-chip">${statusBadge(run, 'font-size:0.7rem')}</span>`,
+        `<span class="detail-chip">elapsed <span id="run-detail-elapsed">${formatDuration(elapsedMs(run))}</span></span>`,
         run.error_type ? `<span class="detail-chip error">${run.error_type}</span>` : '',
         run.stop_reason ? `<span class="detail-chip">stop: ${run.stop_reason}</span>` : '',
         run.num_turns ? `<span class="detail-chip">${run.num_turns}턴</span>` : '',
@@ -998,7 +1317,9 @@
       ].filter(Boolean).join(' ');
 
       document.getElementById('run-detail-meta').innerHTML = chips;
-      await renderDetailChildren(run);
+      startDetailElapsedTimer(run);
+      await renderWorkflowNav(run);
+      await renderRunSummary(run);
       if (run.output && run.output.trim()) {
         setOutput('run-detail-output', 'run-detail-output-toggle', run.output);
       } else {
@@ -1038,46 +1359,67 @@
       const section = document.getElementById('clarify-section');
       const cont = document.getElementById('continue-section');
       section.style.display = 'none';
+      section.__questions = [];
       cont.style.display = 'none';
-      renderPrevPlan(run);
-      if (run.agent_name !== 'spec' || run.status === 'RUNNING') return;
+      let targetRun = run;
+      if ((run.agent_name === 'clarifier' || run.agent_name === 'spec') && run.workflow_run_id) {
+        try {
+          targetRun = await fetch(`/api/runs/${run.workflow_run_id}`).then(r => r.json());
+        } catch { /* parent lookup 실패 시 현재 run 기준으로 계속 */ }
+      }
+
+      renderPrevPlan(targetRun);
 
       let questions = [];
       try {
-        const res = await fetch(`/api/runs/${run.id}/clarification`).then(r => r.json());
-        questions = res.questions ?? [];
+        if (run.agent_name === 'clarifier') {
+          questions = extractClarifierQuestionsFromOutput(run.output);
+        }
+        if (questions.length === 0 && targetRun.agent_name === 'spec' && targetRun.status !== 'RUNNING') {
+          const res = await fetch(`/api/runs/${targetRun.id}/clarification`).then(r => r.json());
+          questions = res.questions ?? [];
+        }
       } catch { /* 무시하고 이어가기 폼으로 폴백 */ }
-      if ((!Array.isArray(questions) || questions.length === 0) && run.clarification_state) {
-        questions = extractPendingQuestions(run.clarification_state);
+      if ((!Array.isArray(questions) || questions.length === 0) && targetRun.clarification_state) {
+        questions = extractPendingQuestions(targetRun.clarification_state);
       }
 
       if (questions.length === 0) {
         // 대기 질문이 없고 상태가 저장돼 있으면 후속 수정 지시로 이어갈 수 있게 한다.
-        if (!run.clarification_state) return;
-        cont.dataset.runId = run.id;
+        if (!targetRun.clarification_state) return;
+        cont.dataset.runId = targetRun.id;
         document.getElementById('continue-input').value = '';
         document.getElementById('continue-status').textContent = '';
-        document.getElementById('resume-last-submit').style.display = run.status === 'RUNNING' ? 'none' : '';
+        document.getElementById('resume-last-submit').style.display = targetRun.status === 'RUNNING' ? 'none' : '';
         cont.style.display = '';
         return;
       }
 
-      section.dataset.runId = run.id;
+      section.dataset.runId = targetRun.id;
+      section.__questions = questions;
+      const draft = loadClarifyDraft(targetRun.id);
+      const draftAnswers = draft?.answers && typeof draft.answers === 'object' ? draft.answers : {};
       document.getElementById('clarify-question-count').textContent = `${questions.length} QUESTIONS`;
       document.getElementById('clarify-questions').innerHTML = questions.map((q, idx) => `
         <div class="clarify-card">
           <div class="clarify-card-head">
-            <div class="clarify-card-meta">${escapeHtml(q.category)} · Q${idx + 1}</div>
-            <div class="detail-chip">NEEDS-CLARIFICATION</div>
+            <div class="clarify-card-meta">QUESTION ${idx + 1} · ${escapeHtml(q.category || 'scope')}</div>
+            ${q.recommendation ? `<button class="refresh" type="button" data-recommendation="${escapeHtml(q.recommendation)}" onclick="applyClarifyRecommendation(this)">추천안 적용</button>` : ''}
           </div>
           <div class="clarify-card-title">${escapeHtml(q.text)}</div>
-          <div class="clarify-card-hint">Recommended: ${escapeHtml(q.recommendation || '—')}</div>
-          <textarea data-qid="${escapeHtml(q.id)}" rows="2"
-            style="width:100%;margin-top:0.65rem;max-height:8rem;overflow-y:auto;background:#0d1117;border:1px solid #30363d;border-radius:5px;color:#c9d1d9;padding:0.45rem 0.6rem;font-size:0.82rem;font-family:inherit;resize:vertical;line-height:1.5">${escapeHtml(q.recommendation || '')}</textarea>
+          <div class="clarify-card-hint">추천 답변</div>
+          <div class="clarify-recommendation">${escapeHtml(q.recommendation || '추천안 없음. 직접 답변을 작성하세요.')}</div>
+          <label class="clarify-answer-label">내 답변</label>
+          <textarea class="clarify-answer" data-qid="${escapeHtml(q.id)}" rows="2"
+            placeholder="이 질문에 대한 답변을 입력하세요">${escapeHtml(Object.prototype.hasOwnProperty.call(draftAnswers, q.id) ? draftAnswers[q.id] : (q.recommendation || ''))}</textarea>
         </div>
       `).join('');
-      document.getElementById('clarify-extra').value = '';
+      document.getElementById('clarify-extra').value = typeof draft?.instruction === 'string' ? draft.instruction : '';
       document.getElementById('clarify-status').textContent = '';
+      section.querySelectorAll('[data-qid]').forEach(inp => {
+        inp.addEventListener('input', () => saveClarifyDraft(section));
+      });
+      document.getElementById('clarify-extra').oninput = () => saveClarifyDraft(section);
       section.style.display = '';
     }
 
@@ -1089,6 +1431,7 @@
         if (inp.value.trim()) answers[inp.dataset.qid] = inp.value.trim();
       });
       const instruction = document.getElementById('clarify-extra').value.trim();
+      const questions = Array.isArray(section.__questions) ? section.__questions : [];
       const statusEl = document.getElementById('clarify-status');
       if (Object.keys(answers).length === 0 && !instruction) { statusEl.textContent = '답변 또는 추가 요청을 입력하세요'; return; }
 
@@ -1098,10 +1441,11 @@
         const res = await fetch(`/api/runs/${runId}/answers`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ answers, instruction }),
+          body: JSON.stringify({ answers, instruction, questions }),
         });
         const data = await res.json();
         if (!res.ok) { statusEl.textContent = data.error || 'FAILED'; return; }
+        clearClarifyDraft(runId);
         section.style.display = 'none';
         loadStats();
         showRunDetail(data.runId);
@@ -1161,8 +1505,8 @@
     }
 
     async function showRunDetail(runId) {
-      if (selectedRunId === runId) { closeRunDetail(); return; }
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      if (detailElapsedTimer) { clearInterval(detailElapsedTimer); detailElapsedTimer = null; }
       selectedRunId = runId;
       // spec 부모 상세를 열면 하위 에이전트 기록을 자동으로 펼친다.
       if (lastRunRows.some(r => r.workflow_run_id === runId) && !expandedRuns.has(runId)) {
@@ -1176,13 +1520,15 @@
       const panel = document.getElementById('run-detail-panel');
       panel.style.display = '';
       document.getElementById('run-detail-meta').innerHTML = '<span style="color:#8b949e">불러오는 중...</span>';
+      document.getElementById('workflow-nav-section').style.display = 'none';
+      document.getElementById('run-summary-section').style.display = 'none';
       document.getElementById('live-log-section').style.display = 'none';
       clearOutput('run-detail-output', 'run-detail-output-toggle');
 
       const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
       await renderRunDetail(run);
 
-      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     let projectList = [];
@@ -1278,8 +1624,11 @@
 
     function closeRunDetail() {
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      if (detailElapsedTimer) { clearInterval(detailElapsedTimer); detailElapsedTimer = null; }
       selectedRunId = null;
       document.getElementById('run-detail-panel').style.display = 'none';
+      document.getElementById('workflow-nav-section').style.display = 'none';
+      document.getElementById('run-summary-section').style.display = 'none';
       document.getElementById('live-log-section').style.display = 'none';
       document.querySelectorAll('tr.run-row').forEach(tr => tr.classList.remove('selected'));
     }

@@ -15,6 +15,7 @@ export interface RunRow {
   trigger_source?: string;
   trigger_detail?: string;
   workflow_run_id?: string;
+  model_id?: string;
   error_type?: string;
   stop_reason?: string;
   num_turns: number;
@@ -34,6 +35,7 @@ export interface RunInsert {
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
+  modelId?: string;
 }
 
 export interface RunPatch {
@@ -42,6 +44,7 @@ export interface RunPatch {
   tokensOut?: number;
   status?: RunStatus;
   durationMs?: number;
+  modelId?: string;
   errorType?: string;
   stopReason?: string;
   numTurns?: number;
@@ -49,8 +52,8 @@ export interface RunPatch {
 
 export function insertRun(row: RunInsert): void {
   db.prepare(`
-    INSERT INTO agent_run (id, agent_name, input, output, tokens_in, tokens_out, status, started_at, duration_ms, trigger_source, trigger_detail, workflow_run_id)
-    VALUES (@id, @agentName, @input, @output, @tokensIn, @tokensOut, @status, @startedAt, @durationMs, @triggerSource, @triggerDetail, @workflowRunId)
+    INSERT INTO agent_run (id, agent_name, input, output, tokens_in, tokens_out, status, started_at, duration_ms, trigger_source, trigger_detail, workflow_run_id, model_id)
+    VALUES (@id, @agentName, @input, @output, @tokensIn, @tokensOut, @status, @startedAt, @durationMs, @triggerSource, @triggerDetail, @workflowRunId, @modelId)
   `).run({
     id: row.id,
     agentName: row.agentName,
@@ -64,6 +67,7 @@ export function insertRun(row: RunInsert): void {
     triggerSource: row.triggerSource ?? null,
     triggerDetail: row.triggerDetail ?? null,
     workflowRunId: row.workflowRunId ?? null,
+    modelId: row.modelId ?? null,
   });
 }
 
@@ -76,6 +80,7 @@ export function updateRun(id: string, patch: RunPatch): void {
   if (patch.tokensOut !== undefined) { sets.push('tokens_out = @tokensOut');      params.tokensOut = patch.tokensOut; }
   if (patch.status !== undefined)    { sets.push('status = @status');             params.status = patch.status; }
   if (patch.durationMs !== undefined){ sets.push('duration_ms = @durationMs');    params.durationMs = patch.durationMs; }
+  if (patch.modelId !== undefined)   { sets.push('model_id = @modelId');          params.modelId = patch.modelId; }
   if (patch.errorType !== undefined) { sets.push('error_type = @errorType');      params.errorType = patch.errorType; }
   if (patch.stopReason !== undefined){ sets.push('stop_reason = @stopReason');    params.stopReason = patch.stopReason; }
   if (patch.numTurns !== undefined)  { sets.push('num_turns = @numTurns');        params.numTurns = patch.numTurns; }

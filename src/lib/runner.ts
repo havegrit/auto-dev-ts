@@ -89,12 +89,16 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
 
     const modelId = modelConfig.getModelIdForAgent(opts.name);
     const fallbackModelId = modelConfig.getFallbackModel();
+    let actualModelId = modelId;
+    updateRun(runId, { modelId: actualModelId });
     suppressCircuitForFallback = Boolean(fallbackModelId && fallbackModelId !== modelId);
     let outcome = await runWithModel(modelId, modelConfig.getModelForAgent(opts.name), modelConfig.getEffortOptionForAgent(opts.name));
     if (sawRateLimit && fallbackModelId && fallbackModelId !== modelId) {
       log.warn({ ...ctx, modelId, fallbackModelId }, 'Primary model rate-limited — retrying fallback model');
       sawRateLimit = false;
       suppressCircuitForFallback = false;
+      actualModelId = fallbackModelId;
+      updateRun(runId, { modelId: actualModelId });
       outcome = await runWithModel(
         fallbackModelId,
         modelConfig.getModelForModelId(fallbackModelId),
@@ -108,8 +112,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       tokensIn = outcome.tokensIn;
       tokensOut = outcome.tokensOut;
       costGuard.recordRun();
-      updateRun(runId, { output, tokensIn, tokensOut, status: 'DONE', durationMs, stopReason: outcome.stopReason ?? undefined, numTurns: outcome.numTurns });
-      log.info({ ...ctx, tokensIn, tokensOut, durationMs, numTurns: outcome.numTurns, stopReason: outcome.stopReason }, 'Agent done');
+      updateRun(runId, { output, tokensIn, tokensOut, status: 'DONE', durationMs, modelId: actualModelId, stopReason: outcome.stopReason ?? undefined, numTurns: outcome.numTurns });
+      log.info({ ...ctx, modelId: actualModelId, tokensIn, tokensOut, durationMs, numTurns: outcome.numTurns, stopReason: outcome.stopReason }, 'Agent done');
       emitRunEvent(runId, { type: 'status', ts: now(), data: 'DONE' });
       closeEmitter(runId);
       return { runId, output, tokensIn, tokensOut, durationMs, status: 'DONE' };
@@ -117,8 +121,8 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       output = outcome.output;
       tokensIn = outcome.tokensIn;
       tokensOut = outcome.tokensOut;
-      updateRun(runId, { output, tokensIn, tokensOut, status: 'FAILED', durationMs, errorType: outcome.errorType, stopReason: outcome.stopReason ?? undefined, numTurns: outcome.numTurns });
-      log.error({ ...ctx, errorType: outcome.errorType, permDenials: outcome.permissionDenials, errors: outcome.errors, numTurns: outcome.numTurns, stopReason: outcome.stopReason, durationMs }, 'Agent result error');
+      updateRun(runId, { output, tokensIn, tokensOut, status: 'FAILED', durationMs, modelId: actualModelId, errorType: outcome.errorType, stopReason: outcome.stopReason ?? undefined, numTurns: outcome.numTurns });
+      log.error({ ...ctx, modelId: actualModelId, errorType: outcome.errorType, permDenials: outcome.permissionDenials, errors: outcome.errors, numTurns: outcome.numTurns, stopReason: outcome.stopReason, durationMs }, 'Agent result error');
       emitRunEvent(runId, { type: 'status', ts: now(), data: `FAILED:${outcome.errorType}` });
       closeEmitter(runId);
       return { runId, output, tokensIn, tokensOut, durationMs, status: 'FAILED' };
@@ -171,6 +175,7 @@ function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId
     status: 'RUNNING', startedAt,
     triggerSource: opts.triggerSource, triggerDetail: opts.triggerDetail,
     workflowRunId: opts.workflowRunId,
+    modelId: modelConfig.getModelIdForAgent(opts.name),
   });
   return { runId, blocked: false };
 }
