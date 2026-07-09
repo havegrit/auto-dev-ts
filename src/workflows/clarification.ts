@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { basename } from 'path';
 import type { ClarificationQuestion } from './spec.js';
 
 /** clarifier 게이트 한 라운드: 던진 질문 + (있으면) 사용자가 입력한 답변. */
@@ -32,7 +33,7 @@ function firstHeading(spec: string): string | undefined {
  * 우선순위: 프로젝트명 → 스펙 첫 제목 → `spec-<짧은 uuid>`.
  */
 export function planSlug(project: string | undefined, spec: string): string {
-  const fromProject = project ? slugify(project) : '';
+  const fromProject = project ? slugify(basename(project)) : '';
   if (fromProject) return fromProject;
 
   const heading = firstHeading(spec);

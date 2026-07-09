@@ -4,6 +4,8 @@ import { test } from '../agents/test.js';
 import { cicd } from '../agents/cicd.js';
 import { planner } from '../agents/planner.js';
 import { clarifier } from '../agents/clarifier.js';
+import { AGENT_ORDER } from '../agents/specs.js';
+import { decorateCicdInput } from '../agents/dispatch.js';
 import { randomUUID } from 'crypto';
 import type { RunResult } from '../lib/runner.js';
 import { insertRun, updateRun } from '../store/runs.js';
@@ -17,6 +19,18 @@ export interface SpecOptions {
   triggerDetail?: string;
   workflowRunId?: string;
   cwd?: string;
+  /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
+  autoClarify?: boolean;
+  /** autoClarify 시 자동 답변을 반복할 최대 라운드 수 (초과하면 사용자에게 질문 넘김). 기본 3. */
+  maxClarifyRounds?: number;
+  /** 이전 실행을 이어갈 때 시작할 단계. 지정 단계 이전은 건너뛴다. */
+  startStep?: Step;
+  /** 이전 실행에서 이미 산출한 planner 결과. startStep 이 scaffold 이후일 때 입력으로 쓴다. */
+  initialPlanOutput?: string;
+  /** resume-last 로 재시작할 때 첫 실행 입력에 한 번만 덧붙일 후속 지시. */
+  initialFeedback?: string;
+  /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
+  deliveryIntent?: 'ci' | 'cd';
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -43,10 +57,12 @@ export interface SpecResult {
   planOutput?: string;
   /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
   routeCount?: number;
+  /** skip 모드에서 추천 답안으로 자동 답변한 clarifier 라운드들 (히스토리 편입용). */
+  autoClarifyRounds?: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }>;
 }
 
-const STEP_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'] as const;
-type Step = typeof STEP_ORDER[number];
+export const STEP_ORDER = AGENT_ORDER;
+export type Step = typeof STEP_ORDER[number];
 type RouteTarget = 'planner' | 'clarifier';
 
 /** 출력에서 마지막에 등장한 `[KEY: value]` 마커 값을 소문자로 반환 */
@@ -109,17 +125,25 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const workflowRunId = opts.workflowRunId ?? randomUUID();
   const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
   const maxRoutes = opts.maxRoutes ?? opts.iterations ?? 2;
+  const autoClarify = opts.autoClarify ?? false;
+  const maxClarifyRounds = opts.maxClarifyRounds ?? 3;
   const start = Date.now();
   const results: Record<string, StepResult> = {};
 
-  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd };
+  // skip 모드에서 추천 답안으로 자동 답변한 라운드와, 다음 clarifier 입력에 실을 Q&A 라인.
+  const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> = [];
+  const autoQaLines: string[] = [];
+
+  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd, deliveryIntent: opts.deliveryIntent ?? 'ci' };
   const agents: Record<string, (input: string, opts: any) => Promise<RunResult>> = {
     clarifier, planner, scaffold, test, review, cicd,
   };
 
   const baseSpec = specContent;
   let clarifiedSpec = baseSpec;
-  let planOutput: string | undefined;
+  let planOutput: string | undefined = opts.initialPlanOutput;
+  const initialFeedback = opts.initialFeedback?.trim();
+  let initialFeedbackApplied = false;
   let pendingFeedback: string | undefined;
   let verdict: string | undefined;
   let clarification: ClarificationResult | undefined;
@@ -128,8 +152,17 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
   // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
   const inputFor = (step: Step): string => {
-    const baseline = step === 'clarifier' ? baseSpec : step === 'planner' ? clarifiedSpec : (planOutput ?? clarifiedSpec);
-    return pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
+    let baseline = step === 'clarifier' ? baseSpec : step === 'planner' ? clarifiedSpec : (planOutput ?? clarifiedSpec);
+    if (!initialFeedbackApplied && initialFeedback) {
+      baseline = `${initialFeedback}\n\n${baseline}`;
+      initialFeedbackApplied = true;
+    }
+    // skip 모드에서 자동 답변한 Q&A 를 다음 clarifier 라운드 입력에 실어 맥락을 잇는다.
+    if (step === 'clarifier' && autoQaLines.length > 0) {
+      baseline = `${baseline}\n\n## 이전 Q&A (사용자 의사결정)\n${autoQaLines.join('\n')}`;
+    }
+    const body = pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
+    return step === 'cicd' ? decorateCicdInput(body, runOpts.deliveryIntent) : body;
   };
 
   const routeTo = (target: RouteTarget, fromStep: Step, output: string): boolean => {
@@ -140,7 +173,8 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     return true;
   };
 
-  let cursor = 0;
+  let cursor = opts.startStep ? STEP_ORDER.indexOf(opts.startStep) : 0;
+  if (cursor < 0) cursor = 0;
   let executed = 0;
   const safetyCap = STEP_ORDER.length * (maxRoutes + 2); // 무한 라우팅 방지
 
@@ -162,12 +196,26 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       const parsed = parseClarifierOutput(r.output);
       if (parsed) {
         if (!parsed.ready) {
+          // skip 모드: 상한 안에서는 추천 답안으로 자동 답변하고 clarifier 를 다시 돈다.
+          if (autoClarify && parsed.questions.length > 0 && autoClarifyRounds.length < maxClarifyRounds) {
+            const answers: Record<string, string> = {};
+            for (const q of parsed.questions) {
+              answers[q.id] = q.recommendation;
+              autoQaLines.push(`- ${q.id} (${q.category}): ${q.text} → 답: ${q.recommendation}`);
+            }
+            autoClarifyRounds.push({ questions: parsed.questions, answers });
+            continue; // cursor 그대로 → clarifier 재실행 (자동 답변이 입력에 실림)
+          }
           clarification = { summary: parsed.summary, questions: parsed.questions };
           results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'NEEDS-CLARIFICATION' };
           verdict = 'NEEDS-CLARIFICATION';
           break;
         }
         if (parsed.summary.trim()) clarifiedSpec = parsed.summary.trim();
+      } else {
+        verdict = 'BLOCKED';
+        results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'BLOCKED' };
+        break;
       }
     }
 
@@ -194,7 +242,23 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     cursor++;
   }
 
-  return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount };
+  return {
+    workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount,
+    autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
+  };
+}
+
+export function workflowRunStatus(result: Pick<SpecResult, 'verdict'>): 'DONE' | 'FAILED' {
+  return result.verdict === 'BLOCKED' || result.verdict === 'FAILED' || result.verdict === 'NEEDS-WORK'
+    ? 'FAILED'
+    : 'DONE';
+}
+
+export function workflowOutput(result: SpecResult): string {
+  const stepSummary = Object.entries(result.steps)
+    .map(([k, v]) => `${k}: ${v.status}`)
+    .join(', ');
+  return result.verdict ? `${stepSummary}\nverdict: ${result.verdict}` : stepSummary;
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
@@ -211,13 +275,10 @@ export function runSpecBackground(specContent: string, opts: SpecOptions = {}): 
 
   const wallStart = Date.now();
   runSpec(specContent, { ...opts, workflowRunId: runId }).then(result => {
-    const stepSummary = Object.entries(result.steps)
-      .map(([k, v]) => `${k}: ${v.status}`)
-      .join(', ');
     const output = result.clarification?.questions.length
-      ? `${stepSummary}\n\n${JSON.stringify(result.clarification, null, 2)}`
-      : stepSummary;
-    updateRun(runId, { output, status: 'DONE', durationMs: result.totalDurationMs });
+      ? `${workflowOutput(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`
+      : workflowOutput(result);
+    updateRun(runId, { output, status: workflowRunStatus(result), durationMs: result.totalDurationMs });
   }).catch(err => {
     updateRun(runId, {
       output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,

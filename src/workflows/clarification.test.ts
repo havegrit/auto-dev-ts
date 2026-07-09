@@ -6,6 +6,10 @@ describe('planSlug', () => {
     expect(planSlug('My Cool API', 'spec body')).toBe('my-cool-api');
   });
 
+  it('derives the same slug from a path-like project name', () => {
+    expect(planSlug('/home/shin/workspace/wealth-os', 'spec body')).toBe('wealth-os');
+  });
+
   it('falls back to the spec first heading when no project is given', () => {
     expect(planSlug(undefined, '# 사용자 인증\n본문')).toBe('사용자-인증');
   });

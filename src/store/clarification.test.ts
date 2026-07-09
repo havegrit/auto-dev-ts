@@ -27,6 +27,7 @@ describe('clarification state store', () => {
       slug: 'my-api',
       planFile: 'docs/plan/my-api.md',
       cwd: '/tmp/proj',
+      steps: ['clarifier', 'planner'],
       rounds: [
         { questions: [{ id: 'q1', category: 'scope', text: '범위는?', recommendation: 'CRUD' }], answers: { q1: 'CRUD' } },
       ],

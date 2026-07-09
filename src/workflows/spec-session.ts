@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
 import { writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { runSpec, type SpecResult } from './spec.js';
+import { runSpec, workflowOutput, workflowRunStatus, STEP_ORDER, type SpecResult, type Step } from './spec.js';
 import { composeClarifierInput, renderPlanDoc, planSlug, type ClarificationRound } from './clarification.js';
-import { insertRun, updateRun } from '../store/runs.js';
+import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
 import { saveClarificationState, getClarificationState, type ClarificationState } from '../store/clarification.js';
 
 export interface SpecSessionOptions {
@@ -13,6 +13,12 @@ export interface SpecSessionOptions {
   iterations?: number;
   triggerSource?: string;
   triggerDetail?: string;
+  /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
+  autoClarify?: boolean;
+  /** resume-last 로 재시작할 때 첫 실행 입력에 한 번만 붙일 후속 지시. */
+  resumeInstruction?: string;
+  /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
+  deliveryIntent?: 'ci' | 'cd';
 }
 
 export interface SpecSessionHandle {
@@ -30,6 +36,7 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
     slug,
     planFile: join('docs', 'plan', `${slug}.md`),
     cwd: opts.cwd,
+    steps: serializeSteps(opts.steps),
     rounds: [],
   };
   return launch(state, opts);
@@ -56,6 +63,7 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
   return launch(state, {
     project: prev.project,
     cwd: prev.cwd,
+    steps: restoreSteps(prev.steps),
     triggerSource: 'dashboard',
   });
 }
@@ -66,19 +74,46 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
  * "스펙 + 누적 Q&A + 누적 후속지시" 로 파이프라인을 처음부터 다시 실행한다.
  */
 export function continueSpecSession(parentRunId: string, instruction: string): SpecSessionHandle {
-  const text = instruction.trim();
-  if (!text) throw new Error('instruction is required');
-
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
-  const rounds: ClarificationRound[] = [...prev.rounds.map((r) => ({ ...r })), { questions: [], followup: text }];
+  const text = instruction.trim();
+  const rounds: ClarificationRound[] = text
+    ? [...prev.rounds.map((r) => ({ ...r })), { questions: [], followup: text }]
+    : [...prev.rounds.map((r) => ({ ...r }))];
   const state: ClarificationState = { ...prev, rounds };
   return launch(state, {
     project: prev.project,
     cwd: prev.cwd,
+    steps: restoreSteps(prev.steps),
     triggerSource: 'dashboard',
     triggerDetail: `continue:${parentRunId.slice(0, 8)}`,
+  });
+}
+
+/**
+ * 실패했거나 다시 시도하고 싶은 spec run 을 마지막으로 실행된 단계부터 재개한다.
+ * 이전 planner 산출물을 상태에서 복원해 scaffold/test/review/cicd 입력으로 그대로 사용한다.
+ */
+export function resumeLastSpecStep(parentRunId: string, instruction?: string): SpecSessionHandle {
+  const prev = getClarificationState(parentRunId);
+  if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
+
+  const lastStep = lastExecutedWorkflowStep(parentRunId);
+  if (!lastStep) throw new Error(`No workflow steps found for run: ${parentRunId}`);
+
+  const extra = (instruction ?? '').trim();
+  const state: ClarificationState = { ...prev, rounds: prev.rounds.map((r) => ({ ...r })) };
+
+  return launch(state, {
+    project: prev.project,
+    cwd: prev.cwd,
+    steps: restoreSteps(prev.steps),
+    triggerSource: 'dashboard',
+    triggerDetail: `resume:${parentRunId.slice(0, 8)}:${lastStep}`,
+    resumeInstruction: extra || undefined,
+  }, {
+    startStep: lastStep,
   });
 }
 
@@ -110,9 +145,27 @@ function roundIsAnswered(round: ClarificationRound): boolean {
   return Object.values(answers).some((a) => a != null && String(a).trim());
 }
 
-function launch(state: ClarificationState, opts: SpecSessionOptions): SpecSessionHandle {
+function isWorkflowStep(value: string): value is Step {
+  return (STEP_ORDER as readonly string[]).includes(value);
+}
+
+function lastExecutedWorkflowStep(parentRunId: string): Step | undefined {
+  const children = getRunsByWorkflowId(parentRunId).filter((r) => isWorkflowStep(r.agent_name));
+  return children.at(-1)?.agent_name as Step | undefined;
+}
+
+function serializeSteps(steps: Set<string> | undefined): string[] | undefined {
+  return steps ? [...steps] : undefined;
+}
+
+function restoreSteps(steps: string[] | undefined): Set<string> | undefined {
+  return steps ? new Set(steps) : undefined;
+}
+
+function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { startStep: Step }): SpecSessionHandle {
   const runId = randomUUID();
   const input = composeClarifierInput(state.spec, state.rounds);
+  mkdirSync(state.cwd, { recursive: true });
   insertRun({
     id: runId,
     agentName: 'spec',
@@ -126,42 +179,57 @@ function launch(state: ClarificationState, opts: SpecSessionOptions): SpecSessio
   // (게이트에서 멈추면 finalize 가 질문 라운드를 더해 다시 저장한다.)
   saveClarificationState(runId, state);
 
-  const done = finalize(runId, state, opts, input);
+  const done = finalize(runId, state, opts, input, resume);
   return { runId, done };
 }
 
-async function finalize(runId: string, state: ClarificationState, opts: SpecSessionOptions, input: string): Promise<void> {
+async function finalize(runId: string, state: ClarificationState, opts: SpecSessionOptions, input: string, resume?: { startStep: Step }): Promise<void> {
   const wallStart = Date.now();
   try {
     const result = await runSpec(input, {
       workflowRunId: runId,
       steps: opts.steps,
       iterations: opts.iterations,
+      autoClarify: opts.autoClarify,
+      initialFeedback: opts.resumeInstruction,
+      deliveryIntent: opts.deliveryIntent ?? 'ci',
       triggerSource: opts.triggerSource ?? 'dashboard',
       cwd: state.cwd,
+      startStep: resume?.startStep,
+      initialPlanOutput: state.planOutput,
     });
 
-    writePlanDoc(state, result);
+    // skip 모드가 추천 답안으로 자동 답변한 라운드를 히스토리에 편입해
+    // plan 문서와 저장 상태(이후 이어가기)에 그 결정들이 남게 한다.
+    const autoRounds: ClarificationRound[] = (result.autoClarifyRounds ?? []).map((r) => ({
+      questions: r.questions,
+      answers: r.answers,
+    }));
+    const merged: ClarificationState = autoRounds.length
+      ? { ...state, rounds: [...state.rounds, ...autoRounds] }
+      : state;
+
+    writePlanDoc(merged, result);
 
     // 이 run 의 플랜을 상태에 남겨 나중에 이어갈 때 대시보드에서 볼 수 있게 한다.
     // 이번 run 이 플랜을 산출하지 못했으면(게이트에서 멈춤) 직전 플랜을 유지한다.
-    const planOutput = result.planOutput ?? state.planOutput;
+    const planOutput = result.planOutput ?? merged.planOutput;
 
     if (result.verdict === 'NEEDS-CLARIFICATION' && result.clarification) {
-      const rounds: ClarificationRound[] = [...state.rounds, { questions: result.clarification.questions }];
-      saveClarificationState(runId, { ...state, rounds, planOutput });
+      const rounds: ClarificationRound[] = [...merged.rounds, { questions: result.clarification.questions }];
+      saveClarificationState(runId, { ...merged, rounds, planOutput });
       updateRun(runId, {
-        output: `${stepSummary(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`,
+        output: `${workflowOutput(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`,
         status: 'DONE',
         durationMs: result.totalDurationMs,
       });
       return;
     }
 
-    saveClarificationState(runId, { ...state, planOutput });
+    saveClarificationState(runId, { ...merged, planOutput });
     updateRun(runId, {
-      output: stepSummary(result),
-      status: result.verdict === 'BLOCKED' || result.verdict === 'FAILED' ? 'FAILED' : 'DONE',
+      output: workflowOutput(result),
+      status: workflowRunStatus(result),
       durationMs: result.totalDurationMs,
     });
   } catch (err) {
@@ -171,12 +239,6 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       durationMs: Date.now() - wallStart,
     });
   }
-}
-
-function stepSummary(result: SpecResult): string {
-  return Object.entries(result.steps)
-    .map(([k, v]) => `${k}: ${v.status}`)
-    .join(', ');
 }
 
 /** plan 파일을 cwd/docs/plan/<slug>.md 에 항상 최신 전체 스냅샷으로 기록한다. */

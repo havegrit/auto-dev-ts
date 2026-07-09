@@ -13,6 +13,8 @@ export interface ClarificationState {
   planFile: string;
   /** 에이전트 실행 cwd (프로젝트 절대경로). */
   cwd: string;
+  /** 이 run 이 실행해야 하는 spec 단계 필터. undefined 면 전체 파이프라인. */
+  steps?: string[];
   rounds: ClarificationRound[];
   /** 이 run 의 planner 산출 플랜. 나중에 대시보드에서 이전 플랜을 보여주는 데 쓴다. */
   planOutput?: string;

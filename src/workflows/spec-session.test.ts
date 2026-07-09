@@ -1,20 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const specInputs: string[] = [];
+const specOptions: any[] = [];
 let specResult: any;
 
 vi.mock('./spec.js', () => ({
-  runSpec: vi.fn(async (input: string) => {
+  STEP_ORDER: ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'],
+  runSpec: vi.fn(async (input: string, opts: any) => {
     specInputs.push(input);
+    specOptions.push(opts);
     return specResult;
   }),
+  workflowOutput: (result: any) => {
+    const summary = Object.entries(result.steps ?? {}).map(([k, v]: any) => `${k}: ${v.status}`).join(', ');
+    return result.verdict ? `${summary}\nverdict: ${result.verdict}` : summary;
+  },
+  workflowRunStatus: (result: any) => (
+    result.verdict === 'BLOCKED' || result.verdict === 'FAILED' || result.verdict === 'NEEDS-WORK' ? 'FAILED' : 'DONE'
+  ),
 }));
 
 const inserted: any[] = [];
 const updates: any[] = [];
+let childRuns: any[] = [];
 vi.mock('../store/runs.js', () => ({
   insertRun: vi.fn((row: any) => inserted.push(row)),
   updateRun: vi.fn((id: string, patch: any) => updates.push({ id, ...patch })),
+  getRunsByWorkflowId: vi.fn(() => childRuns),
 }));
 
 const stateStore = new Map<string, any>();
@@ -31,15 +43,17 @@ vi.mock('fs', () => ({
   mkdirSync: vi.fn(),
 }));
 
-import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification, specRunPlan } from './spec-session.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from './spec-session.js';
 
 const Q1 = { id: 'q1', category: 'scope', text: '범위는?', recommendation: '핵심 CRUD' };
 
 beforeEach(() => {
   specInputs.length = 0;
+  specOptions.length = 0;
   inserted.length = 0;
   updates.length = 0;
   writes.length = 0;
+  childRuns = [];
   stateStore.clear();
   saveClarificationState.mockClear();
   getClarificationState.mockClear();
@@ -72,6 +86,43 @@ describe('startSpecSession (round 0)', () => {
     const plan = writes.find(w => w.path === '/tmp/proj/docs/plan/my-api.md');
     expect(plan).toBeDefined();
     expect(plan!.content).toContain('사용자 관리 기능');
+  });
+
+  it('serializes a partial steps filter into clarification state', async () => {
+    specResult = {
+      workflowRunId: 'x',
+      steps: { clarifier: { runId: 'c', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { runId, done } = startSpecSession('사용자 관리 기능', {
+      project: 'my-api',
+      cwd: '/tmp/proj',
+      steps: new Set(['clarifier', 'planner']),
+    });
+    await done;
+
+    expect(stateStore.get(runId).steps).toEqual(['clarifier', 'planner']);
+    expect(specOptions[0].steps).toEqual(new Set(['clarifier', 'planner']));
+  });
+
+  it('passes the default CI intent into the workflow', async () => {
+    specResult = {
+      workflowRunId: 'x',
+      steps: { clarifier: { runId: 'c', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { done } = startSpecSession('사용자 관리 기능', {
+      project: 'my-api',
+      cwd: '/tmp/proj',
+      triggerSource: 'dashboard',
+    });
+    await done;
+
+    expect(specOptions[0].deliveryIntent).toBe('ci');
   });
 });
 
@@ -199,8 +250,197 @@ describe('continueSpecSession', () => {
     expect(() => continueSpecSession('missing', '뭔가')).toThrow(/No clarification state/);
   });
 
-  it('rejects a blank instruction', () => {
-    expect(() => continueSpecSession('parent', '   ')).toThrow(/instruction is required/);
+  it('allows a blank instruction and reruns from the same stored state', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD' } }],
+    });
+    specResult = {
+      workflowRunId: 'z',
+      steps: { scaffold: { runId: 's', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { runId, done } = continueSpecSession('parent', '   ');
+    await done;
+
+    expect(runId).not.toBe('parent');
+    expect(specInputs[0]).toContain('사용자 관리 기능');
+    expect(inserted.find(r => r.id === runId).triggerDetail).toBe('continue:parent');
+  });
+});
+
+describe('resumeLastSpecStep', () => {
+  it('starts a new run from the last executed workflow step and reuses the stored plan', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD' } }],
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    });
+    childRuns = [
+      { agent_name: 'clarifier', status: 'DONE' },
+      { agent_name: 'planner', status: 'DONE' },
+      { agent_name: 'scaffold', status: 'DONE' },
+      { agent_name: 'test', status: 'DONE' },
+      { agent_name: 'review', status: 'FAILED' },
+    ];
+    specResult = {
+      workflowRunId: 'r',
+      steps: { review: { runId: 'review-2', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    };
+
+    const { runId, done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(runId).not.toBe('parent');
+    expect(inserted.find(r => r.id === runId).triggerDetail).toBe('resume:parent:review');
+    expect(specOptions[0].startStep).toBe('review');
+    expect(specOptions[0].initialPlanOutput).toBe('PLAN:\n1. scaffold | build\nEND.');
+    expect(specOptions[0].initialFeedback).toBeUndefined();
+    expect(updates.find(u => u.id === runId && u.status === 'DONE')).toBeDefined();
+  });
+
+  it('passes resume-last instructions as one-time initial feedback', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1], answers: { q1: 'CRUD' } }],
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    });
+    childRuns = [
+      { agent_name: 'clarifier', status: 'DONE' },
+      { agent_name: 'planner', status: 'DONE' },
+      { agent_name: 'scaffold', status: 'DONE' },
+      { agent_name: 'test', status: 'DONE' },
+      { agent_name: 'review', status: 'FAILED' },
+    ];
+    specResult = {
+      workflowRunId: 'r',
+      steps: { review: { runId: 'review-2', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+      planOutput: 'PLAN:\n1. scaffold | build\nEND.',
+    };
+
+    const { done } = resumeLastSpecStep('parent', '리뷰에서 지적한 내용을 반영해');
+    await done;
+
+    expect(specOptions[0].initialFeedback).toBe('리뷰에서 지적한 내용을 반영해');
+  });
+
+  it('marks NEEDS-WORK workflow verdicts as FAILED', async () => {
+    stateStore.set('parent', {
+      spec: 's', slug: 's', planFile: 'docs/plan/s.md', cwd: '/tmp/proj', rounds: [],
+      planOutput: 'PLAN',
+    });
+    childRuns = [{ agent_name: 'review', status: 'DONE' }];
+    specResult = {
+      workflowRunId: 'r',
+      steps: { review: { runId: 'review-2', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'NEEDS-WORK',
+      planOutput: 'PLAN',
+    };
+
+    const { runId, done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(updates.find(u => u.id === runId && u.status === 'FAILED')).toBeDefined();
+  });
+});
+
+describe('partial steps persistence across resumes', () => {
+  it('restores stored steps when answering a clarification round', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      steps: ['clarifier', 'planner'],
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD' });
+    await done;
+
+    expect(specOptions[0].steps).toEqual(new Set(['clarifier', 'planner']));
+    expect(stateStore.get(runId).steps).toEqual(['clarifier', 'planner']);
+  });
+
+  it('restores stored steps when continuing a completed run', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      steps: ['planner', 'review'],
+      rounds: [],
+    });
+    specResult = { workflowRunId: 'z', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = continueSpecSession('parent', '리뷰만 다시 확인해');
+    await done;
+
+    expect(specOptions[0].steps).toEqual(new Set(['planner', 'review']));
+    expect(stateStore.get(runId).steps).toEqual(['planner', 'review']);
+  });
+
+  it('restores stored steps when resuming from the last executed step', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      steps: ['test', 'review'],
+      rounds: [],
+      planOutput: 'PLAN',
+    });
+    childRuns = [{ agent_name: 'review', status: 'FAILED' }];
+    specResult = { workflowRunId: 'r', steps: {}, totalDurationMs: 1, verdict: 'SHIP', planOutput: 'PLAN' };
+
+    const { runId, done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(specOptions[0].steps).toEqual(new Set(['test', 'review']));
+    expect(specOptions[0].startStep).toBe('review');
+    expect(stateStore.get(runId).steps).toEqual(['test', 'review']);
+  });
+
+  it('leaves steps undefined for full-pipeline sessions', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD' });
+    await done;
+
+    expect(specOptions[0].steps).toBeUndefined();
+    expect(stateStore.get(runId).steps).toBeUndefined();
   });
 });
 
