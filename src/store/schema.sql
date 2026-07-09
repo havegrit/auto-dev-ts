@@ -19,3 +19,13 @@ CREATE TABLE IF NOT EXISTS agent_run (
 CREATE INDEX IF NOT EXISTS idx_run_started ON agent_run(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_run_workflow ON agent_run(workflow_run_id);
 CREATE INDEX IF NOT EXISTS idx_run_agent ON agent_run(agent_name);
+
+CREATE TABLE IF NOT EXISTS agent_run_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  type TEXT NOT NULL,
+  data TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_run_event_run ON agent_run_event(run_id, id);

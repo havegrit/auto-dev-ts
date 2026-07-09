@@ -27,6 +27,20 @@ for (const col of [
   try { db.exec(col); } catch { /* 이미 존재 */ }
 }
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_run_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    type TEXT NOT NULL,
+    data TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+  )
+`);
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_run_event_run ON agent_run_event(run_id, id)');
+} catch { /* already exists */ }
+
 // 서버 시작 시 RUNNING 상태로 남은 고아 레코드를 FAILED로 정리
 db.prepare(`
   UPDATE agent_run

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { appendRunEvent } from '../store/run-events.js';
 
 export interface RunEvent {
   type: 'tool_call' | 'tool_result' | 'text' | 'status';
@@ -18,6 +19,7 @@ export function getOrCreateEmitter(runId: string): EventEmitter {
 }
 
 export function emitRunEvent(runId: string, event: RunEvent): void {
+  appendRunEvent(runId, event);
   emitters.get(runId)?.emit('event', event);
 }
 

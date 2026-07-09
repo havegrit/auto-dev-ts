@@ -18,6 +18,7 @@ export interface RunRow {
   error_type?: string;
   stop_reason?: string;
   num_turns: number;
+  clarification_state?: string;
 }
 
 export interface RunInsert {
@@ -91,6 +92,43 @@ export function getRecentRuns(limit: number): RunRow[] {
   return db.prepare('SELECT * FROM agent_run ORDER BY started_at DESC LIMIT ?').all(limit) as RunRow[];
 }
 
+export interface RecentRunsPage {
+  rows: RunRow[];
+  hasMore: boolean;
+}
+
+// 무한 스크롤용 유닛 단위 페이지. 유닛 = 최상위 run(workflow_run_id 없는 spec 부모 또는 단독 실행).
+// 최신 유닛 units 개를 부모 시작순 내림차순으로 뽑고, 각 부모 뒤에 자식 단계를 시작순으로 붙여
+// 표시 순서 그대로 평면 배열로 돌려준다. hasMore 는 다음 페이지 존재 여부.
+export function getRecentRunUnits(units: number): RecentRunsPage {
+  const parents = db.prepare(
+    'SELECT * FROM agent_run WHERE workflow_run_id IS NULL ORDER BY started_at DESC, id DESC LIMIT ?',
+  ).all(units + 1) as RunRow[];
+  const hasMore = parents.length > units;
+  const page = hasMore ? parents.slice(0, units) : parents;
+  if (page.length === 0) return { rows: [], hasMore };
+
+  const placeholders = page.map(() => '?').join(',');
+  const children = db.prepare(
+    `SELECT * FROM agent_run WHERE workflow_run_id IN (${placeholders}) ORDER BY started_at ASC`,
+  ).all(...page.map((p) => p.id)) as RunRow[];
+
+  const childrenByParent = new Map<string, RunRow[]>();
+  for (const child of children) {
+    const list = childrenByParent.get(child.workflow_run_id!) ?? [];
+    list.push(child);
+    childrenByParent.set(child.workflow_run_id!, list);
+  }
+
+  const rows: RunRow[] = [];
+  for (const parent of page) {
+    rows.push(parent);
+    const kids = childrenByParent.get(parent.id);
+    if (kids) rows.push(...kids);
+  }
+  return { rows, hasMore };
+}
+
 export function getRunsByWorkflowId(workflowRunId: string): RunRow[] {
   return db.prepare('SELECT * FROM agent_run WHERE workflow_run_id = ? ORDER BY started_at ASC').all(workflowRunId) as RunRow[];
 }
@@ -98,7 +136,8 @@ export function getRunsByWorkflowId(workflowRunId: string): RunRow[] {
 export function getStats(): object {
   const total = (db.prepare('SELECT COUNT(*) as count FROM agent_run').get() as { count: number }).count;
   const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
-  const todayCount = (db.prepare("SELECT COUNT(*) as count FROM agent_run WHERE started_at >= ?").get(todayStr + 'T00:00:00') as { count: number }).count;
+  const todayStartUtc = new Date(`${todayStr}T00:00:00+09:00`).toISOString();
+  const todayCount = (db.prepare("SELECT COUNT(*) as count FROM agent_run WHERE started_at >= ?").get(todayStartUtc) as { count: number }).count;
   const byStatus = db.prepare('SELECT status, COUNT(*) as count FROM agent_run GROUP BY status').all();
   const byAgent = db.prepare(`
     SELECT agent_name,
