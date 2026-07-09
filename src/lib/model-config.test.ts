@@ -42,6 +42,7 @@ describe('modelConfig model resolution', () => {
       { id: 'codex-cli:fast-model', provider: 'codex-cli', providerModel: 'fast-model', displayName: 'Fast Model', effortLevels: ['low', 'high'] },
       { id: 'anthropic:fallback-model', provider: 'anthropic', providerModel: 'fallback-model', displayName: 'Fallback Model', effortLevels: ['low', 'medium', 'high'] },
       { id: 'anthropic:global-model', provider: 'anthropic', providerModel: 'global-model', displayName: 'Global Model', effortLevels: ['high'] },
+      { id: 'openai-compatible:deepseek-v4', provider: 'openai-compatible', providerModel: 'deepseek-v4', displayName: 'OpenAI Compatible', effortLevels: ['low', 'medium'] },
     ];
   });
 
@@ -72,6 +73,18 @@ describe('modelConfig model resolution', () => {
 
     expect(modelConfig.getModelForAgent('scaffold')).toBe('fallback-model');
     expect(modelConfig.getProviderForAgent('scaffold')).toBe('anthropic');
+  });
+
+  it('skips openai-compatible models for agent runs and falls back to an agent-capable model', async () => {
+    process.env.AUTO_DEV_MODEL = 'openai-compatible:deepseek-v4';
+    process.env.AUTO_DEV_FALLBACK_MODEL = 'anthropic:fallback-model';
+    process.env.AUTO_DEV_AGENT_SCAFFOLD_MODEL = 'openai-compatible:deepseek-v4';
+    const { loadModelsFromCli, modelConfig } = await freshConfig();
+
+    await loadModelsFromCli();
+
+    expect(modelConfig.getProviderForAgent('scaffold')).toBe('anthropic');
+    expect(modelConfig.getModelForAgent('scaffold')).toBe('fallback-model');
   });
 
   it('uses another available model when neither selected nor fallback models are available', async () => {

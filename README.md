@@ -17,7 +17,7 @@ All runs are persisted to a local SQLite database and visible through a built-in
 | `scaffold` | Generates code skeletons from a spec or description |
 | `review` | Multi-lens code review: correctness · security · perf · style (parallel) |
 | `test` | Generates test cases for existing code |
-| `cicd` | Generates CI/CD pipeline configs (GitHub Actions, etc.) |
+| `cicd` | Generates CI-first pipeline configs; CD is opt-in |
 | `planner` | Produces a structured development plan from a spec |
 | `clarifier` | Identifies ambiguities in a spec before planning |
 
@@ -49,7 +49,7 @@ Input can be an inline string or a file path — auto-dev detects automatically.
 
 ./run review src/
 ./run test src/auth.ts
-./run cicd "Node.js monorepo, deploy to AWS ECS"
+./run cicd --cd "Node.js monorepo, deploy to AWS ECS"
 ./run planner path/to/spec.md
 ./run clarifier path/to/spec.md
 
@@ -89,7 +89,7 @@ for sandboxed containers: set `IS_SANDBOX=1`.
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
+If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. The final `cicd` step is CI-first by default; CD artifacts are generated only when deployment is explicitly requested. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
 
 ## Dashboard
 

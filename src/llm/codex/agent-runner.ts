@@ -16,9 +16,18 @@ function timeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 600_000;
 }
 
+function sandboxMode(): string | undefined {
+  const raw = process.env.AUTO_DEV_CODEX_SANDBOX;
+  if (!raw) return undefined;
+  const mode = raw.trim();
+  return mode && mode !== 'default' && mode !== 'config' ? mode : undefined;
+}
+
 function codexArgs(req: AgentRunRequest): string[] {
   // --json: 이벤트를 JSONL 로 흘려 실행 중 진행 상황을 라이브로 받는다.
   const args = ['exec', '--json', '--cd', req.cwd];
+  const sandbox = sandboxMode();
+  if (sandbox) args.push('--sandbox', sandbox);
   if (shouldPassModelToCodex(req.model)) args.push('--model', req.model);
   args.push(appendCodexJsonContract(req.prompt));
   return args;

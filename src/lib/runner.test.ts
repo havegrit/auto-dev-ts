@@ -16,6 +16,15 @@ vi.mock('../store/runs.js', () => ({
   getStats: vi.fn(() => ({})),
 }));
 
+// Event persistence hits SQLite too (agent_run_event has a FK to agent_run),
+// and runs.js above is mocked so no run row exists. Mock the event layer to
+// keep these dispatch tests DB-free; event persistence is covered separately.
+vi.mock('./run-events.js', () => ({
+  emitRunEvent: vi.fn(),
+  closeEmitter: vi.fn(),
+  getOrCreateEmitter: vi.fn(),
+}));
+
 // Mutable holder so each test can install its own fake runner.
 let fakeRunnerImpl: {
   run: (req: unknown, onEvent: (e: AgentEvent) => void) => Promise<AgentRunOutcome>;

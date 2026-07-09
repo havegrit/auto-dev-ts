@@ -344,7 +344,8 @@ Java 버전 대비 차이점:
 ### 5.6 cicd
 
 - 도구: `Read`, `Write` (`Bash` 없음 — 실제 배포/빌드 명령 실행 불가)
-- GitHub Actions YAML, Dockerfile, 배포 manifest 등 **설정 파일 생성만**
+- 기본은 CI-first: GitHub Actions YAML, Dockerfile, 빌드/테스트/검증 설정 파일 생성
+- 배포 manifest / 릴리스 스크립트는 CD 의도가 명시된 경우에만 추가
 - 애플리케이션 소스 코드는 구현하지 않는다 (scaffold 전용)
 
 ---
@@ -867,7 +868,8 @@ Bun 으로 런타임 교체도 가능.
 **실제 배포 실행은 의도적으로 범위에서 제외**
 
 `cicd` 에이전트는 GitHub Actions YAML, Dockerfile, 배포 manifest 등
-재사용 가능한 **설정 파일 생성**까지를 담당합니다.
+재사용 가능한 **설정 파일 생성**까지를 담당합니다. 기본 동작은 CI-first 이고,
+배포 manifest·릴리스 자동화는 명시적으로 CD 를 요청했을 때만 생성합니다.
 `kubectl apply`, `gh workflow run` 등 실제 배포 명령 실행은 포함하지 않습니다.
 배포 환경은 프로젝트마다 다르고 안전상 사람의 검토가 필요한 영역이기 때문입니다.
 

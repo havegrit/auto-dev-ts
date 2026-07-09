@@ -6,8 +6,9 @@ import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { runSpec } from '../workflows/spec.js';
-import { startSpecSession, resumeSpecSession, continueSpecSession, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
-import { getRun, getRecentRuns, getRunsByWorkflowId, getStats } from '../store/runs.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
+import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats } from '../store/runs.js';
+import { getRunEvents } from '../store/run-events.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { modelConfig } from '../lib/model-config.js';
@@ -54,13 +55,13 @@ export function createRoutes(): Hono {
     const agent = getAgent(name);
     if (!agent) return c.json({ error: `Unknown agent: ${name}` }, 404);
 
-    const body = await c.req.json<{ input: string; triggerSource?: string; triggerDetail?: string; workflowRunId?: string; project?: string; cwd?: string }>();
+    const body = await c.req.json<{ input: string; triggerSource?: string; triggerDetail?: string; workflowRunId?: string; project?: string; cwd?: string; deliveryIntent?: 'ci' | 'cd' }>();
     if (!body.input) return c.json({ error: 'input is required' }, 400);
 
     let cwd: string | undefined;
     try {
-      // project명이 오면 워크스페이스 루트 기준으로 해석, 없으면 직접 cwd 경로 사용(하위호환)
-      cwd = body.project !== undefined ? resolveProjectDir(body.project) : body.cwd;
+      // cwd 하위호환 입력도 project와 동일하게 워크스페이스 루트 하위 상대 경로로만 해석한다.
+      cwd = resolveProjectDir(body.project ?? body.cwd);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -71,6 +72,7 @@ export function createRoutes(): Hono {
         triggerDetail: body.triggerDetail,
         workflowRunId: body.workflowRunId,
         cwd,
+        deliveryIntent: body.deliveryIntent,
       });
       return c.json(result);
     } catch (err) {
@@ -92,15 +94,16 @@ export function createRoutes(): Hono {
   });
 
   app.post('/api/specs', async (c) => {
-    const body = await c.req.json<{ content: string; steps?: string[]; iterations?: number }>();
+    const body = await c.req.json<{ content: string; steps?: string[]; iterations?: number; project?: string; cwd?: string; deliveryIntent?: 'ci' | 'cd' }>();
     if (!body.content) return c.json({ error: 'content is required' }, 400);
     try {
       const steps = body.steps ? new Set(body.steps) : undefined;
-      const result = await runSpec(body.content, { steps, iterations: body.iterations, triggerSource: 'api' });
+      const cwd = resolveProjectDir(body.project ?? body.cwd, body.content);
+      const result = await runSpec(body.content, { steps, iterations: body.iterations, triggerSource: 'api', cwd, deliveryIntent: body.deliveryIntent });
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 500);
+      return c.json({ error: msg }, msg.startsWith('Invalid project name') ? 400 : 500);
     }
   });
 
@@ -109,12 +112,6 @@ export function createRoutes(): Hono {
     const agentName = String(body['agent'] ?? 'spec');
     let input = String(body['input'] ?? '');
     const project = String(body['project'] ?? '').trim() || undefined;
-    let cwd: string;
-    try {
-      cwd = resolveProjectDir(project);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
-    }
 
     const file = body['file'];
     if (file instanceof File && file.size > 0) {
@@ -123,26 +120,40 @@ export function createRoutes(): Hono {
 
     if (!input.trim()) return c.json({ error: 'input 또는 파일이 필요합니다' }, 400);
 
+    let cwd: string;
+    try {
+      cwd = agentName === 'spec' && !project
+        ? resolveProjectDir(undefined, input)
+        : resolveProjectDir(project);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
     if (agentName === 'spec') {
       const stepsRaw = String(body['steps'] ?? '');
       const steps = stepsRaw
         ? new Set(stepsRaw.split(',').map((s: string) => s.trim()).filter(Boolean))
         : undefined;
       const iterations = body['iterations'] ? Number(body['iterations']) : undefined;
-      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, triggerSource: 'dashboard' });
+      const autoClarify = String(body['autoClarify'] ?? '') === 'true';
+      const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
+      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, deliveryIntent, triggerSource: 'dashboard' });
       return c.json({ runId, type: 'workflow' });
     }
 
     // 에이전트의 시스템 프롬프트 + 역할 경계(tools)를 적용해 실행한다.
     // 원시 input 을 그대로 넘기면 프롬프트·권한 제한이 우회되므로 dispatch 를 거친다.
-    const runId = runNamedAgentBackground(agentName, input, { triggerSource: 'dashboard', cwd });
+    const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
+    const runId = runNamedAgentBackground(agentName, input, { triggerSource: 'dashboard', cwd, deliveryIntent });
     if (!runId) return c.json({ error: `Unknown agent: ${agentName}` }, 404);
     return c.json({ runId, type: 'agent' });
   });
 
   app.get('/api/runs', (c) => {
-    const limit = Number(c.req.query('limit') ?? '20');
-    return c.json(getRecentRuns(limit));
+    // units = 최근 실행 목록에 불러올 최상위 유닛(spec 워크플로우 또는 단독 실행) 개수.
+    // 무한 스크롤이 스크롤할수록 이 값을 키워 재요청한다. { rows, hasMore } 를 돌려준다.
+    const units = Number(c.req.query('units') ?? '10');
+    return c.json(getRecentRunUnits(units));
   });
 
   app.get('/api/runs/:id/children', (c) => {
@@ -188,6 +199,10 @@ export function createRoutes(): Hono {
     );
   });
 
+  app.get('/api/runs/:id/events/history', (c) => {
+    return c.json({ events: getRunEvents(c.req.param('id')) });
+  });
+
   app.get('/api/runs/:id', (c) => {
     const run = getRun(c.req.param('id'));
     if (!run) return c.json({ error: 'Not found' }, 404);
@@ -225,10 +240,24 @@ export function createRoutes(): Hono {
   // 완료된 spec run 을 사용자 후속 수정 지시로 이어 실행한다 (스펙 재입력 없이 새 run 생성).
   app.post('/api/runs/:id/continue', async (c) => {
     const body = await c.req.json<{ instruction?: string }>();
-    const instruction = (body.instruction ?? '').trim();
-    if (!instruction) return c.json({ error: 'instruction is required' }, 400);
     try {
-      const { runId } = continueSpecSession(c.req.param('id'), instruction);
+      const { runId } = continueSpecSession(c.req.param('id'), body.instruction ?? '');
+      return c.json({ runId, type: 'workflow' });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // 실패했거나 다시 시도할 spec run 을 마지막으로 실행된 단계부터 재개한다.
+  app.post('/api/runs/:id/resume-last', async (c) => {
+    const body: { instruction?: string } = await c.req.json<{ instruction?: string }>().catch(() => ({}));
+    const run = getRun(c.req.param('id'));
+    if (!run) return c.json({ error: 'Not found' }, 404);
+    if (run.status === 'RUNNING') {
+      return c.json({ error: 'Cannot resume-last while the run is still running' }, 409);
+    }
+    try {
+      const { runId } = resumeLastSpecStep(c.req.param('id'), body.instruction);
       return c.json({ runId, type: 'workflow' });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

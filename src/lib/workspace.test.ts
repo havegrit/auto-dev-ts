@@ -48,6 +48,15 @@ describe('listProjects', () => {
 
 describe('resolveProjectDir', () => {
   const orig = process.env.AUTO_DEV_WORKSPACE_ROOT;
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'ws-resolve-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
 
   afterEach(() => {
     if (orig === undefined) delete process.env.AUTO_DEV_WORKSPACE_ROOT;
@@ -70,5 +79,22 @@ describe('resolveProjectDir', () => {
   it('treats a bare ~ as the home directory', async () => {
     const resolveProjectDir = await load('~');
     expect(resolveProjectDir()).toBe(homedir());
+  });
+
+  it('rejects absolute, tilde-prefixed, and escaping project paths', async () => {
+    const resolveProjectDir = await load(root);
+    expect(() => resolveProjectDir('/tmp/project')).toThrow('Invalid project name');
+    expect(() => resolveProjectDir('~/workspace')).toThrow('Invalid project name');
+    expect(() => resolveProjectDir('../outside')).toThrow('Invalid project name');
+  });
+
+  it('resolves a normal relative project name under the workspace root', async () => {
+    const resolveProjectDir = await load('/home/shin/workspace');
+    expect(resolveProjectDir('wealth-os')).toBe('/home/shin/workspace/wealth-os');
+  });
+
+  it('creates a new project path from the seed when no project name is provided', async () => {
+    const resolveProjectDir = await load(root);
+    expect(resolveProjectDir(undefined, '# My New App\nBuild this')).toBe(join(root, 'my-new-app'));
   });
 });

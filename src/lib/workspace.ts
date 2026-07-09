@@ -1,6 +1,7 @@
-import { resolve, join } from 'path';
+import { resolve, join, isAbsolute, sep } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
+import { createHash } from 'crypto';
 
 /** 모든 작업 디렉토리의 기준이 되는 워크스페이스 루트 (환경변수로 제어). */
 export const WORKSPACE_ROOT = process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace';
@@ -22,21 +23,43 @@ function rootAbsPath(): string {
 
 /**
  * 프로젝트명을 워크스페이스 루트 하위의 절대경로로 변환한다.
- * 비어 있으면 루트 자체를 반환한다. 경로 탈출(..)은 거부한다.
+ * 비어 있으면 루트 자체를 반환하거나, seed 가 있으면 seed 기반 새 프로젝트 경로를 만든다.
+ * project 입력은 워크스페이스 루트 하위 상대 경로로만 해석한다.
  */
-export function resolveProjectDir(project?: string): string {
+export function resolveProjectDir(project?: string, seed?: string): string {
   const rootAbs = rootAbsPath();
   const name = (project ?? '').trim();
-  if (!name) return rootAbs;
+  if (!name) {
+    const inferred = inferProjectName(seed);
+    return inferred ? resolve(rootAbs, inferred) : rootAbs;
+  }
 
-  // 선행 구분자/상위참조 제거 후 결합
-  const safe = name.replace(/^[/\\]+/, '').replace(/\.\.[/\\]?/g, '');
-  const dir = resolve(rootAbs, safe);
+  if (isAbsolute(name) || name === '~' || name.startsWith('~/') || name.startsWith('~\\')) {
+    throw new Error(`Invalid project name: ${project}`);
+  }
 
-  if (dir !== rootAbs && !dir.startsWith(rootAbs + '/')) {
+  const dir = resolve(rootAbs, name);
+  if (dir !== rootAbs && !dir.startsWith(rootAbs + sep)) {
     throw new Error(`Invalid project name: ${project}`);
   }
   return dir;
+}
+
+export function inferProjectName(seed?: string): string {
+  const text = (seed ?? '').trim();
+  if (!text) return '';
+
+  const heading = text.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim();
+  const firstLine = heading ?? text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+  const slug = firstLine
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^\p{L}\p{N}-]+/gu, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (slug) return slug;
+
+  return `spec-${createHash('sha1').update(text).digest('hex').slice(0, 8)}`;
 }
 
 /** 프로젝트 목록에서 숨길 정크/빌드 산출물 디렉토리 이름 (소문자 비교). */

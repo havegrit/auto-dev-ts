@@ -1,0 +1,88 @@
+# .github/workflows/wealth-os-ci.yml
+# Wealth OS — CI verification pipeline (H1 재발 방지용)
+#
+# 목적: planner가 지적한 "검증 미실행(H1)" 을 매 PR/push 마다 CI 로그로 강제 증빙한다.
+# 로컬 test 에이전트가 도는 install → prisma generate → migrate → seed → build → test
+# 시퀀스를 재현 가능하게 고정한다.
+#
+# 주의:
+#  - 소스/스키마는 이 워크플로에서 수정하지 않는다(레포에 커밋된 상태 그대로 검증).
+#  - lockfile(package-lock.json)이 커밋돼 있으므로 재현성을 위해 `npm ci` 를 쓴다.
+#  - 마이그레이션(prisma/migrations/*)이 커밋돼 있으므로 대화형 `migrate dev` 대신
+#    비대화형 `migrate deploy` 로 깨끗한 SQLite 파일에 적용한다(=CI 재현 표준).
+
+name: wealth-os CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wealth-os/**"
+      - ".github/workflows/wealth-os-ci.yml"
+  pull_request:
+    paths:
+      - "wealth-os/**"
+      - ".github/workflows/wealth-os-ci.yml"
+
+# 같은 브랜치에서 새 push 가 오면 진행 중인 실행은 취소(빠른 피드백)
+concurrency:
+  group: wealth-os-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: wealth-os
+
+jobs:
+  verify:
+    name: build & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # CI 전용 임시 SQLite. 시크릿 아님 — 매 실행마다 폐기.
+      DATABASE_URL: "file:./ci.db"
+      # 빌드 중 참조될 수 있는 값의 안전한 더미(실 배포용 아님).
+      CRON_SECRET: "ci-dummy-secret"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20" # Next 14.2 LTS 지원 라인. 재현성 위해 고정.
+          cache: "npm"
+          cache-dependency-path: wealth-os/package-lock.json
+
+      - name: Install dependencies (locked)
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      # 커밋된 마이그레이션을 깨끗한 DB 에 적용(비대화형·재현 가능).
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+
+      - name: Seed database
+        run: npm run db:seed
+
+      - name: Build
+        run: npm run build
+
+      # 여기서 aggregation.test.ts(6 케이스) + step3 신규 음수-가드 API 테스트가 돈다.
+      - name: Test
+        run: npm run test
+
+      # 증빙: H1 산출물이 실제로 존재하는지 CI 로그에 남긴다.
+      - name: Assert build artifacts (H1 evidence)
+        if: always()
+        run: |
+          echo "::group::H1 artifact check"
+          test -f next-env.d.ts && echo "OK next-env.d.ts" || (echo "MISSING next-env.d.ts" && exit 1)
+          test -d .next && echo "OK .next build output" || (echo "MISSING .next" && exit 1)
+          test -f prisma/migrations/migration_lock.toml && echo "OK migration_lock.toml" || (echo "MISSING migration_lock.toml" && exit 1)
+          ls prisma/migrations/*/migration.sql >/dev/null 2>&1 && echo "OK migration.sql present" || (echo "MISSING migration.sql" && exit 1)
+          echo "::endgroup::"

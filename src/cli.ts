@@ -14,6 +14,7 @@ import { getStats } from './store/runs.js';
 import { getIssueTracker } from './integrations/issue-tracker/index.js';
 import { processIssue } from './workflows/from-issue.js';
 import { circuitBreaker } from './lib/circuit-breaker.js';
+import { resolveProjectDir } from './lib/workspace.js';
 
 function readInput(inputArg: string): string {
   if (existsSync(inputArg)) return readFileSync(inputArg, 'utf-8');
@@ -51,8 +52,9 @@ program.command('test <input>')
 
 program.command('cicd <input>')
   .description('CI/CD 에이전트 실행')
-  .action(async (input: string) => {
-    const result = await cicd(readInput(input), { triggerSource: 'cli' });
+  .option('--cd', 'deployment/release artifacts도 생성')
+  .action(async (input: string, options: { cd?: boolean }) => {
+    const result = await cicd(readInput(input), { triggerSource: 'cli', deliveryIntent: options.cd ? 'cd' : 'ci' });
     printResult(result);
   });
 
@@ -74,11 +76,13 @@ program.command('spec <file>')
   .description('전체 스펙 워크플로우 실행')
   .option('--steps <steps>', '실행할 단계 (쉼표 구분)', '')
   .option('--iterations <n>', '피드백 재작업(planner/clarifier 라우팅) 허용 횟수', '2')
-  .action(async (file: string, options: { steps: string; iterations: string }) => {
+  .option('--project <project>', '프로젝트명 또는 경로')
+  .action(async (file: string, options: { steps: string; iterations: string; project?: string }) => {
     const content = readFileSync(file, 'utf-8');
     const steps = options.steps ? new Set(options.steps.split(',').map(s => s.trim())) : undefined;
     const iterations = Number(options.iterations);
-    const result = await runSpec(content, { steps, iterations, triggerSource: 'cli' });
+    const cwd = resolveProjectDir(options.project, content);
+    const result = await runSpec(content, { steps, iterations, triggerSource: 'cli', cwd });
     console.log(JSON.stringify(result, null, 2));
   });
 

@@ -57,6 +57,10 @@ function availableModel(id: string | undefined): ModelSpec | undefined {
   return id ? availableModels.find(m => m.id === id) : undefined;
 }
 
+function supportsAgentRuns(spec: ModelSpec): boolean {
+  return spec.provider !== 'openai-compatible';
+}
+
 function resolveModelSpec(agentName?: string): ModelSpec {
   const agentModel = agentName ? agentModels[agentName] ?? process.env[envKeyForAgent(agentName)] : undefined;
   const candidates = agentModel !== undefined
@@ -64,9 +68,13 @@ function resolveModelSpec(agentName?: string): ModelSpec {
     : [currentModel, fallbackModel];
   for (const id of candidates) {
     const spec = availableModel(id);
-    if (spec) return spec;
+    if (spec && (!agentName || supportsAgentRuns(spec))) return spec;
   }
   const runnable = firstRunnableModel();
+  if (agentName) {
+    const agentRunnable = availableModels.find(supportsAgentRuns) ?? FALLBACK_MODELS.find(supportsAgentRuns);
+    if (agentRunnable) return agentRunnable;
+  }
   if (!runnable) throw new Error('No runnable model is available');
   return runnable;
 }

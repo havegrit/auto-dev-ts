@@ -16,43 +16,75 @@ function fakeExec(lines: string[], result: { exitCode?: number; stderr?: string 
 
 describe('codexAgentRunner', () => {
   it('streams events live and merges git changed files', async () => {
-    const { exec, calls } = fakeExec([
+    const prevCommand = process.env.AUTO_DEV_CODEX_COMMAND;
+    const prevSandbox = process.env.AUTO_DEV_CODEX_SANDBOX;
+    delete process.env.AUTO_DEV_CODEX_COMMAND;
+    delete process.env.AUTO_DEV_CODEX_SANDBOX;
+    try {
+      const { exec, calls } = fakeExec([
       '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"작업 시작"}}',
       '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"npm test","aggregated_output":"ok","exit_code":0}}',
       '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"{\\"status\\":\\"success\\",\\"summary\\":\\"done\\",\\"changedFiles\\":[\\"src/model.ts\\"],\\"notes\\":[]}"}}',
       '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":120}}',
-    ]);
-    const runner = createCodexAgentRunner({
-      exec,
-      collectChangedFiles: async () => ['src/model.ts', 'src/actual.ts'],
-    });
-    const events: AgentEvent[] = [];
+      ]);
+      const runner = createCodexAgentRunner({
+        exec,
+        collectChangedFiles: async () => ['src/model.ts', 'src/actual.ts'],
+      });
+      const events: AgentEvent[] = [];
 
-    const outcome = await runner.run(
-      { prompt: 'implement feature', cwd: '/repo', tools: ['Read', 'Write'], model: 'gpt-5', effort: 'high' },
-      (event) => events.push(event),
-    );
+      const outcome = await runner.run(
+        { prompt: 'implement feature', cwd: '/repo', tools: ['Read', 'Write'], model: 'gpt-5', effort: 'high' },
+        (event) => events.push(event),
+      );
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].cmd).toBe('codex');
-    expect(calls[0].args.slice(0, 4)).toEqual(['exec', '--json', '--cd', '/repo']);
-    expect(calls[0].args).toContain('--model');
-    expect(calls[0].args.at(-1)).toContain('implement feature');
-    expect(calls[0].args.at(-1)).toContain('"changedFiles"');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].cmd).toBe('codex');
+      expect(calls[0].args.slice(0, 4)).toEqual(['exec', '--json', '--cd', '/repo']);
+      expect(calls[0].args).not.toContain('--sandbox');
+      expect(calls[0].args).toContain('--model');
+      expect(calls[0].args.at(-1)).toContain('implement feature');
+      expect(calls[0].args.at(-1)).toContain('"changedFiles"');
 
-    // 실행 도중 단계별로 라이브 이벤트가 흘러나온다
-    expect(events).toContainEqual({ kind: 'text', text: '작업 시작' });
-    expect(events).toContainEqual({ kind: 'tool_call', name: 'shell', input: 'npm test' });
-    expect(events).toContainEqual({ kind: 'text', text: 'done' }); // 계약 JSON 대신 summary
+      // 실행 도중 단계별로 라이브 이벤트가 흘러나온다
+      expect(events).toContainEqual({ kind: 'text', text: '작업 시작' });
+      expect(events).toContainEqual({ kind: 'tool_call', name: 'shell', input: 'npm test' });
+      expect(events).toContainEqual({ kind: 'text', text: 'done' }); // 계약 JSON 대신 summary
 
-    expect(outcome).toMatchObject({
-      status: 'success',
-      changedFiles: ['src/model.ts', 'src/actual.ts'],
-      tokensIn: 900,
-      tokensOut: 120,
-    });
-    expect(outcome.output).toContain('done');
-    expect(outcome.output).not.toContain('"status"');
+      expect(outcome).toMatchObject({
+        status: 'success',
+        changedFiles: ['src/model.ts', 'src/actual.ts'],
+        tokensIn: 900,
+        tokensOut: 120,
+      });
+      expect(outcome.output).toContain('done');
+      expect(outcome.output).not.toContain('"status"');
+    } finally {
+      if (prevCommand === undefined) delete process.env.AUTO_DEV_CODEX_COMMAND;
+      else process.env.AUTO_DEV_CODEX_COMMAND = prevCommand;
+      if (prevSandbox === undefined) delete process.env.AUTO_DEV_CODEX_SANDBOX;
+      else process.env.AUTO_DEV_CODEX_SANDBOX = prevSandbox;
+    }
+  });
+
+  it('passes an explicit sandbox mode through to Codex CLI', async () => {
+    const prevSandbox = process.env.AUTO_DEV_CODEX_SANDBOX;
+    process.env.AUTO_DEV_CODEX_SANDBOX = 'workspace-write';
+    try {
+      const { exec, calls } = fakeExec(['{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}']);
+      const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
+
+      await runner.run(
+        { prompt: 'p', cwd: '/repo', tools: [], model: 'gpt-5' },
+        () => {},
+      );
+
+      expect(calls[0].args).toContain('--sandbox');
+      expect(calls[0].args).toContain('workspace-write');
+    } finally {
+      if (prevSandbox === undefined) delete process.env.AUTO_DEV_CODEX_SANDBOX;
+      else process.env.AUTO_DEV_CODEX_SANDBOX = prevSandbox;
+    }
   });
 
   it('maps codex process failures to an error outcome instead of throwing', async () => {

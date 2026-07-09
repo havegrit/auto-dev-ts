@@ -22,6 +22,8 @@ export interface AgentSpec {
   subagents?: Record<string, AgentDefinition>;
 }
 
+export const AGENT_ORDER = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'] as const;
+
 export const AGENT_SPECS: Record<string, AgentSpec> = {
   clarifier: { promptFile: 'clarifier.system.md', tools: ['Read'] },
   planner: { promptFile: 'planner.system.md', tools: ['Read'] },

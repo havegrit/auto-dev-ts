@@ -4,6 +4,7 @@ import { test } from './test.js';
 import { cicd } from './cicd.js';
 import { planner } from './planner.js';
 import { clarifier } from './clarifier.js';
+import { AGENT_ORDER } from './specs.js';
 import type { RunResult } from '../lib/runner.js';
 
 type AgentFn = (input: string, opts?: { triggerSource?: string; triggerDetail?: string; workflowRunId?: string; cwd?: string }) => Promise<RunResult>;
@@ -11,4 +12,4 @@ type AgentFn = (input: string, opts?: { triggerSource?: string; triggerDetail?: 
 const registry: Record<string, AgentFn> = { scaffold, review, test, cicd, planner, clarifier };
 
 export function getAgent(name: string): AgentFn | undefined { return registry[name]; }
-export function listAgents(): string[] { return Object.keys(registry); }
+export function listAgents(): string[] { return AGENT_ORDER.filter(name => name in registry); }

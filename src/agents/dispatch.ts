@@ -7,7 +7,15 @@ export type AgentRunOpts = {
   triggerDetail?: string;
   workflowRunId?: string;
   cwd?: string;
+  deliveryIntent?: 'ci' | 'cd';
 };
+
+export function decorateCicdInput(input: string, deliveryIntent: 'ci' | 'cd' = 'ci'): string {
+  if (/^\s*## 실행 의도\s*$/m.test(input) || input.includes('deliveryIntent: ci') || input.includes('deliveryIntent: cd')) {
+    return input;
+  }
+  return `## 실행 의도\n- deliveryIntent: ${deliveryIntent}\n- ci: build/test/verify artifacts only\n- cd: deployment/release artifacts only when explicitly requested\n\n${input}`;
+}
 
 /**
  * 에이전트 이름으로 실행 옵션을 조립한다. 시스템 프롬프트와 도구 권한(tools)을
@@ -18,9 +26,11 @@ function buildOptions(name: string, input: string, opts: AgentRunOpts) {
   const spec = AGENT_SPECS[name];
   if (!spec) return undefined;
   const system = loadPrompt(spec.promptFile);
+  const deliveryIntent = opts.deliveryIntent ?? 'ci';
+  const decoratedInput = name === 'cicd' ? decorateCicdInput(input, deliveryIntent) : input;
   return {
     name,
-    prompt: `${system}\n\n---\n\n${input}`,
+    prompt: `${system}\n\n---\n\n${decoratedInput}`,
     tools: spec.tools,
     subagents: spec.subagents,
     ...opts,
