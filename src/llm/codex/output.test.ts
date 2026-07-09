@@ -71,4 +71,25 @@ describe('codex output parsing', () => {
       errors: ['not logged in'],
     });
   });
+
+  it('marks permission-blocked successful contracts as errors', () => {
+    const result = normalizeCodexResult({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        status: 'success',
+        summary: '샌드박스가 read-only라 파일 생성이 불가능했습니다.',
+        changedFiles: [],
+        tests: { command: 'not run', result: 'blocked' },
+        notes: ['쓰기 권한이 필요합니다.'],
+      }),
+      stderr: 'Reading additional input from stdin...',
+      gitChangedFiles: [],
+    });
+
+    expect(result).toMatchObject({
+      status: 'error',
+      errorType: 'codex_permission_blocked',
+    });
+    expect(result.output).toContain('read-only');
+  });
 });

@@ -54,6 +54,30 @@ function authFailure(stderr: string, stdout: string): boolean {
   return /auth|login|logged in|sign in|인증|로그인/i.test(`${stderr}\n${stdout}`);
 }
 
+function permissionBlocked(stderr: string, stdout: string, parsed?: CodexJsonResult): boolean {
+  const text = `${stderr}\n${stdout}\n${typeof parsed?.summary === 'string' ? parsed.summary : ''}\n${arrayOfStrings(parsed?.notes).join('\n')}`;
+  return [
+    /read[- ]only/i,
+    /permission denied/i,
+    /operation not permitted/i,
+    /bwrap:.*failed/i,
+    /write(file)? tool.*not provided/i,
+    /write(file)? 도구.*제공되지/i,
+    /쓰기 권한/i,
+    /쓰기.*차단/i,
+    /파일 생성.*불가능/i,
+    /파일 생성.*실패/i,
+    /작업 불가/i,
+  ].some((re) => re.test(text));
+}
+
+function blockedContract(parsed?: CodexJsonResult): boolean {
+  const status = typeof parsed?.status === 'string' ? parsed.status.toLowerCase() : '';
+  const tests = parsed?.tests as CodexTests | undefined;
+  const testResult = typeof tests?.result === 'string' ? tests.result.toLowerCase() : '';
+  return status === 'blocked' || testResult.includes('blocked');
+}
+
 interface CodexTests {
   command?: string;
   result?: string;
@@ -89,7 +113,8 @@ export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
   const parsed = extractJsonObject(input.stdout);
   const jsonChangedFiles = arrayOfStrings(parsed?.changedFiles);
   const changedFiles = mergeChangedFiles(jsonChangedFiles, input.gitChangedFiles);
-  const isSuccess = input.exitCode === 0 && parsed?.status !== 'failed' && parsed?.status !== 'error';
+  const blocked = blockedContract(parsed) || permissionBlocked(input.stderr, input.stdout, parsed);
+  const isSuccess = input.exitCode === 0 && parsed?.status !== 'failed' && parsed?.status !== 'error' && !blocked;
   const combinedOutput = outputWithStderr(input.stdout, input.stderr);
   const errorText = input.stderr.trim() || input.stdout.trim() || combinedOutput;
   const output = parsed && isSuccess ? formatCodexMarkdown(parsed, changedFiles) : combinedOutput;
@@ -104,7 +129,11 @@ export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
     numTurns: 1,
     stopReason: `codex_cli_exit_${input.exitCode}`,
     ...(isSuccess ? {} : {
-      errorType: authFailure(input.stderr, input.stdout) ? 'codex_auth_failed' : `codex_cli_exit_${input.exitCode}`,
+      errorType: authFailure(input.stderr, input.stdout)
+        ? 'codex_auth_failed'
+        : blocked
+          ? 'codex_permission_blocked'
+          : `codex_cli_exit_${input.exitCode}`,
       errors: [errorText].filter(Boolean),
     }),
   };
