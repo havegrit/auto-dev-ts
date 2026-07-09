@@ -17,7 +17,7 @@
 | `scaffold` | 스펙 또는 설명에서 코드 스켈레톤 생성 |
 | `review` | 멀티 렌즈 코드 리뷰: 정확성 · 보안 · 성능 · 스타일 (병렬) |
 | `test` | 기존 코드에 대한 테스트 케이스 생성 |
-| `cicd` | CI/CD 파이프라인 설정 생성 (GitHub Actions 등) |
+| `cicd` | CI-first 파이프라인 설정 생성, CD는 명시적 요청일 때만 |
 | `planner` | 스펙에서 구조화된 개발 계획 수립 |
 | `clarifier` | 플래닝 전 스펙의 불명확한 점 파악 |
 
@@ -49,7 +49,7 @@ cp .env.example .env
 
 ./run review src/
 ./run test src/auth.ts
-./run cicd "Node.js 모노레포, AWS ECS 배포"
+./run cicd --cd "Node.js 모노레포, AWS ECS 배포"
 ./run planner path/to/spec.md
 ./run clarifier path/to/spec.md
 
@@ -96,12 +96,12 @@ clarifier → planner → scaffold → test → review → cicd
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
 
 - 에이전트 현황 및 일일 실행 횟수
-- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신
+- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신, `더 보기` 버튼으로 추가 로드
 - 실행 중인 작업은 SSE로 라이브 갱신, 행 클릭 시 상세 패널 펼치기
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
-- 이력 표에는 최상위 요청만 표시(워크플로우 하위 단계는 숨기고 상세 패널에서 확인 가능), 완료된 spec run에는 행에서 바로 **이어가기** 버튼 제공
-- 완료된 spec run은 자유 텍스트 후속 지시로 이어갈 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행
+- 이력 표에는 최상위 요청만 표시(워크플로우 하위 단계는 숨기고 상세 패널에서 확인 가능), 완료된 spec run에는 행에서 바로 **재실행** 및 **마지막 단계부터 재개** 버튼 제공
+- 완료된 spec run은 자유 텍스트 후속 지시로 다시 실행하거나 마지막 단계부터 재개할 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행
 - 작업 제출: 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
@@ -119,12 +119,14 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/clarify` | Q&A 컨텍스트와 함께 clarifier 실행 |
 | `POST` | `/api/specs` | 스펙 워크플로우 실행 |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
-| `GET` | `/api/runs` | 최근 실행 목록 (`?limit=`) |
+| `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 (스펙 재입력 불필요) |
 | `POST` | `/api/runs/:id/continue` | `{ instruction }` 로 완료된 spec run 이어가기 (스펙 재입력 불필요) |
+| `POST` | `/api/runs/:id/resume-last` | 마지막으로 실행된 워크플로우 단계부터 재개 |
 | `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
+| `GET` | `/api/runs/:id/events/history` | 실행 이력에 저장된 이벤트 기록 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
 | `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |

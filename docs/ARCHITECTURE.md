@@ -149,7 +149,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult>
 Java 버전 대비 **제거된 책임**:
 - 토큰 budget clamp (SDK 가 컨텍스트 관리)
 - 429 재시도 (SDK 내부 처리)
-- SSE 브로드캐스트 (미구현)
+- SSE 브로드캐스트 및 실행 이벤트 영속화 (`run-events` + `GET /api/runs/:id/events`)
 
 ### 4.2 LLM 프로바이더 seam (`src/llm/`)
 
@@ -493,12 +493,15 @@ data/
 | `POST` | `/api/specs` | SpecWorkflow 실행 `{ content, steps?, iterations? }` |
 | `POST` | `/api/submit` | 대시보드 폼 제출 (multipart — 파일/프로젝트명 포함) |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 `{ system?, message, json? }` (CORS 허용) |
-| `GET` | `/api/runs?limit=N` | 최근 N개 실행 (cap 없음) |
+| `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 (추천 답안 포함) |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 — 스펙 재입력 없이 연결된 새 run 생성 |
+| `POST` | `/api/runs/:id/continue` | 완료된 spec run 을 후속 지시와 함께 재실행 |
+| `POST` | `/api/runs/:id/resume-last` | 마지막 실행 단계부터 재개 |
 | `GET` | `/api/runs/:id/events` | **SSE** — 실행 중 라이브 이벤트 (text/tool/status) |
+| `GET` | `/api/runs/:id/events/history` | 저장된 실행 이벤트 이력 |
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
 | `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
 | `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
@@ -861,7 +864,7 @@ Bun 으로 런타임 교체도 가능.
 
 | 기능 | 현재 상태 | 이유 |
 |---|---|---|
-| 실시간 이벤트 스트림(SSE) | 2초 폴링으로 대체 | 1인 운영 환경에서 구현 복잡도 대비 효과 낮음 |
+| 실시간 이벤트 스트림(SSE) | 구현됨. 실행 중 행은 SSE, 목록·통계는 10초 폴링 | 종료된 실행 목록/통계는 단순 폴링 유지 |
 | 위험 Bash 패턴 거부 | 미구현 | `bypassPermissions` 사용 중 — 신뢰된 환경 전제 |
 | review finding 구조화 | 자유 형식 출력 | JSON dedup + verdict 파싱은 구현 복잡도 高 |
 

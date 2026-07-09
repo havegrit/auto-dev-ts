@@ -96,12 +96,12 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
 
 - Live agent status and daily run count
-- Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s
+- Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
 - Running jobs update live over SSE; click a row to expand a detail panel
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
-- The history table lists top-level requests only (workflow sub-steps are hidden but reachable from the detail panel); completed spec runs get an inline **continue** button
-- Any completed spec run can be continued with a free-text follow-up instruction — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
+- The history table lists top-level requests only (workflow sub-steps are hidden but reachable from the detail panel); completed spec runs get inline **continue** and **resume last step** buttons
+- Any completed spec run can be continued with a free-text follow-up instruction, or resumed from the last executed step — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
 - Submit form: agent picker + project dropdown (workspace projects) + model/effort settings
 
 If accessing from a remote machine over SSH, use local port forwarding:
@@ -119,12 +119,14 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/clarify` | Run clarifier with Q&A context |
 | `POST` | `/api/specs` | Run spec workflow |
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
-| `GET` | `/api/runs` | Recent runs (`?limit=`) |
+| `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
 | `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
 | `POST` | `/api/runs/:id/answers` | Resume a clarified spec run with `{ answers }` (no spec re-entry) |
 | `POST` | `/api/runs/:id/continue` | Continue a completed spec run with `{ instruction }` (no spec re-entry) |
+| `POST` | `/api/runs/:id/resume-last` | Resume a spec run from the last executed workflow step |
 | `GET` | `/api/runs/:id/events` | SSE — live events for a running job |
+| `GET` | `/api/runs/:id/events/history` | Persisted event history for a run |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
 | `GET`/`POST` | `/api/config` | Get/set model, fallback, per-agent models & effort + project list |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
