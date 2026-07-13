@@ -37,6 +37,13 @@ vi.mock('../store/clarification.js', () => ({
   getClarificationState: (id: string) => getClarificationState(id),
 }));
 
+const emitRunEvent = vi.fn();
+const closeEmitter = vi.fn();
+vi.mock('../lib/run-events.js', () => ({
+  emitRunEvent: (...args: any[]) => emitRunEvent(...args),
+  closeEmitter: (...args: any[]) => closeEmitter(...args),
+}));
+
 const writes: Array<{ path: string; content: string }> = [];
 vi.mock('fs', () => ({
   writeFileSync: vi.fn((path: string, content: string) => writes.push({ path, content })),
@@ -57,6 +64,8 @@ beforeEach(() => {
   stateStore.clear();
   saveClarificationState.mockClear();
   getClarificationState.mockClear();
+  emitRunEvent.mockClear();
+  closeEmitter.mockClear();
 });
 
 describe('startSpecSession (round 0)', () => {
@@ -86,6 +95,8 @@ describe('startSpecSession (round 0)', () => {
     const plan = writes.find(w => w.path === '/tmp/proj/docs/plan/my-api.md');
     expect(plan).toBeDefined();
     expect(plan!.content).toContain('사용자 관리 기능');
+    expect(emitRunEvent).toHaveBeenCalledWith(runId, expect.objectContaining({ type: 'status', data: 'DONE' }));
+    expect(closeEmitter).toHaveBeenCalledWith(runId);
   });
 
   it('serializes a partial steps filter into clarification state', async () => {
@@ -124,9 +135,71 @@ describe('startSpecSession (round 0)', () => {
 
     expect(specOptions[0].deliveryIntent).toBe('ci');
   });
+
+  it('passes the configured auto-clarify round limit into the workflow', async () => {
+    specResult = {
+      workflowRunId: 'x',
+      steps: { clarifier: { runId: 'c', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { done } = startSpecSession('사용자 관리 기능', {
+      project: 'my-api',
+      cwd: '/tmp/proj',
+      autoClarify: true,
+      maxClarifyRounds: 0,
+    });
+    await done;
+
+    expect(specOptions[0].autoClarify).toBe(true);
+    expect(specOptions[0].maxClarifyRounds).toBe(0);
+  });
 });
 
 describe('resumeSpecSession (round N)', () => {
+  it('keeps auto-clarify enabled after a clarification stop', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      autoClarify: true,
+      maxClarifyRounds: 0,
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { runId, done } = resumeSpecSession('parent', { q1: 'CRUD' });
+    await done;
+
+    expect(specOptions[0].autoClarify).toBe(true);
+    expect(specOptions[0].maxClarifyRounds).toBe(0);
+    expect(stateStore.get(runId).autoClarify).toBe(true);
+  });
+
+  it('allows the answer form to enable auto-clarify for a legacy stopped run', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능',
+      project: 'my-api',
+      slug: 'my-api',
+      planFile: 'docs/plan/my-api.md',
+      cwd: '/tmp/proj',
+      rounds: [{ questions: [Q1] }],
+    });
+    specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
+
+    const { done } = resumeSpecSession('parent', { q1: 'CRUD' }, undefined, undefined, {
+      autoClarify: true,
+      maxClarifyRounds: 0,
+    });
+    await done;
+
+    expect(specOptions[0].autoClarify).toBe(true);
+    expect(specOptions[0].maxClarifyRounds).toBe(0);
+  });
+
   it('feeds spec + answers to the workflow and writes the plan with the planner output', async () => {
     stateStore.set('parent', {
       spec: '사용자 관리 기능',

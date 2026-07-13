@@ -390,11 +390,14 @@ while cursor < len(STEP_ORDER):
 
 - **clarifier 게이트**: clarifier JSON 이 `ready: false` 이면 planner/scaffold 로
   넘어가지 않고 질문과 추천 답안을 반환한다. `ready: true` 이고 `summary` 가 있으면
-  planner 는 원본 대신 그 정리본을 입력으로 받는다.
+  planner 는 원본 대신 그 정리본을 입력으로 받는다. 대시보드의 자동 구체화는 추천 답안을
+  다음 clarifier 입력에 누적하며, 최대 라운드는 사용자가 지정한다 (`0` 또는 미지정은 무제한).
 - **질문 답변 재개** (`workflows/spec-session.ts`): 대시보드에서 멈춘 run 에 답변을
   입력하면 `resumeSpecSession` 이 `clarification_state`(원본 스펙 + 라운드별 Q&A)를
   읽어 "스펙 + 누적 Q&A" 를 clarifier 에 재투입하는 **연결된 새 run** 을 시작한다
   (원본 run 은 보존, 스펙 재입력 불필요). 게이트가 반복되면 라운드가 누적된다.
+  `autoClarify`와 `maxClarifyRounds`도 상태에 저장해 중단 후 답변 재개 시 유지하며,
+  답변 폼에서 두 값을 덮어쓸 수 있다.
   planner 는 `Read`-only 를 유지하고, **세션 코드**가 `<cwd>/docs/plan/<slug>.md` 에
   원본 스펙 + 의사결정 히스토리 + planner 산출 플랜을 매 실행마다 전체 스냅샷으로 기록한다
   (`workflows/clarification.ts` 가 slug·Q&A 합성·문서 렌더링 순수 함수를 제공).
@@ -403,8 +406,9 @@ while cursor < len(STEP_ORDER):
   직전 단계 출력 전문이 피드백 블록으로 덧붙는다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
-- **무한 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 되돌리고, 그 외
-  `safetyCap` 으로 총 실행 횟수도 제한한다. 예산 소진 시 더 되돌리지 않고 종료한다.
+- **재작업 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 review/test 라우팅을
+  되돌리고, `safetyCap` 으로 라우팅 기반 총 실행 횟수도 제한한다. 자동 구체화가 무제한이면
+  clarifier 반복은 이 cap에서 제외되므로 모델이 계속 질문할 경우 비용과 시간이 계속 증가한다.
 - `--steps` 로 특정 단계만 실행 가능. 라우팅 대상이 필터에서 빠져 있으면 라우팅하지 않는다.
 - 모든 자식 실행은 동일한 `workflowRunId` 로 묶여 DB 에서 추적 가능 (재작업 포함).
 

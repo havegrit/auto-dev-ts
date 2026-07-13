@@ -68,6 +68,67 @@ import { createRoutes } from './routes.js';
 import { resolveProjectDir } from '../lib/workspace.js';
 import { getAgent } from '../agents/index.js';
 import { runSpec } from '../workflows/spec.js';
+import { startSpecSession, resumeSpecSession } from '../workflows/spec-session.js';
+import { cancelActiveRun } from '../lib/run-cancellation.js';
+
+describe('dashboard auto-clarify options', () => {
+  it('passes an unlimited round setting from the submit form', async () => {
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'spec-run', done: Promise.resolve() });
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('input', 'clarify and build');
+    body.set('project', 'demo');
+    body.set('autoClarify', 'true');
+    body.set('maxClarifyRounds', '0');
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(200);
+    expect(startSpecSession).toHaveBeenCalledWith('clarify and build', expect.objectContaining({
+      autoClarify: true,
+      maxClarifyRounds: 0,
+    }));
+  });
+
+  it('rejects invalid maximum rounds', async () => {
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('input', 'clarify and build');
+    body.set('project', 'demo');
+    body.set('autoClarify', 'true');
+    body.set('maxClarifyRounds', '-1');
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: 'maxClarifyRounds must be a non-negative integer' });
+  });
+
+  it('passes auto-clarify settings when resuming from answers', async () => {
+    vi.mocked(resumeSpecSession).mockReturnValueOnce({ runId: 'resumed-run', done: Promise.resolve() });
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/runs/stopped-run/answers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        answers: { q1: 'answer' },
+        autoClarify: true,
+        maxClarifyRounds: 0,
+      }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(resumeSpecSession).toHaveBeenCalledWith(
+      'stopped-run',
+      { q1: 'answer' },
+      undefined,
+      undefined,
+      { autoClarify: true, maxClarifyRounds: 0 },
+    );
+  });
+});
 
 describe('routes resume-last guard', () => {
   it('rejects resume-last for a running run', async () => {

@@ -15,6 +15,10 @@ export interface ClarificationState {
   cwd: string;
   /** 이 run 이 실행해야 하는 spec 단계 필터. undefined 면 전체 파이프라인. */
   steps?: string[];
+  /** 중단 후 재개할 때도 자동 구체화 설정을 유지한다. */
+  autoClarify?: boolean;
+  /** 자동 구체화 최대 라운드. 0이면 무제한. */
+  maxClarifyRounds?: number;
   rounds: ClarificationRound[];
   /** 이 run 의 planner 산출 플랜. 나중에 대시보드에서 이전 플랜을 보여주는 데 쓴다. */
   planOutput?: string;

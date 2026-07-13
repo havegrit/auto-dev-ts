@@ -138,8 +138,12 @@ export function createRoutes(): Hono {
         : undefined;
       const iterations = body['iterations'] ? Number(body['iterations']) : undefined;
       const autoClarify = String(body['autoClarify'] ?? '') === 'true';
+      const maxClarifyRounds = Number(String(body['maxClarifyRounds'] ?? '0'));
+      if (!Number.isInteger(maxClarifyRounds) || maxClarifyRounds < 0) {
+        return c.json({ error: 'maxClarifyRounds must be a non-negative integer' }, 400);
+      }
       const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
-      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, deliveryIntent, triggerSource: 'dashboard' });
+      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, maxClarifyRounds, deliveryIntent, triggerSource: 'dashboard' });
       return c.json({ runId, type: 'workflow' });
     }
 
@@ -228,14 +232,21 @@ export function createRoutes(): Hono {
 
   // 질문 답변으로 워크플로우를 재개한다 (스펙 재입력 없이 연결된 새 run 생성).
   app.post('/api/runs/:id/answers', async (c) => {
-    const body = await c.req.json<{ answers?: Record<string, string>; instruction?: string; questions?: ClarificationRound['questions'] }>();
+    const body = await c.req.json<{ answers?: Record<string, string>; instruction?: string; questions?: ClarificationRound['questions']; autoClarify?: boolean; maxClarifyRounds?: number }>();
     const answers = body.answers ?? {};
     const instruction = (body.instruction ?? '').trim();
     if (Object.keys(answers).length === 0 && !instruction) {
       return c.json({ error: 'answers or instruction is required' }, 400);
     }
+    const maxClarifyRounds = body.maxClarifyRounds;
+    if (maxClarifyRounds !== undefined && (!Number.isInteger(maxClarifyRounds) || maxClarifyRounds < 0)) {
+      return c.json({ error: 'maxClarifyRounds must be a non-negative integer' }, 400);
+    }
     try {
-      const { runId } = resumeSpecSession(c.req.param('id'), answers, instruction || undefined, body.questions);
+      const { runId } = resumeSpecSession(c.req.param('id'), answers, instruction || undefined, body.questions, {
+        autoClarify: body.autoClarify,
+        maxClarifyRounds,
+      });
       return c.json({ runId, type: 'workflow' });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

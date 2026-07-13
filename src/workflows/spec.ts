@@ -21,7 +21,7 @@ export interface SpecOptions {
   cwd?: string;
   /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
   autoClarify?: boolean;
-  /** autoClarify 시 자동 답변을 반복할 최대 라운드 수 (초과하면 사용자에게 질문 넘김). 기본 3. */
+  /** autoClarify 자동 답변 최대 라운드. 0 또는 미지정이면 무제한. */
   maxClarifyRounds?: number;
   /** 이전 실행을 이어갈 때 시작할 단계. 지정 단계 이전은 건너뛴다. */
   startStep?: Step;
@@ -138,7 +138,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
   const maxRoutes = opts.maxRoutes ?? opts.iterations ?? 2;
   const autoClarify = opts.autoClarify ?? false;
-  const maxClarifyRounds = opts.maxClarifyRounds ?? 3;
+  const configuredClarifyRounds = opts.maxClarifyRounds ?? 0;
+  const maxClarifyRounds = configuredClarifyRounds === 0
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor(configuredClarifyRounds));
   const start = Date.now();
   const results: Record<string, StepResult> = {};
 
@@ -190,7 +193,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   let cursor = opts.startStep ? STEP_ORDER.indexOf(opts.startStep) : 0;
   if (cursor < 0) cursor = 0;
   let executed = 0;
-  const safetyCap = STEP_ORDER.length * (maxRoutes + 2); // 무한 라우팅 방지
+  const routeSafetyCap = STEP_ORDER.length * (maxRoutes + 2);
+  const safetyCap = autoClarify && !Number.isFinite(maxClarifyRounds)
+    ? Number.POSITIVE_INFINITY
+    : routeSafetyCap + (autoClarify ? maxClarifyRounds : 0);
 
   while (cursor < STEP_ORDER.length) {
     if (opts.signal?.aborted) {

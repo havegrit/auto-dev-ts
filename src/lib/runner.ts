@@ -146,7 +146,11 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
 
     const durationMs = Date.now() - start;
     if (outcome.status === 'success') {
-      output = outcome.output;
+      // clarifier output is a workflow contract ({ ready, summary, questions }), not the
+      // generic Codex result contract. Preserve provider raw output so runSpec can parse it.
+      output = opts.name === 'clarifier'
+        ? clarifierOutput(outcome)
+        : outcome.output;
       tokensIn = outcome.tokensIn;
       tokensOut = outcome.tokensOut;
       costGuard.recordRun();

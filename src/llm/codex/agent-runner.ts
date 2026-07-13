@@ -29,7 +29,7 @@ function codexArgs(req: AgentRunRequest): string[] {
   const sandbox = sandboxMode();
   if (sandbox) args.push('--sandbox', sandbox);
   if (shouldPassModelToCodex(req.model)) args.push('--model', req.model);
-  args.push(appendCodexJsonContract(req.prompt));
+  args.push(req.resultMode === 'raw' ? req.prompt : appendCodexJsonContract(req.prompt));
   return args;
 }
 

@@ -17,6 +17,8 @@ export interface SpecSessionOptions {
   triggerDetail?: string;
   /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
   autoClarify?: boolean;
+  /** 자동 답변 최대 라운드. 0이면 무제한. */
+  maxClarifyRounds?: number;
   /** resume-last 로 재시작할 때 첫 실행 입력에 한 번만 붙일 후속 지시. */
   resumeInstruction?: string;
   /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
@@ -29,6 +31,11 @@ export interface SpecSessionHandle {
   done: Promise<void>;
 }
 
+export interface ResumeSpecSessionOptions {
+  autoClarify?: boolean;
+  maxClarifyRounds?: number;
+}
+
 /** 새 spec 워크플로우 세션을 시작한다 (clarifier 라운드 0). */
 export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSessionHandle {
   const slug = planSlug(opts.project, spec);
@@ -39,6 +46,8 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
     planFile: join('docs', 'plan', `${slug}.md`),
     cwd: opts.cwd,
     steps: serializeSteps(opts.steps),
+    autoClarify: opts.autoClarify,
+    maxClarifyRounds: opts.maxClarifyRounds,
     rounds: [],
   };
   return launch(state, opts);
@@ -48,7 +57,7 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
  * 멈춰 있던 세션을 사용자 답변으로 재개한다. 원본 스펙을 다시 입력할 필요 없이,
  * 마지막(미답변) 라운드에 답을 채워 "스펙 + 누적 Q&A" 로 새 워크플로우를 시작한다.
  */
-export function resumeSpecSession(parentRunId: string, answers: Record<string, string>, followup?: string, fallbackQuestions?: ClarificationRound['questions']): SpecSessionHandle {
+export function resumeSpecSession(parentRunId: string, answers: Record<string, string>, followup?: string, fallbackQuestions?: ClarificationRound['questions'], resumeOpts: ResumeSpecSessionOptions = {}): SpecSessionHandle {
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
@@ -65,12 +74,16 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
   if (current && extra) current.followup = extra;
   else if (extra) rounds.push({ questions: [], followup: extra });
 
-  const state: ClarificationState = { ...prev, rounds };
+  const autoClarify = resumeOpts.autoClarify ?? prev.autoClarify ?? false;
+  const maxClarifyRounds = resumeOpts.maxClarifyRounds ?? prev.maxClarifyRounds ?? 0;
+  const state: ClarificationState = { ...prev, rounds, autoClarify, maxClarifyRounds };
   saveClarificationState(parentRunId, state);
   return launch(state, {
     project: prev.project,
     cwd: prev.cwd,
     steps: restoreSteps(prev.steps),
+    autoClarify,
+    maxClarifyRounds,
     triggerSource: 'dashboard',
     triggerDetail: `answers:${parentRunId.slice(0, 8)}`,
   });
@@ -94,6 +107,8 @@ export function continueSpecSession(parentRunId: string, instruction: string): S
     project: prev.project,
     cwd: prev.cwd,
     steps: restoreSteps(prev.steps),
+    autoClarify: prev.autoClarify,
+    maxClarifyRounds: prev.maxClarifyRounds,
     triggerSource: 'dashboard',
     triggerDetail: `continue:${parentRunId.slice(0, 8)}`,
   });
@@ -117,6 +132,8 @@ export function resumeLastSpecStep(parentRunId: string, instruction?: string): S
     project: prev.project,
     cwd: prev.cwd,
     steps: restoreSteps(prev.steps),
+    autoClarify: prev.autoClarify,
+    maxClarifyRounds: prev.maxClarifyRounds,
     triggerSource: 'dashboard',
     triggerDetail: `resume:${parentRunId.slice(0, 8)}:${lastStep}`,
     resumeInstruction: extra || undefined,
@@ -202,6 +219,7 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       steps: opts.steps,
       iterations: opts.iterations,
       autoClarify: opts.autoClarify,
+      maxClarifyRounds: opts.maxClarifyRounds,
       initialFeedback: opts.resumeInstruction,
       deliveryIntent: opts.deliveryIntent ?? 'ci',
       triggerSource: opts.triggerSource ?? 'dashboard',

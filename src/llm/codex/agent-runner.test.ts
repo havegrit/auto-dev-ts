@@ -87,6 +87,36 @@ describe('codexAgentRunner', () => {
     }
   });
 
+  it('does not append the generic result contract in raw result mode', async () => {
+    const response = JSON.stringify({ ready: false, summary: '', questions: [] });
+    const { exec, calls } = fakeExec([
+      JSON.stringify({ type: 'item.completed', item: { id: 'i0', type: 'agent_message', text: response } }),
+    ]);
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
+
+    const outcome = await runner.run(
+      { prompt: 'clarifier contract only', cwd: '/repo', tools: ['Read'], model: 'gpt-5', resultMode: 'raw' },
+      () => {},
+    );
+
+    expect(calls[0].args.at(-1)).toBe('clarifier contract only');
+    expect(calls[0].args.at(-1)).not.toContain('changedFiles');
+    expect(outcome.rawOutput).toBe(response);
+  });
+
+  it('passes the cancellation signal to the Codex subprocess', async () => {
+    const { exec, calls } = fakeExec([]);
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
+    const abortController = new AbortController();
+
+    await runner.run(
+      { prompt: 'p', cwd: '/repo', tools: [], model: 'gpt-5', abortController },
+      () => {},
+    );
+
+    expect(calls[0].options.signal).toBe(abortController.signal);
+  });
+
   it('maps codex process failures to an error outcome instead of throwing', async () => {
     const { exec } = fakeExec([], { exitCode: 124, stderr: 'timed out' });
     const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });

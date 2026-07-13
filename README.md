@@ -101,6 +101,7 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
+- Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
 - The detail panel includes a workflow summary, per-agent navigation, and token debug breakdown by agent/model/input/output
 - The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
 - Any completed spec run can be continued with a free-text follow-up instruction, or resumed from the last executed step — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow

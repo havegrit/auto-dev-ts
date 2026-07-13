@@ -44,6 +44,7 @@ import { runAgent } from './runner.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { modelConfig } from './model-config.js';
 import { insertRun, updateRun } from '../store/runs.js';
+import { cancelActiveRun } from './run-cancellation.js';
 
 describe('runAgent dispatch', () => {
   beforeEach(() => {
@@ -74,6 +75,48 @@ describe('runAgent dispatch', () => {
     expect(result.output).toBe('ok');
     expect(result.tokensIn).toBe(5);
     expect(result.tokensOut).toBe(6);
+  });
+
+  it('preserves raw JSON output for clarifier workflow parsing', async () => {
+    const rawOutput = JSON.stringify({
+      ready: false,
+      summary: '',
+      questions: [{ id: 'q1', category: 'scope', text: '범위는?', recommendation: '핵심 CRUD' }],
+    });
+    fakeRunnerImpl = {
+      run: async () => ({
+        status: 'success',
+        output: '',
+        rawOutput: `${rawOutput}\n\nstderr:\nReading additional input from stdin...`,
+        tokensIn: 5,
+        tokensOut: 6,
+        numTurns: 1,
+        stopReason: 'codex_cli_exit_0',
+      }),
+    };
+
+    const result = await runAgent({ name: 'clarifier', prompt: 'clarify this' });
+
+    expect(result.output).toBe(rawOutput);
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ output: rawOutput }));
+  });
+
+  it('aborts an active provider run and records CANCELLED', async () => {
+    fakeRunnerImpl = {
+      // Some provider iterators can remain pending while their subprocess performs graceful cleanup.
+      run: async () => new Promise(() => {}),
+    };
+
+    const pending = runAgent({ name: 'scaffold', prompt: 'long task' });
+    await vi.waitFor(() => expect(insertRun).toHaveBeenCalled());
+    const runId = vi.mocked(insertRun).mock.calls.at(-1)![0].id;
+
+    expect(cancelActiveRun(runId)).toBe(true);
+    await expect(pending).resolves.toMatchObject({ status: 'CANCELLED' });
+    expect(updateRun).toHaveBeenCalledWith(runId, expect.objectContaining({
+      status: 'FAILED',
+      errorType: 'user_cancelled',
+    }));
   });
 
   it('RATE_LIMIT: onEvent rate_limit opens circuit breaker', async () => {
@@ -130,6 +173,7 @@ describe('runAgent dispatch', () => {
     expect(getEffortOptionForAgent).toHaveBeenCalledWith('scaffold');
     expect(receivedReq.model).toBe('agent-model');
     expect(receivedReq.effort).toBe('medium');
+    expect(receivedReq.resultMode).toBe('generic');
     expect(insertRun).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'codex-cli:agent-model' }));
     expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:agent-model' }));
     getModelIdForAgent.mockRestore();
@@ -162,6 +206,7 @@ describe('runAgent dispatch', () => {
     expect(getAgentRunnerMock).toHaveBeenNthCalledWith(1, 'anthropic:opus');
     expect(getAgentRunnerMock).toHaveBeenNthCalledWith(2, 'codex-cli:gpt-5.5');
     expect(requests.map(r => r.model)).toEqual(['opus', 'gpt-5.5']);
+    expect(requests.map(r => r.resultMode)).toEqual(['raw', 'raw']);
     expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:gpt-5.5' }));
     expect(circuitBreaker.isOpen()).toBe(false);
     getModelIdForAgent.mockRestore();

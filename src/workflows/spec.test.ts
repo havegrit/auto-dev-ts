@@ -85,7 +85,7 @@ vi.mock('../agents/cicd.js', () => ({
   }),
 }));
 
-import { runSpec } from './spec.js';
+import { runSpec, workflowRunStatus } from './spec.js';
 
 describe('runSpec clarification gate', () => {
   beforeEach(() => {
@@ -124,6 +124,24 @@ describe('runSpec clarification gate', () => {
     expect(result.steps).toEqual({
       clarifier: { runId: 'clarifier-run', durationMs: 10, status: 'BLOCKED' },
     });
+  });
+
+  it('stops the workflow when the active agent is cancelled', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: '[cancelled] 사용자 요청으로 실행을 중단했습니다.',
+      tokensIn: 0,
+      tokensOut: 0,
+      durationMs: 10,
+      status: 'CANCELLED',
+    };
+
+    const result = await runSpec('취소할 요청');
+
+    expect(calls).toEqual(['clarifier']);
+    expect(result.verdict).toBe('CANCELLED');
+    expect(result.steps.clarifier.status).toBe('CANCELLED');
+    expect(workflowRunStatus(result)).toBe('FAILED');
   });
 
   it('accepts clarifier JSON wrapped in markdown fences', async () => {
@@ -276,6 +294,22 @@ describe('runSpec auto-clarify (skip mode)', () => {
     const secondInput = (clarifier as any).mock.calls[1][0] as string;
     expect(secondInput).toContain('q1');
     expect(secondInput).toContain('핵심 CRUD만');
+  });
+
+  it('has no auto-clarify round limit by default', async () => {
+    clarifierQueue = [
+      clarifierOut([{ id: 'q1', recommendation: 'a1' }]),
+      clarifierOut([{ id: 'q2', recommendation: 'a2' }]),
+      clarifierOut([{ id: 'q3', recommendation: 'a3' }]),
+      clarifierOut([{ id: 'q4', recommendation: 'a4' }]),
+      clarifierOut(null),
+    ];
+
+    const result = await runSpec('모호한 요청', { autoClarify: true });
+
+    expect(calls.filter((c) => c === 'clarifier')).toHaveLength(5);
+    expect(result.autoClarifyRounds).toHaveLength(4);
+    expect(calls).toContain('planner');
   });
 
   it('stops with NEEDS-CLARIFICATION after hitting the round cap', async () => {
