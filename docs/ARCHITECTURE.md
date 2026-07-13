@@ -495,6 +495,7 @@ data/
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 `{ system?, message, json? }` (CORS 허용) |
 | `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `POST` | `/api/runs/:id/cancel` | 실행 중인 workflow/agent 취소. 부모 취소는 현재 child provider까지 전파 |
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 (추천 답안 포함) |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 — 스펙 재입력 없이 연결된 새 run 생성 |
@@ -522,6 +523,11 @@ cron.schedule('0 9 * * *', async () => {
 ---
 
 ## 9. 관찰성 (Dashboard)
+
+실행 중인 이력 행·제출 결과·상세 패널에서 강제 중단할 수 있다. 서버는 run별
+`AbortController`를 등록하고 Anthropic query 또는 Codex subprocess에 신호를 전달한다.
+기존 SQLite status CHECK와의 호환을 위해 DB에는 `FAILED` + `error_type=user_cancelled`로
+저장하고, 대시보드는 이를 `CANCELLED`로 표시한다.
 
 ### 9.1 페이지 구성 (`http://127.0.0.1:8080/`)
 

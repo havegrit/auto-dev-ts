@@ -51,6 +51,9 @@ vi.mock('../lib/model-config.js', () => ({
 vi.mock('../lib/run-events.js', () => ({
   getOrCreateEmitter: vi.fn(),
 }));
+vi.mock('../lib/run-cancellation.js', () => ({
+  cancelActiveRun: vi.fn(() => true),
+}));
 vi.mock('../integrations/issue-tracker/index.js', () => ({
   getIssueTracker: vi.fn(() => ({
     fetchOpenIssues: vi.fn(),
@@ -77,6 +80,17 @@ describe('routes resume-last guard', () => {
 
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({ error: 'Cannot resume-last while the run is still running' });
+  });
+});
+
+describe('run cancellation', () => {
+  it('accepts cancellation for a running run', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/cancel', { method: 'POST' }));
+
+    expect(res.status).toBe(202);
+    expect(cancelActiveRun).toHaveBeenCalledWith('run-1');
+    await expect(res.json()).resolves.toEqual({ accepted: true, runId: 'run-1' });
   });
 });
 

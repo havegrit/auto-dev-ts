@@ -26,6 +26,7 @@
     .FAILED  { background: #3b1219; color: #f85149; }
     .RUNNING { background: #1c2d4a; color: #58a6ff; }
     .BLOCKED { background: #3b2f00; color: #f2cc60; }
+    .CANCELLED { background: #2d333b; color: #adbac7; }
     .PENDING { background: #3b2f00; color: #f2cc60; }
     .NEEDS-CLARIFICATION { background: #3b2f00; color: #f2cc60; }
     .agent-name { font-family: monospace; color: #79c0ff; }
@@ -116,6 +117,9 @@
       white-space: nowrap;
     }
     .reset-btn:hover { border-color: #8b949e; color: #e6edf3; }
+    .cancel-btn { background:#2d1117;border:1px solid #8c2f39;color:#ff7b72;border-radius:6px;padding:0.3rem 0.8rem;cursor:pointer;font-size:0.8rem;white-space:nowrap; }
+    .cancel-btn:hover { background:#49151d;border-color:#f85149; }
+    .cancel-btn:disabled { opacity:0.55;cursor:not-allowed; }
 
     /* Result panel */
     .result-panel { display: none; margin-top: 1rem; border-top: 1px solid #21262d; padding-top: 1rem; }
@@ -352,7 +356,8 @@
         <div id="result-spinner" class="spinner" style="display:none"></div>
         <span id="result-status-label">IDLE</span>
         <span id="result-run-id" style="font-family:monospace;font-size:0.72rem;color:#484f58"></span>
-        <button id="result-output-toggle" class="refresh" style="display:none;margin-left:auto" onclick="toggleOutput('result-output', this)">원본</button>
+        <button id="result-cancel-btn" class="cancel-btn" style="display:none;margin-left:auto" onclick="cancelRun(this.dataset.runId, this)">강제 중단</button>
+        <button id="result-output-toggle" class="refresh" style="display:none" onclick="toggleOutput('result-output', this)">원본</button>
       </div>
       <div class="sub-runs" id="sub-runs"></div>
       <div class="result-output" id="result-output" style="display:none"></div>
@@ -392,6 +397,7 @@
   <div class="card" id="run-detail-panel" style="display:none">
     <div class="section-title">
       <span id="run-detail-title">실행 상세</span>
+      <button id="detail-cancel-btn" class="cancel-btn" style="display:none;margin-left:auto" onclick="cancelRun(this.dataset.runId, this)">강제 중단</button>
       <button class="refresh" onclick="closeRunDetail()">닫기</button>
     </div>
     <div id="run-detail-meta" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.78rem;color:#8b949e"></div>
@@ -472,6 +478,7 @@
     let selectedRunId = null;
     let liveEventSource = null;
     let detailElapsedTimer = null;
+    let detailWorkflowTimer = null;
     let configAgents = [];
     // 최근 실행 버튼 로드 상태: 한 번에 유닛(spec 워크플로우 또는 단독 실행) 10개씩.
     const RUNS_UNIT_BATCH = 10;
@@ -764,7 +771,9 @@
       document.getElementById('result-spinner').style.display = '';
       document.getElementById('result-status-label').textContent = 'SENDING...';
       document.getElementById('result-run-id').textContent = '';
+      document.getElementById('result-cancel-btn').style.display = 'none';
       document.getElementById('sub-runs').innerHTML = '';
+      document.getElementById('sub-runs').__signature = null;
       document.getElementById('result-output').style.display = 'none';
       clearOutput('result-output', 'result-output-toggle');
 
@@ -777,6 +786,11 @@
         const { runId, type } = await res.json();
         document.getElementById('result-run-id').textContent = runId.slice(0, 8) + '…';
         document.getElementById('result-status-label').textContent = 'RUNNING';
+        const cancelBtn = document.getElementById('result-cancel-btn');
+        cancelBtn.dataset.runId = runId;
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '강제 중단';
+        cancelBtn.style.display = '';
         pollRun(runId, type);
       } catch (err) {
         document.getElementById('result-spinner').style.display = 'none';
@@ -788,7 +802,7 @@
 
     function pollRun(runId, type) {
       if (pollTimer) clearInterval(pollTimer);
-      pollTimer = setInterval(async () => {
+      const tick = async () => {
         try {
           const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
           const statusEl = document.getElementById('result-status-label');
@@ -805,24 +819,34 @@
           if (type === 'workflow') {
             const children = await fetch(`/api/runs/${runId}/children`).then(r => r.json());
             const subEl = document.getElementById('sub-runs');
-            subEl.innerHTML = children.map(c => `
+            const signature = JSON.stringify(children.map(c => [c.id, c.status, c.duration_ms]));
+            const html = children.length > 0 ? children.map(c => `
               <div class="sub-run-row">
-                <span class="agent-name">${c.agent_name}</span>
+                <span class="agent-name">${escapeHtml(c.agent_name)}</span>
                 ${statusBadge(c)}
                 <span class="duration">${formatDuration(c.duration_ms)}</span>
-              </div>`).join('');
+              </div>`).join('') : '<div class="sub-run-row"><span class="duration">하위 에이전트 시작 대기...</span></div>';
+            if (subEl.__signature !== signature) {
+              subEl.innerHTML = html;
+              subEl.__signature = signature;
+            }
           }
 
-          if (run.status === 'DONE' || run.status === 'FAILED' || run.status === 'BLOCKED') {
+          if (run.status === 'DONE' || run.status === 'FAILED' || run.status === 'BLOCKED' || run.status === 'CANCELLED') {
             clearInterval(pollTimer);
+            pollTimer = null;
             spinnerEl.style.display = 'none';
             const btn = document.getElementById('run-btn');
             btn.disabled = false;
             btn.textContent = '실행';
-            loadStats();
+            document.getElementById('result-cancel-btn').style.display = 'none';
+            await loadStats();
+            await showRunDetail(runId);
           }
         } catch (e) { /* 일시적 네트워크 오류 무시 */ }
-      }, 2000);
+      };
+      tick();
+      pollTimer = setInterval(tick, 2000);
     }
 
     async function loadStats() {
@@ -914,9 +938,11 @@
         // 완료된 spec 워크플로우 중 상태가 저장된 것만 표에서 바로 이어갈 수 있다.
         const continuable = !r.workflow_run_id && r.agent_name === 'spec' && (r.status === 'DONE' || r.status === 'FAILED') && !!r.clarification_state;
         // 대기 중인 clarifier 질문이 있으면 '답변하기', 아니면 '이어가기'로 라벨을 구분한다.
-        const action = continuable
-          ? `<button class="refresh" onclick="continueFromRow(event, '${r.id}')">${hasPendingQuestions(r.clarification_state) ? '답변하기' : '이어가기'}</button>`
-          : '';
+        const action = r.status === 'RUNNING'
+          ? `<button class="cancel-btn" onclick="event.stopPropagation();cancelRun('${r.id}', this)">중단</button>`
+          : continuable
+            ? `<button class="refresh" onclick="continueFromRow(event, '${r.id}')">${hasPendingQuestions(r.clarification_state) ? '답변하기' : '이어가기'}</button>`
+            : '';
         return `<tr class="run-row${isSelected ? ' selected' : ''}"${dataParent}${rowStyle} onclick="showRunDetail('${r.id}')">
           <td style="white-space:nowrap">${agentCell}</td>
           <td>${statusBadge(r)}</td>
@@ -969,6 +995,7 @@
     }
 
     function displayStatus(run) {
+      if (run?.error_type === 'user_cancelled') return 'CANCELLED';
       if (run?.agent_name === 'spec' && hasPendingQuestions(run.clarification_state)) return 'PENDING';
       return run?.status ?? 'UNKNOWN';
     }
@@ -1152,12 +1179,12 @@
 
       section.innerHTML = `
         <span class="workflow-nav-label">Workflow</span>
+        <button class="refresh" type="button" onclick="showRunDetail('${parent.id}')">상위 spec</button>
         ${btn(prev?.agent_name ?? '', prev)}
         ${arrow(Boolean(prev), '←')}
         <button class="refresh current-step" type="button" disabled>${escapeHtml(run.agent_name)}</button>
         ${arrow(Boolean(next), '→')}
         ${btn(next?.agent_name ?? '', next)}
-        <button class="refresh" type="button" onclick="showRunDetail('${parent.id}')">상위 spec</button>
       `;
       section.style.display = '';
     }
@@ -1254,9 +1281,6 @@
 
     async function renderRunSummary(run) {
       const section = document.getElementById('run-summary-section');
-      section.style.display = 'none';
-      section.innerHTML = '';
-      if (run.status === 'RUNNING') return;
 
       let children = [];
       if (!run.workflow_run_id) {
@@ -1265,17 +1289,28 @@
         } catch {}
       }
 
-      const isWorkflow = run.agent_name === 'spec' && Array.isArray(children) && children.length > 0;
+      const isWorkflow = run.agent_name === 'spec' && !run.workflow_run_id;
       const verdict = workflowVerdict(run.output) ?? displayStatus(run);
       const failed = isWorkflow ? children.filter(c => displayStatus(c) === 'FAILED' || c.error_type) : [];
       const completed = isWorkflow ? children.filter(c => displayStatus(c) === 'DONE').length : 0;
       const title = isWorkflow ? '실행 요약' : '단일 실행 요약';
       const tokenRows = isWorkflow ? children : [run];
+      const signature = JSON.stringify({
+        runId: run.id,
+        status: displayStatus(run),
+        output: run.output,
+        errorType: run.error_type,
+        children: children.map(c => [c.id, displayStatus(c), c.duration_ms, c.tokens_in, c.tokens_out, c.error_type]),
+      });
+      if (section.__signature === signature) {
+        section.style.display = '';
+        return;
+      }
       const summaryItems = [
         ['결과', verdict],
         ['소요시간', formatDuration(elapsedMs(run))],
         ['토큰', formatTokens(tokenRows.reduce((sum, r) => sum + tokenTotal(r), 0))],
-        ...(isWorkflow ? [['단계', `${completed}/${children.length} 완료`]] : []),
+        ...(isWorkflow ? [['단계', children.length > 0 ? `${completed}/${children.length} 완료` : '시작 대기']] : []),
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
       ];
@@ -1300,10 +1335,53 @@
         ${steps}
         ${renderTokenDebug(tokenRows)}
       `;
+      section.__signature = signature;
       section.style.display = '';
     }
 
+    function startWorkflowDetailPolling(runId) {
+      if (detailWorkflowTimer) clearInterval(detailWorkflowTimer);
+      detailWorkflowTimer = setInterval(async () => {
+        if (selectedRunId !== runId) {
+          clearInterval(detailWorkflowTimer);
+          detailWorkflowTimer = null;
+          return;
+        }
+        try {
+          const latest = await fetch(`/api/runs/${runId}`).then(r => r.json());
+          if (latest.status === 'RUNNING') {
+            await renderRunSummary(latest);
+            return;
+          }
+          clearInterval(detailWorkflowTimer);
+          detailWorkflowTimer = null;
+          await refreshRunDetail(runId);
+          await loadStats();
+        } catch {}
+      }, 2000);
+    }
+
+    async function cancelRun(runId, button) {
+      if (!runId || !confirm('현재 에이전트 실행을 강제로 중단할까요? 진행 중인 파일 변경이 일부 남을 수 있습니다.')) return;
+      button.disabled = true;
+      button.textContent = '중단 요청...';
+      try {
+        const res = await fetch(`/api/runs/${runId}/cancel`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '중단 요청 실패');
+      } catch (err) {
+        button.disabled = false;
+        button.textContent = '강제 중단';
+        alert(err.message);
+      }
+    }
+
     async function renderRunDetail(run) {
+      const detailCancel = document.getElementById('detail-cancel-btn');
+      detailCancel.dataset.runId = run.id;
+      detailCancel.disabled = false;
+      detailCancel.textContent = '강제 중단';
+      detailCancel.style.display = run.status === 'RUNNING' ? '' : 'none';
       const chips = [
         `<span class="detail-chip">${run.agent_name}</span>`,
         `<span class="detail-chip">${statusBadge(run, 'font-size:0.7rem')}</span>`,
@@ -1333,7 +1411,10 @@
         events = res.events ?? [];
       } catch {}
       renderActivityHistory(events, run.status === 'RUNNING');
-      if (run.status === 'RUNNING') startLiveStream(run.id);
+      if (run.status === 'RUNNING') {
+        if (run.agent_name === 'spec' && !run.workflow_run_id) startWorkflowDetailPolling(run.id);
+        else startLiveStream(run.id);
+      }
 
       renderClarification(run);
     }
@@ -1507,6 +1588,7 @@
     async function showRunDetail(runId) {
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
       if (detailElapsedTimer) { clearInterval(detailElapsedTimer); detailElapsedTimer = null; }
+      if (detailWorkflowTimer) { clearInterval(detailWorkflowTimer); detailWorkflowTimer = null; }
       selectedRunId = runId;
       // spec 부모 상세를 열면 하위 에이전트 기록을 자동으로 펼친다.
       if (lastRunRows.some(r => r.workflow_run_id === runId) && !expandedRuns.has(runId)) {
@@ -1519,6 +1601,7 @@
 
       const panel = document.getElementById('run-detail-panel');
       panel.style.display = '';
+      document.getElementById('detail-cancel-btn').style.display = 'none';
       document.getElementById('run-detail-meta').innerHTML = '<span style="color:#8b949e">불러오는 중...</span>';
       document.getElementById('workflow-nav-section').style.display = 'none';
       document.getElementById('run-summary-section').style.display = 'none';

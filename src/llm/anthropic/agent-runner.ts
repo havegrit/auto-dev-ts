@@ -19,6 +19,7 @@ export const anthropicAgentRunner: AgentRunner = {
           stderr: cli.onStderr,
           cwd: req.cwd,
           model: req.model,
+          abortController: req.abortController,
           ...(req.effort !== undefined ? { effort: req.effort } : {}),
           ...(hasSubagents ? { agents: req.subagents } : {}),
         },

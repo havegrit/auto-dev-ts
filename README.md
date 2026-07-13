@@ -98,6 +98,7 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Live agent status and daily run count
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
 - Running jobs update live over SSE; click any run row to anchor the detail panel
+- Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - The detail panel includes a workflow summary, per-agent navigation, and token debug breakdown by agent/model/input/output
@@ -122,6 +123,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
+| `POST` | `/api/runs/:id/cancel` | Force-stop a running workflow or agent process |
 | `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
 | `POST` | `/api/runs/:id/answers` | Resume a clarified spec run with `{ answers }` (no spec re-entry) |
 | `POST` | `/api/runs/:id/continue` | Continue a completed spec run with `{ instruction }` (no spec re-entry) |

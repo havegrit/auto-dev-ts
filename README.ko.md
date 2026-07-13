@@ -98,6 +98,7 @@ clarifier → planner → scaffold → test → review → cicd
 - 에이전트 현황 및 일일 실행 횟수
 - 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신, `더 보기` 버튼으로 추가 로드
 - 실행 중인 작업은 SSE로 라이브 갱신, 실행 행 클릭 시 상세 패널로 앵커 이동
+- 실행 중인 행, 제출 결과 패널, 실행 상세 패널에서 강제 중단 가능; 실제 provider 프로세스를 중단하고 UI에는 `CANCELLED`로 표시
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
 - 상세 패널은 workflow 요약, 에이전트 간 이동, agent/model/input/output 기준 token debug breakdown 제공
@@ -122,6 +123,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `POST` | `/api/runs/:id/cancel` | 실행 중인 워크플로우 또는 에이전트 프로세스 강제 중단 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 (스펙 재입력 불필요) |
 | `POST` | `/api/runs/:id/continue` | `{ instruction }` 로 완료된 spec run 이어가기 (스펙 재입력 불필요) |

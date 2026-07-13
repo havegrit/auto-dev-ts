@@ -4,6 +4,7 @@ import { createInterface } from 'readline';
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface ExecResult {
@@ -31,7 +32,9 @@ export const execStream: ExecStream = (command, args, options, onStdoutLine) => 
   let stdout = '';
   let stderr = '';
   let timedOut = false;
+  let cancelled = false;
   let settled = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
 
   const timer = options.timeoutMs
     ? setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, options.timeoutMs)
@@ -41,8 +44,21 @@ export const execStream: ExecStream = (command, args, options, onStdoutLine) => 
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
-    resolve({ exitCode: timedOut ? 124 : exitCode, stdout, stderr });
+    if (killTimer) clearTimeout(killTimer);
+    options.signal?.removeEventListener('abort', onAbort);
+    resolve({ exitCode: cancelled ? 130 : timedOut ? 124 : exitCode, stdout, stderr });
   };
+
+  const onAbort = () => {
+    if (settled || cancelled) return;
+    cancelled = true;
+    child.kill('SIGTERM');
+    killTimer = setTimeout(() => {
+      if (!settled) child.kill('SIGKILL');
+    }, 1_000);
+  };
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener('abort', onAbort, { once: true });
 
   const rl = createInterface({ input: child.stdout });
   rl.on('line', (line) => {

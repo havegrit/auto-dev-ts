@@ -5,6 +5,8 @@ import { runSpec, workflowOutput, workflowRunStatus, STEP_ORDER, type SpecResult
 import { composeClarifierInput, renderPlanDoc, planSlug, type ClarificationRound } from './clarification.js';
 import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
 import { saveClarificationState, getClarificationState, type ClarificationState } from '../store/clarification.js';
+import { closeEmitter, emitRunEvent } from '../lib/run-events.js';
+import { registerRunCancellation } from '../lib/run-cancellation.js';
 
 export interface SpecSessionOptions {
   project?: string;
@@ -185,11 +187,14 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
   // (게이트에서 멈추면 finalize 가 질문 라운드를 더해 다시 저장한다.)
   saveClarificationState(runId, state);
 
-  const done = finalize(runId, state, opts, input, resume);
+  const abortController = new AbortController();
+  const unregisterCancellation = registerRunCancellation(runId, abortController);
+  const done = finalize(runId, state, opts, input, resume, abortController.signal)
+    .finally(unregisterCancellation);
   return { runId, done };
 }
 
-async function finalize(runId: string, state: ClarificationState, opts: SpecSessionOptions, input: string, resume?: { startStep: Step }): Promise<void> {
+async function finalize(runId: string, state: ClarificationState, opts: SpecSessionOptions, input: string, resume: { startStep: Step } | undefined, signal: AbortSignal): Promise<void> {
   const wallStart = Date.now();
   try {
     const result = await runSpec(input, {
@@ -203,6 +208,7 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       cwd: state.cwd,
       startStep: resume?.startStep,
       initialPlanOutput: state.planOutput,
+      signal,
     });
 
     // skip 모드가 추천 답안으로 자동 답변한 라운드를 히스토리에 편입해
@@ -229,22 +235,32 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
         status: 'DONE',
         durationMs: result.totalDurationMs,
       });
+      finishRunEvents(runId, 'DONE');
       return;
     }
 
     saveClarificationState(runId, { ...merged, planOutput });
+    const status = workflowRunStatus(result);
     updateRun(runId, {
       output: workflowOutput(result),
-      status: workflowRunStatus(result),
+      status,
       durationMs: result.totalDurationMs,
+      ...(result.verdict === 'CANCELLED' ? { errorType: 'user_cancelled', stopReason: 'user_cancelled' } : {}),
     });
+    finishRunEvents(runId, result.verdict === 'CANCELLED' ? 'CANCELLED' : status);
   } catch (err) {
     updateRun(runId, {
       output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,
       status: 'FAILED',
       durationMs: Date.now() - wallStart,
     });
+    finishRunEvents(runId, 'FAILED');
   }
+}
+
+function finishRunEvents(runId: string, status: 'DONE' | 'FAILED' | 'CANCELLED'): void {
+  emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: status });
+  closeEmitter(runId);
 }
 
 /** plan 파일을 cwd/docs/plan/<slug>.md 에 항상 최신 전체 스냅샷으로 기록한다. */

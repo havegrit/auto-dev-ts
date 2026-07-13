@@ -16,6 +16,7 @@ import { modelConfig } from '../lib/model-config.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
+import { cancelActiveRun } from '../lib/run-cancellation.js';
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -208,6 +209,15 @@ export function createRoutes(): Hono {
     const run = getRun(c.req.param('id'));
     if (!run) return c.json({ error: 'Not found' }, 404);
     return c.json(run);
+  });
+
+  app.post('/api/runs/:id/cancel', (c) => {
+    const runId = c.req.param('id');
+    const run = getRun(runId);
+    if (!run) return c.json({ error: 'Not found' }, 404);
+    if (run.status !== 'RUNNING') return c.json({ error: `Run is not running: ${run.status}` }, 409);
+    if (!cancelActiveRun(runId)) return c.json({ error: 'Run is not cancellable in this server process' }, 409);
+    return c.json({ accepted: true, runId }, 202);
   });
 
   // clarifier 가 멈춘 run 의 대기 중 질문(추천 답안 포함)을 반환한다.

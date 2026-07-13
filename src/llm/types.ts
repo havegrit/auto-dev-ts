@@ -6,6 +6,10 @@ export interface AgentRunRequest {
   subagents?: Record<string, unknown>;
   model: string;
   effort?: string;
+  /** generic은 Codex 공통 결과 계약을 추가하고, raw는 agent 고유 출력 계약을 보존한다. */
+  resultMode?: 'generic' | 'raw';
+  /** provider 실행과 하위 프로세스를 실제 중단하는 controller. */
+  abortController?: AbortController;
 }
 
 /** 프로바이더-무관 스트리밍 이벤트. 기존 emitRunEvent / circuit-breaker 신호와 1:1. */

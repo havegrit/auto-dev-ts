@@ -8,6 +8,7 @@ export type AgentRunOpts = {
   workflowRunId?: string;
   cwd?: string;
   deliveryIntent?: 'ci' | 'cd';
+  signal?: AbortSignal;
 };
 
 export function decorateCicdInput(input: string, deliveryIntent: 'ci' | 'cd' = 'ci'): string {

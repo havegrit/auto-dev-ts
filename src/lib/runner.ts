@@ -11,6 +11,7 @@ import { expandHome } from './workspace.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 import type { AgentRunOutcome } from '../llm/types.js';
+import { registerRunCancellation } from './run-cancellation.js';
 
 export interface RunOptions {
   name: string;
@@ -21,6 +22,7 @@ export interface RunOptions {
   workflowRunId?: string;
   subagents?: Record<string, AgentDefinition>;
   tools?: string[];
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -29,10 +31,26 @@ export interface RunResult {
   tokensIn: number;
   tokensOut: number;
   durationMs: number;
-  status: 'DONE' | 'FAILED' | 'BLOCKED';
+  status: 'DONE' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
 }
 
 const DEFAULT_WORKSPACE = expandHome(process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace');
+
+function clarifierOutput(outcome: AgentRunOutcome): string {
+  const raw = outcome.rawOutput ?? outcome.output;
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  return start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('Cancelled'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('Cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
 
 async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   const start = Date.now();
@@ -41,6 +59,21 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   let tokensIn = 0;
   let tokensOut = 0;
   const ctx = { runId, agent: opts.name };
+  const abortController = new AbortController();
+  const abortFromParent = () => abortController.abort(opts.signal?.reason);
+  if (opts.signal?.aborted) abortFromParent();
+  else opts.signal?.addEventListener('abort', abortFromParent, { once: true });
+  const unregisterCancellation = registerRunCancellation(runId, abortController);
+
+  const cancelledResult = (): RunResult => {
+    const durationMs = Date.now() - start;
+    output = '[cancelled] 사용자 요청으로 실행을 중단했습니다.';
+    updateRun(runId, { output, status: 'FAILED', durationMs, errorType: 'user_cancelled', stopReason: 'user_cancelled' });
+    log.warn({ ...ctx, durationMs }, 'Agent cancelled by user');
+    emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: 'CANCELLED' });
+    closeEmitter(runId);
+    return { runId, output, tokensIn, tokensOut, durationMs, status: 'CANCELLED' };
+  };
 
   try {
     // 기본값은 읽기 전용. 구현 권한(Write/Bash)은 호출부가 명시적으로 부여해야 한다
@@ -77,14 +110,17 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     };
 
     const runWithModel = async (modelId: string, model: string, effort: string | undefined): Promise<AgentRunOutcome> => {
-      return getAgentRunner(modelId).run({
+      const providerRun = getAgentRunner(modelId).run({
         prompt: opts.prompt,
         cwd,
         tools,
         subagents: opts.subagents,
         model,
         effort,
+        resultMode: opts.name === 'clarifier' ? 'raw' : 'generic',
+        abortController,
       }, onEvent);
+      return abortable(providerRun, abortController.signal);
     };
 
     const modelId = modelConfig.getModelIdForAgent(opts.name);
@@ -93,6 +129,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     updateRun(runId, { modelId: actualModelId });
     suppressCircuitForFallback = Boolean(fallbackModelId && fallbackModelId !== modelId);
     let outcome = await runWithModel(modelId, modelConfig.getModelForAgent(opts.name), modelConfig.getEffortOptionForAgent(opts.name));
+    if (abortController.signal.aborted) return cancelledResult();
     if (sawRateLimit && fallbackModelId && fallbackModelId !== modelId) {
       log.warn({ ...ctx, modelId, fallbackModelId }, 'Primary model rate-limited — retrying fallback model');
       sawRateLimit = false;
@@ -104,6 +141,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         modelConfig.getModelForModelId(fallbackModelId),
         modelConfig.getEffortOptionForModelId(fallbackModelId),
       );
+      if (abortController.signal.aborted) return cancelledResult();
     }
 
     const durationMs = Date.now() - start;
@@ -128,6 +166,7 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       return { runId, output, tokensIn, tokensOut, durationMs, status: 'FAILED' };
     }
   } catch (err) {
+    if (abortController.signal.aborted) return cancelledResult();
     const durationMs = Date.now() - start;
     const errMsg = err instanceof Error ? err.message : String(err);
     const errStack = err instanceof Error ? err.stack : undefined;
@@ -137,6 +176,9 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: `FAILED:exception:${errMsg}` });
     closeEmitter(runId);
     throw err;
+  } finally {
+    opts.signal?.removeEventListener('abort', abortFromParent);
+    unregisterCancellation();
   }
 }
 

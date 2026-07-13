@@ -31,6 +31,8 @@ export interface SpecOptions {
   initialFeedback?: string;
   /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
   deliveryIntent?: 'ci' | 'cd';
+  /** 부모 workflow 취소를 현재 실행 중인 child agent에 전달한다. */
+  signal?: AbortSignal;
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -144,7 +146,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> = [];
   const autoQaLines: string[] = [];
 
-  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd, deliveryIntent: opts.deliveryIntent ?? 'ci' };
+  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd, deliveryIntent: opts.deliveryIntent ?? 'ci', signal: opts.signal };
   const agents: Record<string, (input: string, opts: any) => Promise<RunResult>> = {
     clarifier, planner, scaffold, test, review, cicd,
   };
@@ -191,6 +193,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const safetyCap = STEP_ORDER.length * (maxRoutes + 2); // 무한 라우팅 방지
 
   while (cursor < STEP_ORDER.length) {
+    if (opts.signal?.aborted) {
+      verdict = 'CANCELLED';
+      break;
+    }
     const step = STEP_ORDER[cursor];
     if (!stepsFilter.has(step)) { cursor++; continue; }
     if (++executed > safetyCap) break;
@@ -199,7 +205,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     pendingFeedback = undefined;
     results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
 
-    if (r.status === 'BLOCKED' || r.status === 'FAILED') {
+    if (r.status === 'BLOCKED' || r.status === 'FAILED' || r.status === 'CANCELLED') {
       verdict = r.status;
       break;
     }
@@ -261,7 +267,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 }
 
 export function workflowRunStatus(result: Pick<SpecResult, 'verdict'>): 'DONE' | 'FAILED' {
-  return result.verdict === 'BLOCKED' || result.verdict === 'FAILED' || result.verdict === 'NEEDS-WORK'
+  return result.verdict === 'BLOCKED' || result.verdict === 'FAILED' || result.verdict === 'NEEDS-WORK' || result.verdict === 'CANCELLED'
     ? 'FAILED'
     : 'DONE';
 }
