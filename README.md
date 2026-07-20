@@ -99,6 +99,7 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
 - Running jobs update live over SSE; click any run row to anchor the detail panel
 - Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
+- Claude's `Not logged in · Please run /login` response is recorded as `FAILED` (`anthropic_auth_failed`), and a linked spec workflow is failed at that agent instead of being shown as successfully completed
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes

@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentRunOutcome } from '../types.js';
+import { isAnthropicAuthFailure } from './auth-failure.js';
 
 export interface OutcomeAccumulator {
   tokensIn: number;
@@ -67,7 +68,21 @@ export function reduceMessage(
     const stopReason = msg.stop_reason ?? null;
 
     if (msg.subtype === 'success') {
-      return { status: 'success', output: msg.result ?? '', tokensIn, tokensOut, numTurns, stopReason };
+      const output = msg.result ?? '';
+      if (isAnthropicAuthFailure(output)) {
+        return {
+          status: 'error',
+          output,
+          tokensIn,
+          tokensOut,
+          numTurns,
+          stopReason,
+          errorType: 'anthropic_auth_failed',
+          permissionDenials: [],
+          errors: [output],
+        };
+      }
+      return { status: 'success', output, tokensIn, tokensOut, numTurns, stopReason };
     }
     const errorType = msg.subtype ?? 'error_unknown';
     const errors: string[] = Array.isArray(msg.errors) ? msg.errors : [];

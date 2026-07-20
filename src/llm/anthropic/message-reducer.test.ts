@@ -91,6 +91,34 @@ describe('reduceMessage', () => {
     });
   });
 
+  it('maps the Claude login prompt to an auth error even when the SDK reports success', () => {
+    const { outcome } = collect([
+      { type: 'result', subtype: 'success', result: 'Not logged in · Please run /login',
+        num_turns: 1, stop_reason: 'stop_sequence', usage: { input_tokens: 0, output_tokens: 0 } },
+    ]);
+
+    expect(outcome).toEqual({
+      status: 'error',
+      errorType: 'anthropic_auth_failed',
+      output: 'Not logged in · Please run /login',
+      tokensIn: 0,
+      tokensOut: 0,
+      numTurns: 1,
+      stopReason: 'stop_sequence',
+      permissionDenials: [],
+      errors: ['Not logged in · Please run /login'],
+    });
+  });
+
+  it('does not mistake normal output discussing /login for an auth failure', () => {
+    const output = 'Update the login page and document that users may run /login.';
+    const { outcome } = collect([
+      { type: 'result', subtype: 'success', result: output, usage: {} },
+    ]);
+
+    expect(outcome).toMatchObject({ status: 'success', output });
+  });
+
   it('returns an error outcome on result error with denials', () => {
     const { outcome } = collect([
       { type: 'result', subtype: 'error_max_turns', errors: ['boom'],

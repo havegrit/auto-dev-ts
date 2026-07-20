@@ -183,6 +183,10 @@ export function getModelCatalog(): ModelCatalog
 `agent-runner.ts` 는 `query()` 로 Claude Code CLI 를 subprocess 구동하고,
 `message-reducer.ts` 가 SDK 메시지 스트림을 프로바이더-무관 `AgentEvent`
 (`text` / `tool_call` / `tool_result` / `rate_limit`)와 `AgentRunOutcome` 으로 환원한다.
+일부 SDK 버전은 Claude CLI 비로그인 응답(`Not logged in · Please run /login`)을
+`result.subtype=success`로 전달하므로, reducer가 정확한 전체 출력 패턴을 검사해
+`anthropic_auth_failed` 오류로 교정한다. 서버 시작 시 `store/run-repairs.ts`도 같은
+판정으로 과거 `DONE` child와 연결된 spec 부모를 `FAILED`로 한 번 교정한다.
 
 ```typescript
 // src/llm/anthropic/agent-runner.ts (요지)

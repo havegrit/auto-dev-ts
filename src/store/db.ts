@@ -2,6 +2,7 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { repairAnthropicAuthFailures } from './run-repairs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -48,5 +49,8 @@ db.prepare(`
   SET status = 'FAILED', output = '[server_restart] 서버 재시작으로 중단됨', error_type = 'server_restart'
   WHERE status = 'RUNNING'
 `).run();
+
+// 일부 Claude SDK 버전이 result success로 반환한 과거 비로그인 실행을 교정한다.
+repairAnthropicAuthFailures(db);
 
 export { db };

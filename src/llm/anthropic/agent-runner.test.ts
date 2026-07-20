@@ -50,4 +50,19 @@ describe('anthropicAgentRunner', () => {
     const outcome = await anthropicAgentRunner.run(req, () => {});
     expect(outcome).toMatchObject({ status: 'error', errorType: 'no_result' });
   });
+
+  it('returns an auth error when Claude emits its login prompt as a success result', async () => {
+    queryMock.mockReturnValue(asyncGen([
+      { type: 'result', subtype: 'success', result: 'Not logged in · Please run /login',
+        num_turns: 1, stop_reason: 'stop_sequence', usage: {} },
+    ]));
+
+    const outcome = await anthropicAgentRunner.run(req, () => {});
+
+    expect(outcome).toMatchObject({
+      status: 'error',
+      errorType: 'anthropic_auth_failed',
+      output: 'Not logged in · Please run /login',
+    });
+  });
 });
