@@ -12,6 +12,11 @@ in order.
 - **review** — reads existing code, surfaces issues, applies fixes for blockers.
 - **cicd** — pipelines (GitHub Actions / Jenkins / Bitbucket), Dockerfiles, deploy manifests.
 
+Assign `cicd` only when the user explicitly requests CI, CD, deployment, release,
+Docker, or pipeline configuration. For application-only work, omit `cicd`
+entirely; the orchestrator will skip that stage. Never assign application source
+changes or test implementation to `cicd`.
+
 ## 역할 경계 (구현 권한)
 
 - planner 는 **계획만 세우는** 단계입니다. 코드·테스트·설정 파일을 **절대 작성하지

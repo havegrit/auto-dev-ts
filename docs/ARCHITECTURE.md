@@ -407,7 +407,8 @@ while cursor < len(STEP_ORDER):
   (`workflows/clarification.ts` 가 slug·Q&A 합성·문서 렌더링 순수 함수를 제공).
 - **입력 분기** (`inputFor`): clarifier 는 원본 스펙을, planner 는 clarifier summary
   또는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다. 라우팅된 경우
-  직전 단계 출력 전문이 피드백 블록으로 덧붙는다.
+  직전 단계 출력 전문이 피드백 블록으로 덧붙는다. cicd 는 planner 가 할당한 cicd 항목만
+  전달받으며, 할당이 없으면 해당 단계를 건너뛴다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
 - **재작업 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 review/test 라우팅을
@@ -420,7 +421,7 @@ while cursor < len(STEP_ORDER):
 
 | 기능 | Java | TypeScript |
 |---|---|---|
-| Planner 모드 | `Plan.parse()` → 동적 step 목록 | 미구현 (고정 순서 + 라우팅 재진입) |
+| Planner 모드 | `Plan.parse()` → 동적 step 목록 | 부분 구현 (미할당 cicd 생략 + 고정 순서 라우팅 재진입) |
 | Test-pass loop | attempt 1..3, `[TESTS: FAIL]` 재시도 | ✅ 피드백 라우팅으로 구현 (§6.2) |
 | summary.md 출력 | 토큰·비용·소요시간 표 | 미구현 |
 | 출력 디렉토리 | `docs/output/<spec>-<ts>/` | 미구현 |

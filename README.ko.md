@@ -89,7 +89,7 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
+`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. 마지막 `cicd` 단계는 planner가 명시적인 CI/CD 작업을 할당할 때만 실행되며, 기본은 CI이고 배포 요청이 명시된 경우에만 CD 산출물을 만듭니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
 
 ## 대시보드
 

@@ -133,6 +133,12 @@ function feedbackBlock(fromStep: Step, output: string): string {
     `아래는 ${fromStep} 단계가 발견한 문제다. 원인을 해소하도록 작업을 갱신하라.\n\n${output.trim()}`;
 }
 
+function assignedPlanSteps(planOutput: string | undefined, agent: string): string[] {
+  if (!planOutput?.trim()) return [];
+  const lines = planOutput.split(/\r?\n/);
+  return lines.filter(line => new RegExp(`^\\s*\\d+\\.\\s*${agent}\\s*\\|`, 'i').test(line));
+}
+
 export async function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
   const workflowRunId = opts.workflowRunId ?? randomUUID();
   const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
@@ -177,7 +183,15 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       baseline = `${baseline}\n\n## 이전 Q&A (사용자 의사결정)\n${autoQaLines.join('\n')}`;
     }
     const body = pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
-    return step === 'cicd' ? decorateCicdInput(body, runOpts.deliveryIntent) : body;
+    if (step !== 'cicd') return body;
+    // cicd receives only its own planner assignment. Passing the entire PLAN
+    // makes it see scaffold/test/review work and causes it to reject the run
+    // as out of scope.
+    const cicdTasks = assignedPlanSteps(planOutput, 'cicd');
+    const focused = cicdTasks.length
+      ? `${clarifiedSpec}\n\n## Assigned CI/CD tasks\n${cicdTasks.join('\n')}${pendingFeedback ? `\n\n${pendingFeedback}` : ''}`
+      : body;
+    return decorateCicdInput(focused, runOpts.deliveryIntent);
   };
 
   const routeTo = (target: RouteTarget, fromStep: Step, output: string): boolean => {
@@ -205,6 +219,12 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     }
     const step = STEP_ORDER[cursor];
     if (!stepsFilter.has(step)) { cursor++; continue; }
+    // The planner decides whether CI/CD work exists. Do not invoke cicd for
+    // ordinary application-only plans; there is no valid task for it.
+    if (step === 'cicd' && planOutput?.trim() && assignedPlanSteps(planOutput, 'cicd').length === 0) {
+      cursor++;
+      continue;
+    }
     if (++executed > safetyCap) break;
 
     const r = await agents[step](inputFor(step), runOpts);

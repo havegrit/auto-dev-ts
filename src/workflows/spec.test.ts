@@ -210,6 +210,43 @@ describe('runSpec clarification gate', () => {
     expect(result.planOutput).toBe('PLAN:\n1. scaffold | build\nEND.');
   });
 
+  it('skips cicd when the planner did not assign a CI/CD task', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | implement app code\n2. test | verify it\nEND.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+
+    const result = await runSpec('애플리케이션 기능 구현');
+
+    expect(calls).not.toContain('cicd');
+    expect(result.steps.cicd).toBeUndefined();
+  });
+
+  it('passes only the assigned cicd task instead of the whole planner output', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | implement app code\n2. cicd | add CI workflow\nEND.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+
+    await runSpec('애플리케이션 기능 및 CI 설정');
+
+    expect(inputs.cicd[0]).toContain('cicd | add CI workflow');
+    expect(inputs.cicd[0]).not.toContain('scaffold | implement app code');
+    expect(inputs.cicd[0]).toContain('deliveryIntent: ci');
+  });
+
   it('prepends initial feedback only to the first executed step', async () => {
     const result = await runSpec('명확한 요청', {
       steps: new Set(['review', 'cicd']),
