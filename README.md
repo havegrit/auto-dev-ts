@@ -105,9 +105,9 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
 - The submit form lets you select workflow stages; planner stays enabled whenever a downstream implementation, test, review, or CI/CD stage is selected
 - The submit form exposes the review/test repair-route limit (default 4, maximum 10); the setting persists across clarification, continuation, and resume-last runs
-- The detail panel includes a workflow summary, per-agent navigation, and token debug breakdown by agent/model/input/output
+- The detail panel includes a workflow summary, terminal failure stage/reason, per-agent navigation, and token debug breakdown by agent/model/input/output
 - The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
-- Any completed spec run can be continued with a free-text follow-up instruction, or resumed from the last executed step — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
+- Any completed spec run can be continued with a free-text follow-up instruction, or resumed at the failed step, requested repair route, or next enabled step after the last successful run — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
 - Submit form: agent picker + project dropdown (workspace projects) + model/effort settings + request reset
 
 If accessing from a remote machine over SSH, use local port forwarding:

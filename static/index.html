@@ -217,6 +217,9 @@
     .run-summary-value { color: #c9d1d9; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .run-summary-steps { display: flex; flex-wrap: wrap; gap: 0.4rem; }
     .run-summary-step-btn { float: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.22rem 0.55rem; font-family: monospace; font-size: 0.75rem; }
+    .run-summary-failure { border: 1px solid #6e2029; border-radius: 6px; background: #211218; padding: 0.65rem; margin-top: 0.65rem; }
+    .run-summary-failure-title { color: #f85149; font-size: 0.72rem; font-weight: 600; margin-bottom: 0.35rem; }
+    .run-summary-failure-reason { color: #f0a5a5; font-family: monospace; font-size: 0.76rem; line-height: 1.45; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
     .token-debug { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #21262d; }
     .token-debug-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
     .token-debug-title { color: #e6edf3; font-size: 0.8rem; font-weight: 600; }
@@ -924,7 +927,7 @@
             const subEl = document.getElementById('sub-runs');
             const signature = JSON.stringify(children.map(c => [c.id, c.status, c.duration_ms]));
             const html = children.length > 0 ? children.map(c => `
-              <div class="sub-run-row">
+              <div class="sub-run-row" style="cursor:pointer" onclick="showRunDetail('${c.id}')">
                 <span class="agent-name">${escapeHtml(c.agent_name)}</span>
                 ${statusBadge(c)}
                 <span class="duration">${formatDuration(c.duration_ms)}</span>
@@ -1126,6 +1129,20 @@
     function statusBadge(run, style = '') {
       const status = typeof run === 'string' ? run : displayStatus(run);
       return `<span class="status ${status}"${style ? ` style="${style}"` : ''}>${status}</span>`;
+    }
+
+    function workflowFailureReason(output) {
+      const text = String(output ?? '');
+      const match = text.match(/(?:^|\n)failure reason:\s*\n([\s\S]*?)(?:\n\n|$)/i);
+      return match?.[1]?.trim() || '';
+    }
+
+    // 하위 에이전트의 NEEDS-WORK/TESTS: FAIL 출력만으로 부모 spec을 실패로
+    // 간주하면, 실행 중이거나 최종 DONE인 workflow에도 실패 원인이 노출된다.
+    // 실패 원인은 부모가 실제 terminal failure 상태일 때만 표시한다.
+    function isWorkflowFailure(run) {
+      return run?.agent_name === 'spec' && !run.workflow_run_id &&
+        (run.status === 'FAILED' || run.status === 'BLOCKED' || run.error_type === 'workflow_failure');
     }
 
     function extractJsonObjectText(output) {
@@ -1437,6 +1454,14 @@
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
       ];
+      const failureChild = isWorkflow && isWorkflowFailure(run)
+        ? [...children].reverse().find(c => c.output?.trim() && (
+          displayStatus(c) === 'FAILED' || /\[VERDICT:\s*NEEDS-WORK\]|\[TESTS:\s*FAIL\]/i.test(c.output)
+        ))
+        : null;
+      const failureReason = isWorkflow && isWorkflowFailure(run)
+        ? (workflowFailureReason(run.output) || failureChild?.output?.trim() || '')
+        : '';
       const steps = isWorkflow
         ? `<div class="run-summary-steps">${children.map(c => `
             <button class="refresh run-summary-step-btn" type="button" onclick="showRunDetail('${c.id}')">
@@ -1455,6 +1480,12 @@
             </div>
           `).join('')}
         </div>
+        ${failureReason ? `
+          <div class="run-summary-failure">
+            <div class="run-summary-failure-title">실패 원인</div>
+            <div class="run-summary-failure-reason">${escapeHtml(failureReason)}</div>
+          </div>
+        ` : ''}
         ${steps}
         ${renderTokenDebug(tokenRows)}
       `;
@@ -1521,8 +1552,27 @@
       startDetailElapsedTimer(run);
       await renderWorkflowNav(run);
       await renderRunSummary(run);
-      if (run.output && run.output.trim()) {
-        setOutput('run-detail-output', 'run-detail-output-toggle', run.output);
+      let detailOutput = run.output;
+      if (run.agent_name === 'spec' && !run.workflow_run_id) {
+        try {
+          const children = await fetch(`/api/runs/${run.id}/children`).then(r => r.json());
+          const lastWithOutput = [...children].reverse().find(c => c.output?.trim());
+          const hasFailureDetails = detailOutput?.includes('failure reason:');
+          const failureChild = isWorkflowFailure(run) && [...children].reverse().find(c => c.output?.trim() && (
+            displayStatus(c) === 'FAILED' || /\[VERDICT:\s*NEEDS-WORK\]|\[TESTS:\s*FAIL\]/i.test(c.output)
+          ));
+          if (failureChild && !hasFailureDetails) {
+            detailOutput = `${detailOutput?.trim() ? `${detailOutput.trim()}\n\n` : ''}[${failureChild.agent_name} output]\n${failureChild.output}`;
+          } else if (!detailOutput?.trim() && lastWithOutput) {
+            detailOutput = `[${lastWithOutput.agent_name} output]\n${lastWithOutput.output}`;
+          }
+        } catch {}
+      }
+      if (!detailOutput?.trim() && (run.error_type || run.stop_reason)) {
+        detailOutput = `Run failed: ${run.error_type ?? 'unknown error'}${run.stop_reason ? `\nStopped at: ${run.stop_reason}` : ''}`;
+      }
+      if (detailOutput && detailOutput.trim()) {
+        setOutput('run-detail-output', 'run-detail-output-toggle', detailOutput);
       } else {
         clearOutput('run-detail-output', 'run-detail-output-toggle');
         document.getElementById('run-detail-output').textContent = '(출력 없음)';

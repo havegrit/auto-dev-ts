@@ -125,11 +125,17 @@ export function resumeLastSpecStep(parentRunId: string, instruction?: string): S
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
-  const lastStep = lastExecutedWorkflowStep(parentRunId);
-  if (!lastStep) throw new Error(`No workflow steps found for run: ${parentRunId}`);
+  const lastRun = lastExecutedWorkflowRun(parentRunId);
+  if (!lastRun) throw new Error(`No workflow steps found for run: ${parentRunId}`);
+
+  const resume = resumeTarget(lastRun, prev.steps);
+  if (!resume) throw new Error('No remaining workflow steps to resume');
 
   const extra = (instruction ?? '').trim();
   const state: ClarificationState = { ...prev, rounds: prev.rounds.map((r) => ({ ...r })) };
+  const feedback = resume.useFeedback && lastRun.output?.trim()
+    ? [lastRun.output.trim(), extra].filter(Boolean).join('\n\n')
+    : extra || undefined;
 
   return launch(state, {
     project: prev.project,
@@ -139,10 +145,10 @@ export function resumeLastSpecStep(parentRunId: string, instruction?: string): S
     autoClarify: prev.autoClarify,
     maxClarifyRounds: prev.maxClarifyRounds,
     triggerSource: 'dashboard',
-    triggerDetail: `resume:${parentRunId.slice(0, 8)}:${lastStep}`,
-    resumeInstruction: extra || undefined,
+    triggerDetail: `resume:${parentRunId.slice(0, 8)}:${resume.startStep}`,
+    resumeInstruction: feedback,
   }, {
-    startStep: lastStep,
+    startStep: resume.startStep,
   });
 }
 
@@ -178,9 +184,42 @@ function isWorkflowStep(value: string): value is Step {
   return (STEP_ORDER as readonly string[]).includes(value);
 }
 
-function lastExecutedWorkflowStep(parentRunId: string): Step | undefined {
+function lastExecutedWorkflowRun(parentRunId: string) {
   const children = getRunsByWorkflowId(parentRunId).filter((r) => isWorkflowStep(r.agent_name));
-  return children.at(-1)?.agent_name as Step | undefined;
+  return children.at(-1);
+}
+
+function markerValue(output: string | undefined, name: string): string | undefined {
+  const matches = [...String(output ?? '').matchAll(new RegExp(`\\[${name}:\\s*([^\\]]+)\\]`, 'gi'))];
+  return matches.at(-1)?.[1]?.trim().toLowerCase();
+}
+
+function routedStep(output: string | undefined): Step | undefined {
+  const route = markerValue(output, 'ROUTE');
+  return route && isWorkflowStep(route) ? route : undefined;
+}
+
+function resumeTarget(lastRun: ReturnType<typeof lastExecutedWorkflowRun>, configuredSteps?: string[]): { startStep: Step; useFeedback: boolean } | undefined {
+  if (!lastRun) return undefined;
+  const enabled = configuredSteps ? new Set(configuredSteps) : new Set<string>(STEP_ORDER);
+  const lastStep = lastRun.agent_name as Step;
+  const verdict = markerValue(lastRun.output, 'VERDICT');
+  const tests = markerValue(lastRun.output, 'TESTS');
+  const route = routedStep(lastRun.output);
+
+  // The agent completed but requested rework. Resume at the routed owner and
+  // carry the original review/test output into that agent instead of rerunning
+  // the reviewer/tester and spending tokens on the same work.
+  if (lastRun.status === 'DONE' && route && (verdict === 'needs-work' || tests === 'fail')) {
+    return enabled.has(route) ? { startStep: route, useFeedback: true } : undefined;
+  }
+
+  // A completed step should not be repeated. Continue with the next enabled
+  // workflow step; genuinely failed/cancelled agent runs are retried in place.
+  if (lastRun.status !== 'DONE') return { startStep: lastStep, useFeedback: false };
+  const index = STEP_ORDER.indexOf(lastStep);
+  const next = STEP_ORDER.slice(index + 1).find(step => enabled.has(step));
+  return next ? { startStep: next, useFeedback: false } : undefined;
 }
 
 function serializeSteps(steps: Set<string> | undefined): string[] | undefined {
@@ -267,7 +306,11 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       output: workflowOutput(result),
       status,
       durationMs: result.totalDurationMs,
-      ...(result.verdict === 'CANCELLED' ? { errorType: 'user_cancelled', stopReason: 'user_cancelled' } : {}),
+      ...(result.verdict === 'CANCELLED'
+        ? { errorType: 'user_cancelled', stopReason: 'user_cancelled' }
+        : result.failure
+          ? { errorType: 'workflow_failure', stopReason: result.failure.step }
+          : {}),
     });
     finishRunEvents(runId, result.verdict === 'CANCELLED' ? 'CANCELLED' : status);
   } catch (err) {

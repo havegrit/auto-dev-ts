@@ -61,6 +61,15 @@ export interface SpecResult {
   routeCount?: number;
   /** skip 모드에서 추천 답안으로 자동 답변한 clarifier 라운드들 (히스토리 편입용). */
   autoClarifyRounds?: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }>;
+  /** 실행을 멈춘 단계와 실제 에이전트 출력. 부모 spec 요약에 표시한다. */
+  failure?: {
+    step: string;
+    status: string;
+    reason: string;
+    cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing';
+    route?: string;
+    routeAvailable: boolean;
+  };
 }
 
 export const STEP_ORDER = AGENT_ORDER;
@@ -176,6 +185,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   let verdict: string | undefined;
   let clarification: ClarificationResult | undefined;
   let routeCount = 0;
+  let failure: SpecResult['failure'];
 
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
   // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
@@ -211,6 +221,27 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     return true;
   };
 
+  const routeFailure = (route: RouteTarget | undefined, step: Step, output: string): NonNullable<SpecResult['failure']> => {
+    const cause = !route
+      ? 'route_missing'
+      : !stepsFilter.has(route)
+        ? 'route_target_disabled'
+        : 'route_limit_exhausted';
+    const explanation = cause === 'route_missing'
+      ? `The ${step} agent requested rework but did not provide a valid planner/clarifier route.`
+      : cause === 'route_target_disabled'
+        ? `The ${step} agent requested ${route}, but that stage is disabled for this workflow.`
+        : `Rework route budget exhausted (${routeCount}/${maxRoutes}). The ${step} agent requested ${route}, but no routes remain.`;
+    return {
+      step,
+      status: step === 'test' ? 'FAIL' : 'NEEDS-WORK',
+      cause,
+      reason: `${explanation}\n\nAgent output:\n${output.trim() || '(no output)'}`,
+      route,
+      routeAvailable: false,
+    };
+  };
+
   let cursor = opts.startStep ? STEP_ORDER.indexOf(opts.startStep) : 0;
   if (cursor < 0) cursor = 0;
   let executed = 0;
@@ -240,6 +271,13 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 
     if (r.status === 'BLOCKED' || r.status === 'FAILED' || r.status === 'CANCELLED') {
       verdict = r.status;
+      failure = {
+        step,
+        status: r.status,
+        cause: 'agent_stopped',
+        reason: r.output.trim() || `The ${step} agent stopped without an error message.`,
+        routeAvailable: false,
+      };
       break;
     }
 
@@ -266,6 +304,13 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       } else {
         verdict = 'BLOCKED';
         results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'BLOCKED' };
+        failure = {
+          step,
+          status: 'BLOCKED',
+          cause: 'invalid_output',
+          reason: r.output.trim() || 'The clarifier returned an invalid response.',
+          routeAvailable: false,
+        };
         break;
       }
     }
@@ -274,9 +319,26 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 
     // test: 소스 코드 오류로 판정된 실패만 planner/clarifier 로 되돌린다.
     // (테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 고친다.)
-    if (step === 'test' && parseTests(r.output) === 'FAIL') {
-      const route = parseRoute(r.output);
-      if (route && routeTo(route, 'test', r.output)) continue;
+    if (step === 'test') {
+      const tests = parseTests(r.output);
+      if (tests === 'FAIL') {
+        const route = parseRoute(r.output);
+        if (route && routeTo(route, 'test', r.output)) continue;
+        verdict = 'FAILED';
+        failure = routeFailure(route, 'test', r.output);
+        break;
+      }
+      if (tests === 'BLOCKED') {
+        verdict = 'BLOCKED';
+        failure = {
+          step,
+          status: 'BLOCKED',
+          cause: 'agent_stopped',
+          reason: r.output.trim() || 'The test agent was blocked without providing a reason.',
+          routeAvailable: false,
+        };
+        break;
+      }
     }
 
     // review: 수정 필요(NEEDS-WORK)면 지정한 planner/clarifier 로 즉시 되돌린다.
@@ -286,6 +348,15 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       if (verdict === 'NEEDS-WORK') {
         const route = parseRoute(r.output);
         if (route && routeTo(route, 'review', r.output)) continue;
+        failure = routeFailure(route, 'review', r.output);
+      } else if (verdict === 'BLOCKED') {
+        failure = {
+          step,
+          status: verdict,
+          cause: 'agent_stopped',
+          reason: r.output.trim() || 'The review agent was blocked without providing a reason.',
+          routeAvailable: false,
+        };
       }
       break; // NEEDS-WORK(예산 소진/라우트 없음) 또는 BLOCKED → cicd 미진행, 종료
     }
@@ -296,6 +367,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   return {
     workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount,
     autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
+    failure,
   };
 }
 
@@ -309,7 +381,14 @@ export function workflowOutput(result: SpecResult): string {
   const stepSummary = Object.entries(result.steps)
     .map(([k, v]) => `${k}: ${v.status}`)
     .join(', ');
-  return result.verdict ? `${stepSummary}\nverdict: ${result.verdict}` : stepSummary;
+  const verdict = result.verdict ? `\nverdict: ${result.verdict}` : '';
+  if (!result.failure) return `${stepSummary}${verdict}`;
+  const route = result.failure.route
+    ? `\nroute: ${result.failure.route} (${result.failure.routeAvailable ? 'available' : 'not available'})`
+    : '';
+  const cause = result.failure.cause ? `\nfailure cause: ${result.failure.cause}` : '';
+  return `${stepSummary}${verdict}\nfailure: ${result.failure.step} (${result.failure.status})${cause}${route}\n` +
+    `failure reason:\n${result.failure.reason}`;
 }
 
 export function runSpecBackground(specContent: string, opts: SpecOptions = {}): string {
@@ -329,7 +408,12 @@ export function runSpecBackground(specContent: string, opts: SpecOptions = {}): 
     const output = result.clarification?.questions.length
       ? `${workflowOutput(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`
       : workflowOutput(result);
-    updateRun(runId, { output, status: workflowRunStatus(result), durationMs: result.totalDurationMs });
+    updateRun(runId, {
+      output,
+      status: workflowRunStatus(result),
+      durationMs: result.totalDurationMs,
+      ...(result.failure ? { errorType: 'workflow_failure', stopReason: result.failure.step } : {}),
+    });
   }).catch(err => {
     updateRun(runId, {
       output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,

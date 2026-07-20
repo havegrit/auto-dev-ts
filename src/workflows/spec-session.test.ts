@@ -447,6 +447,39 @@ describe('resumeLastSpecStep', () => {
     expect(specOptions[0].initialFeedback).toBe('리뷰에서 지적한 내용을 반영해');
   });
 
+  it('resumes at the routed planner after a completed review requests changes', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj', rounds: [], planOutput: 'PLAN',
+    });
+    childRuns = [{
+      agent_name: 'review', status: 'DONE',
+      output: 'Finding: broken contract\n[VERDICT: NEEDS-WORK]\n[ROUTE: planner]',
+    }];
+    specResult = { workflowRunId: 'r', steps: {}, totalDurationMs: 1, verdict: 'SHIP', planOutput: 'PLAN' };
+
+    const { done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(specOptions[0].startStep).toBe('planner');
+    expect(specOptions[0].initialFeedback).toContain('Finding: broken contract');
+  });
+
+  it('continues to the next step after a completed agent instead of rerunning it', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj', rounds: [], planOutput: 'PLAN',
+    });
+    childRuns = [{ agent_name: 'test', status: 'DONE', output: '[TESTS: PASS]' }];
+    specResult = { workflowRunId: 'r', steps: {}, totalDurationMs: 1, verdict: 'SHIP', planOutput: 'PLAN' };
+
+    const { done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(specOptions[0].startStep).toBe('review');
+    expect(specOptions[0].initialFeedback).toBeUndefined();
+  });
+
   it('marks NEEDS-WORK workflow verdicts as FAILED', async () => {
     stateStore.set('parent', {
       spec: 's', slug: 's', planFile: 'docs/plan/s.md', cwd: '/tmp/proj', rounds: [],

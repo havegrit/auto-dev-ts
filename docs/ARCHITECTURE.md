@@ -606,10 +606,12 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 |---|---|---|
 | `[VERDICT: SHIP]` | review | 통과 → cicd 진행 |
 | `[VERDICT: NEEDS-WORK]` + `[ROUTE: planner\|clarifier]` | review | 지정 단계로 되돌려 재작업 |
-| `[VERDICT: NEEDS-WORK]` (라우트 없음/예산 소진) | review | cicd 미진행, 종료 |
+| `[VERDICT: NEEDS-WORK]` (라우트 없음/대상 비활성/예산 소진) | review | 원인을 `failure cause`에 기록하고 cicd 미진행, 종료 |
 | `[VERDICT: BLOCKED]` | review | 종료 (사람 개입 필요) |
 | `[TESTS: FAIL]` + `[ROUTE: planner\|clarifier]` | test | 소스 오류 → 지정 단계로 되돌려 재작업 |
-| `[TESTS: PASS\|BLOCKED]`, 라우트 없는 FAIL | test | 다음 단계 진행 |
+| `[TESTS: PASS]` | test | 다음 단계 진행 |
+| `[TESTS: FAIL]` (라우트 없음/대상 비활성/예산 소진) | test | 원인을 기록하고 즉시 실패 종료 |
+| `[TESTS: BLOCKED]` | test | 차단 원인을 기록하고 즉시 실패 종료 |
 
 - 라우팅은 `maxRoutes`(`--iterations`, 기본 4, 최대 10) 와 `safetyCap` 으로 이중 제한해 무한
   루프를 막는다.

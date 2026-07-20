@@ -85,7 +85,7 @@ vi.mock('../agents/cicd.js', () => ({
   }),
 }));
 
-import { runSpec, workflowRunStatus } from './spec.js';
+import { runSpec, workflowOutput, workflowRunStatus } from './spec.js';
 
 describe('runSpec clarification gate', () => {
   beforeEach(() => {
@@ -195,7 +195,90 @@ describe('runSpec clarification gate', () => {
     expect(calls).toEqual(['clarifier', 'planner']);
     expect(result.verdict).toBe('BLOCKED');
     expect(result.steps.planner).toEqual({ runId: 'planner-run', durationMs: 0, status: 'BLOCKED' });
+    expect(result.failure).toEqual({
+      step: 'planner',
+      status: 'BLOCKED',
+      cause: 'agent_stopped',
+      reason: 'Rate limit in effect.',
+      routeAvailable: false,
+    });
+    expect(workflowOutput(result)).toContain('failure reason:\nRate limit in effect.');
     expect(result.steps.scaffold).toBeUndefined();
+  });
+
+  it('includes the review output when a requested planner route cannot be taken', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    const { review } = await import('../agents/review/index.js');
+    (review as any).mockResolvedValueOnce({
+      runId: 'review-run',
+      output: 'Hello from review!\nFinding: broken contract\n[VERDICT: NEEDS-WORK]\n[ROUTE: planner]',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청', { steps: new Set(['clarifier', 'planner', 'review']), maxRoutes: 0 });
+
+    expect(result.verdict).toBe('NEEDS-WORK');
+    expect(result.failure?.step).toBe('review');
+    expect(result.failure?.route).toBe('planner');
+    expect(result.failure?.routeAvailable).toBe(false);
+    expect(result.failure?.cause).toBe('route_limit_exhausted');
+    expect(result.failure?.reason).toContain('Rework route budget exhausted (0/0)');
+    expect(workflowOutput(result)).toContain('Finding: broken contract');
+    expect(workflowOutput(result)).toContain('failure cause: route_limit_exhausted');
+  });
+
+  it('allows more than two productive review repair routes by default', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    const { review } = await import('../agents/review/index.js');
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      (review as any).mockResolvedValueOnce({
+        runId: `review-run-${attempt}`,
+        output: `Finding ${attempt}\n[ROUTE: planner]\n[VERDICT: NEEDS-WORK]`,
+        tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+      });
+    }
+
+    const result = await runSpec('명확한 요청', { steps: new Set(['clarifier', 'planner', 'review']) });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.routeCount).toBe(3);
+    expect(result.failure).toBeUndefined();
+    expect(calls.filter(step => step === 'planner')).toHaveLength(4);
+  });
+
+  it('stops on an unroutable test failure instead of continuing to review', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    const { test } = await import('../agents/test.js');
+    (test as any).mockResolvedValueOnce({
+      runId: 'test-run-fail',
+      output: 'Production bug\n[TESTS: FAIL]\n[ROUTE: planner]',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['clarifier', 'planner', 'test', 'review']),
+      maxRoutes: 0,
+    });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure?.step).toBe('test');
+    expect(result.failure?.cause).toBe('route_limit_exhausted');
+    expect(calls).not.toContain('review');
   });
 
   it('returns the planner output text as planOutput', async () => {
