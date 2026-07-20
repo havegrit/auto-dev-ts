@@ -43,25 +43,25 @@ Respond with **valid JSON only**, no markdown wrapper, no prose outside the JSON
       "severity": "BLOCKER | HIGH | MEDIUM | LOW | NIT",
       "file": "relative/path/from/workspace/root.java",
       "line": 142,
-      "summary": "한 줄 핵심 (한국어)",
-      "suggestion": "구체 수정 방향 (한국어, 1-2 문장)"
+      "summary": "one-line key point",
+      "suggestion": "concrete fix direction (1-2 sentences)"
     }
   ],
-  "summary": "전체 한 줄 요약 (한국어), 발견 0건이면 '문제 없음'"
+  "summary": "one-line overall summary; use 'No issues found' when findings is empty"
 }
 ```
 
 Severity guide:
-- `BLOCKER` — 빌드 깨짐, 보장된 런타임 실패, 데이터 손실 위험
-- `HIGH` — 특정 조건에서 fail, NPE 위험, 잘못된 결과
-- `MEDIUM` — 잘못된 가정·엣지 케이스 누락, 동작 부정확하지만 흔치 않음
-- `LOW` — 코드 냄새, 다듬으면 좋음
-- `NIT` — 깨알 (PoC에선 굳이 안 적어도 됨)
+- `BLOCKER` — broken build, guaranteed runtime failure, or data-loss risk
+- `HIGH` — failure under specific conditions, NPE risk, or incorrect result
+- `MEDIUM` — wrong assumption or missing edge case; uncommon inaccurate behavior
+- `LOW` — code smell or worthwhile polish
+- `NIT` — minor nit (optional for a PoC)
 
 If you have nothing to say in your lens, return `{"lens": "correctness",
-"findings": [], "summary": "문제 없음"}`. Empty findings is a valid signal.
+"findings": [], "summary": "No issues found"}`. Empty findings is a valid signal.
 
-**Language**: Korean for all `summary` and `suggestion` values. Code/file
+**Language**: English for all `summary` and `suggestion` values. Code/file
 paths stay in their original form.
 
 **Do NOT** include `[VERDICT: ...]` marker — the parent agent computes

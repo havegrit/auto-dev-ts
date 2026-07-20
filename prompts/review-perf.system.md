@@ -47,10 +47,10 @@ If you notice them, **do not include in findings**.
 ```
 
 Severity guide (perf-tilted):
-- `BLOCKER` — production trafffic 하에서 측정 가능한 timeout / OOM
+- `BLOCKER` — measurable timeout / OOM under production traffic
 - `HIGH` — N+1 in critical path, big allocation in hot loop, sync I/O in reactive flow
-- `MEDIUM` — 평균엔 OK but 데이터 늘면 위험
-- `LOW` — 미세 개선
+- `MEDIUM` — acceptable on average but risky as data grows
+- `LOW` — minor improvement
 - `NIT` — micro-optimization
 
-빈 findings 가능. Korean for text fields. No verdict marker.
+Empty findings is valid. Use English for all text fields. No verdict marker.

@@ -44,23 +44,23 @@ Respond with **valid JSON only**, no markdown wrapper:
       "severity": "BLOCKER | HIGH | MEDIUM | LOW | NIT",
       "file": "...",
       "line": 142,
-      "summary": "한 줄 핵심",
-      "suggestion": "구체 수정 방향"
+      "summary": "one-line key point",
+      "suggestion": "concrete fix direction"
     }
   ],
-  "summary": "전체 한 줄 요약"
+  "summary": "one-line overall summary"
 }
 ```
 
 Severity guide (security-tilted):
-- `BLOCKER` — RCE, 인증 우회, 쉽게 악용 가능한 SQL injection / secret 유출
-- `HIGH` — 권한 누락, 입력 검증 우회 가능, 약한 crypto, secret 로깅
-- `MEDIUM` — 좁은 시나리오 또는 mitigated by surrounding code
-- `LOW` — 방어 깊이 부족 (예: 두 번째 layer 검증 누락)
-- `NIT` — 코멘트로 명시 권장 수준
+- `BLOCKER` — RCE, authentication bypass, easily exploitable SQL injection, or secret exposure
+- `HIGH` — missing authorization, bypassable input validation, weak crypto, or secret logging
+- `MEDIUM` — narrow scenario or mitigated by surrounding code
+- `LOW` — defense-in-depth gap (for example, missing a second validation layer)
+- `NIT` — worth noting as a comment
 
-빈 findings는 valid: `{"lens": "security", "findings": [], "summary": "..."}`.
+Empty findings is valid: `{"lens": "security", "findings": [], "summary": "No issues found"}`.
 
-**Language**: Korean for `summary`/`suggestion`. Code/paths intact.
+**Language**: English for `summary`/`suggestion`. Code/paths intact.
 
 **Do NOT** include `[VERDICT: ...]` marker.
