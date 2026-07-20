@@ -35,6 +35,7 @@ vi.mock('../store/runs.js', () => ({
   getRecentRunUnits: vi.fn(),
   getRunsByWorkflowId: vi.fn(),
   getStats: vi.fn(() => ({})),
+  updateRun: vi.fn(),
 }));
 vi.mock('../store/run-events.js', () => ({
   getRunEvents: vi.fn(() => []),
@@ -70,6 +71,7 @@ import { getAgent } from '../agents/index.js';
 import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession } from '../workflows/spec-session.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
+import { getRun, updateRun } from '../store/runs.js';
 
 describe('dashboard auto-clarify options', () => {
   it('passes an unlimited round setting from the submit form', async () => {
@@ -152,6 +154,21 @@ describe('run cancellation', () => {
     expect(res.status).toBe(202);
     expect(cancelActiveRun).toHaveBeenCalledWith('run-1');
     await expect(res.json()).resolves.toEqual({ accepted: true, runId: 'run-1' });
+  });
+
+  it('records elapsed time immediately when cancellation is accepted', async () => {
+    const startedAt = new Date(Date.now() - 1500).toISOString();
+    vi.mocked(getRun).mockReturnValueOnce({ status: 'RUNNING', started_at: startedAt } as any);
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/cancel', { method: 'POST' }));
+
+    expect(res.status).toBe(202);
+    expect(updateRun).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      durationMs: expect.any(Number),
+    }));
+    const duration = vi.mocked(updateRun).mock.calls.at(-1)?.[1].durationMs;
+    expect(duration).toBeGreaterThanOrEqual(1000);
   });
 });
 

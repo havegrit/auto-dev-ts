@@ -8,7 +8,7 @@ import { clarifier } from '../agents/clarifier.js';
 import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
 import type { ClarificationRound } from '../workflows/clarification.js';
-import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats } from '../store/runs.js';
+import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
@@ -221,6 +221,12 @@ export function createRoutes(): Hono {
     if (!run) return c.json({ error: 'Not found' }, 404);
     if (run.status !== 'RUNNING') return c.json({ error: `Run is not running: ${run.status}` }, 409);
     if (!cancelActiveRun(runId)) return c.json({ error: 'Run is not cancellable in this server process' }, 409);
+    // Provider 종료/정리 지연으로 runner의 최종 저장이 늦어져도
+    // 취소 시점까지의 경과시간은 즉시 보존한다. runner가 끝나면 더 정확한 값으로 갱신한다.
+    const startedAt = new Date(run.started_at).getTime();
+    if (Number.isFinite(startedAt)) {
+      updateRun(runId, { durationMs: Math.max(0, Date.now() - startedAt) });
+    }
     return c.json({ accepted: true, runId }, 202);
   });
 
