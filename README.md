@@ -89,7 +89,7 @@ for sandboxed containers: set `IS_SANDBOX=1`.
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. The final `cicd` step runs only when the planner assigns explicit CI/CD work; it is CI-first, and CD artifacts are generated only when deployment is explicitly requested. Pass `--steps` to run a subset, `--iterations` to retry the scaffold→review loop.
+If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. The final `cicd` step runs only when the planner assigns explicit CI/CD work; it is CI-first, and CD artifacts are generated only when deployment is explicitly requested. Pass `--steps` to run a subset, or `--iterations` to set the review/test repair-route limit (default 4, maximum 10).
 
 ## Dashboard
 
@@ -103,6 +103,8 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
+- The submit form lets you select workflow stages; planner stays enabled whenever a downstream implementation, test, review, or CI/CD stage is selected
+- The submit form exposes the review/test repair-route limit (default 4, maximum 10); the setting persists across clarification, continuation, and resume-last runs
 - The detail panel includes a workflow summary, per-agent navigation, and token debug breakdown by agent/model/input/output
 - The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
 - Any completed spec run can be continued with a free-text follow-up instruction, or resumed from the last executed step — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow

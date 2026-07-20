@@ -12,7 +12,7 @@ import { insertRun, updateRun } from '../store/runs.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
-  /** 피드백 재작업(라우팅) 허용 횟수. 미지정 시 iterations, 그것도 없으면 2. */
+  /** 피드백 재작업(라우팅) 허용 횟수. 미지정 시 iterations, 그것도 없으면 DEFAULT_MAX_ROUTES. */
   iterations?: number;
   maxRoutes?: number;
   triggerSource?: string;
@@ -64,6 +64,10 @@ export interface SpecResult {
 }
 
 export const STEP_ORDER = AGENT_ORDER;
+/** 실제 수정이 진전되는 workflow가 너무 일찍 끊기지 않도록 허용하는 기본 재작업 횟수. */
+export const DEFAULT_MAX_ROUTES = 4;
+/** 비용 폭주와 무한 라우팅을 막는 절대 상한. */
+export const MAX_ROUTE_LIMIT = 10;
 export type Step = typeof STEP_ORDER[number];
 type RouteTarget = 'planner' | 'clarifier';
 
@@ -142,7 +146,10 @@ function assignedPlanSteps(planOutput: string | undefined, agent: string): strin
 export async function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
   const workflowRunId = opts.workflowRunId ?? randomUUID();
   const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
-  const maxRoutes = opts.maxRoutes ?? opts.iterations ?? 2;
+  const configuredMaxRoutes = opts.maxRoutes ?? opts.iterations ?? DEFAULT_MAX_ROUTES;
+  const maxRoutes = Number.isFinite(configuredMaxRoutes)
+    ? Math.min(MAX_ROUTE_LIMIT, Math.max(0, Math.floor(configuredMaxRoutes)))
+    : DEFAULT_MAX_ROUTES;
   const autoClarify = opts.autoClarify ?? false;
   const configuredClarifyRounds = opts.maxClarifyRounds ?? 0;
   const maxClarifyRounds = configuredClarifyRounds === 0

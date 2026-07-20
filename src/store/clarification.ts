@@ -15,6 +15,8 @@ export interface ClarificationState {
   cwd: string;
   /** 이 run 이 실행해야 하는 spec 단계 필터. undefined 면 전체 파이프라인. */
   steps?: string[];
+  /** review/test 피드백을 planner/clarifier로 되돌리는 최대 횟수. */
+  iterations?: number;
   /** 중단 후 재개할 때도 자동 구체화 설정을 유지한다. */
   autoClarify?: boolean;
   /** 자동 구체화 최대 라운드. 0이면 무제한. */

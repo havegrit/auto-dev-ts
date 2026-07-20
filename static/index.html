@@ -49,6 +49,21 @@
     .submit-card h2 { font-size: 0.85rem; font-weight: 600; color: #e6edf3; margin-bottom: 1rem; }
     .form-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; align-items: center; flex-wrap: wrap; }
     .form-row label { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
+    .workflow-step-row { align-items: flex-start; }
+    .workflow-step-config { flex: 1; min-width: 0; }
+    .workflow-step-picker { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+    .workflow-step-toggle {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      background: #0d1117; border: 1px solid #30363d; color: #8b949e;
+      border-radius: 999px; padding: 0.38rem 0.65rem; font-size: 0.76rem;
+      cursor: pointer; transition: 0.15s ease;
+    }
+    .workflow-step-toggle:hover { border-color: #8b949e; color: #e6edf3; }
+    .workflow-step-toggle.active { background: #1c2d4a; border-color: #58a6ff; color: #79c0ff; }
+    .workflow-step-toggle.locked { cursor: not-allowed; opacity: 0.72; }
+    .workflow-step-toggle .step-dot { width: 0.42rem; height: 0.42rem; border-radius: 50%; background: #484f58; }
+    .workflow-step-toggle.active .step-dot { background: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.15); }
+    .workflow-step-summary { color: #8b949e; font-size: 0.72rem; margin-top: 0.45rem; }
     select, input[type="text"] {
       background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
       border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; flex: 1;
@@ -300,6 +315,14 @@
       </select>
     </div>
 
+    <div class="form-row workflow-step-row" id="workflow-step-row" style="display:none">
+      <label>실행 단계</label>
+      <div class="workflow-step-config">
+        <div class="workflow-step-picker" id="workflow-step-picker"></div>
+        <div class="workflow-step-summary" id="workflow-step-summary"></div>
+      </div>
+    </div>
+
     <div class="form-row">
       <label>프로젝트명</label>
       <div class="combobox" id="project-combobox">
@@ -321,6 +344,12 @@
       <label for="auto-clarify-limit">자동 구체화 최대 라운드</label>
       <input type="number" id="auto-clarify-limit" min="0" step="1" value="0" style="max-width:8rem;font-family:monospace" />
       <span style="color:#d29922;font-size:0.74rem">0 = 무제한 (모델이 계속 질문하면 비용과 시간이 계속 증가)</span>
+    </div>
+
+    <div class="form-row" id="route-limit-row">
+      <label for="route-limit">재작업 최대 횟수</label>
+      <input type="number" id="route-limit" min="0" max="10" step="1" value="4" style="max-width:8rem;font-family:monospace" />
+      <span style="color:#8b949e;font-size:0.74rem">review/test가 수정 요청 시 planner/clarifier로 돌아가는 횟수 (기본 4, 최대 10)</span>
     </div>
 
     <div class="form-row" id="delivery-intent-row">
@@ -497,6 +526,12 @@
     let detailElapsedTimer = null;
     let detailWorkflowTimer = null;
     let configAgents = [];
+    const WORKFLOW_STEPS = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'];
+    const WORKFLOW_STEP_LABELS = {
+      clarifier: '구체화', planner: '계획', scaffold: '구현',
+      test: '테스트', review: '리뷰', cicd: 'CI/CD',
+    };
+    const selectedWorkflowSteps = new Set(WORKFLOW_STEPS);
     // 최근 실행 버튼 로드 상태: 한 번에 유닛(spec 워크플로우 또는 단독 실행) 10개씩.
     const RUNS_UNIT_BATCH = 10;
     let loadedUnits = RUNS_UNIT_BATCH;
@@ -722,10 +757,46 @@
     // 구체화 자동 진행 옵션은 spec(전체 워크플로우)일 때만 노출한다.
     function toggleAutoClarifyRow() {
       const isSpec = document.getElementById('agent-select').value === 'spec';
+      const stepRow = document.getElementById('workflow-step-row');
       const autoClarify = document.getElementById('auto-clarify').checked;
       document.getElementById('auto-clarify-row').style.display = isSpec ? '' : 'none';
       document.getElementById('auto-clarify-limit-row').style.display = isSpec && autoClarify ? '' : 'none';
+      document.getElementById('route-limit-row').style.display = isSpec ? '' : 'none';
       document.getElementById('delivery-intent-row').style.display = (isSpec || document.getElementById('agent-select').value === 'cicd') ? '' : 'none';
+      stepRow.style.display = isSpec ? '' : 'none';
+      if (isSpec) renderWorkflowStepPicker();
+    }
+
+    function renderWorkflowStepPicker() {
+      const picker = document.getElementById('workflow-step-picker');
+      if (!picker) return;
+      const downstreamSelected = WORKFLOW_STEPS.some(step => step !== 'clarifier' && step !== 'planner' && selectedWorkflowSteps.has(step));
+      picker.innerHTML = WORKFLOW_STEPS.map(step => {
+        const active = selectedWorkflowSteps.has(step);
+        const locked = step === 'planner' && downstreamSelected;
+        const title = locked ? '후속 단계가 선택되어 계획 단계가 필요합니다' : `${WORKFLOW_STEP_LABELS[step]} 단계 ${active ? '끄기' : '켜기'}`;
+        return `<button type="button" class="workflow-step-toggle${active ? ' active' : ''}${locked ? ' locked' : ''}" title="${title}" onclick="toggleWorkflowStep('${step}')">
+          <span class="step-dot"></span>${WORKFLOW_STEP_LABELS[step]}
+        </button>`;
+      }).join('');
+      const labels = WORKFLOW_STEPS.filter(step => selectedWorkflowSteps.has(step)).map(step => WORKFLOW_STEP_LABELS[step]);
+      document.getElementById('workflow-step-summary').textContent = labels.length
+        ? `이번 실행: ${labels.join(' → ')}`
+        : '실행할 단계가 없습니다.';
+      const clarifyEnabled = selectedWorkflowSteps.has('clarifier');
+      const autoClarifyEl = document.getElementById('auto-clarify');
+      autoClarifyEl.disabled = !clarifyEnabled;
+      if (!clarifyEnabled) autoClarifyEl.checked = false;
+      document.getElementById('auto-clarify-limit-row').style.display = clarifyEnabled && autoClarifyEl.checked ? '' : 'none';
+    }
+
+    function toggleWorkflowStep(step) {
+      if (!WORKFLOW_STEPS.includes(step)) return;
+      const downstreamSelected = WORKFLOW_STEPS.some(s => !['clarifier', 'planner'].includes(s) && selectedWorkflowSteps.has(s));
+      if (step === 'planner' && selectedWorkflowSteps.has(step) && downstreamSelected) return;
+      if (selectedWorkflowSteps.has(step)) selectedWorkflowSteps.delete(step);
+      else selectedWorkflowSteps.add(step);
+      renderWorkflowStepPicker();
     }
 
     function setTab(tab) {
@@ -772,6 +843,18 @@
 
       const project = document.getElementById('project-input').value.trim();
       if (project) formData.append('project', project);
+
+      if (agent === 'spec') {
+        const steps = WORKFLOW_STEPS.filter(step => selectedWorkflowSteps.has(step));
+        if (steps.length === 0) { alert('최소 한 개의 실행 단계를 선택하세요.'); return; }
+        formData.append('steps', steps.join(','));
+        const iterations = Number(document.getElementById('route-limit').value || '4');
+        if (!Number.isInteger(iterations) || iterations < 0 || iterations > 10) {
+          alert('재작업 최대 횟수는 0~10 사이 정수여야 합니다.');
+          return;
+        }
+        formData.append('iterations', String(iterations));
+      }
 
       // spec(전체 워크플로우)일 때만 구체화 자동 진행 옵션을 전달한다.
       if (agent === 'spec' && document.getElementById('auto-clarify').checked) {

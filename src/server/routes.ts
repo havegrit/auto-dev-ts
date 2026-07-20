@@ -5,7 +5,7 @@ import { resolveProjectDir, listProjects, WORKSPACE_ROOT } from '../lib/workspac
 import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
-import { runSpec } from '../workflows/spec.js';
+import { MAX_ROUTE_LIMIT, runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
 import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
@@ -98,6 +98,9 @@ export function createRoutes(): Hono {
   app.post('/api/specs', async (c) => {
     const body = await c.req.json<{ content: string; steps?: string[]; iterations?: number; project?: string; cwd?: string; deliveryIntent?: 'ci' | 'cd' }>();
     if (!body.content) return c.json({ error: 'content is required' }, 400);
+    if (body.iterations !== undefined && (!Number.isInteger(body.iterations) || body.iterations < 0 || body.iterations > MAX_ROUTE_LIMIT)) {
+      return c.json({ error: `iterations must be an integer between 0 and ${MAX_ROUTE_LIMIT}` }, 400);
+    }
     try {
       const steps = body.steps ? new Set(body.steps) : undefined;
       const cwd = resolveProjectDir(body.project ?? body.cwd, body.content);
@@ -141,6 +144,9 @@ export function createRoutes(): Hono {
       const maxClarifyRounds = Number(String(body['maxClarifyRounds'] ?? '0'));
       if (!Number.isInteger(maxClarifyRounds) || maxClarifyRounds < 0) {
         return c.json({ error: 'maxClarifyRounds must be a non-negative integer' }, 400);
+      }
+      if (iterations !== undefined && (!Number.isInteger(iterations) || iterations < 0 || iterations > MAX_ROUTE_LIMIT)) {
+        return c.json({ error: `iterations must be an integer between 0 and ${MAX_ROUTE_LIMIT}` }, 400);
       }
       const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
       const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, maxClarifyRounds, deliveryIntent, triggerSource: 'dashboard' });

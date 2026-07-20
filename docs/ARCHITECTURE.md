@@ -411,7 +411,7 @@ while cursor < len(STEP_ORDER):
   전달받으며, 할당이 없으면 해당 단계를 건너뛴다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
-- **재작업 루프 방지**: `maxRoutes`(= `--iterations`, 기본 2) 만큼만 review/test 라우팅을
+- **재작업 루프 방지**: `maxRoutes`(= `--iterations`, 기본 4, 최대 10) 만큼만 review/test 라우팅을
   되돌리고, `safetyCap` 으로 라우팅 기반 총 실행 횟수도 제한한다. 자동 구체화가 무제한이면
   clarifier 반복은 이 cap에서 제외되므로 모델이 계속 질문할 경우 비용과 시간이 계속 증가한다.
 - `--steps` 로 특정 단계만 실행 가능. 라우팅 대상이 필터에서 빠져 있으면 라우팅하지 않는다.
@@ -483,7 +483,7 @@ data/
 
 ./run spec <file>                            # SpecWorkflow
             --steps scaffold,test,review     # 부분 실행
-            --iterations 2                   # 반복
+            --iterations 4                   # 재작업 라우팅 상한 (기본 4, 최대 10)
 
 ./run status                                  # 에이전트 목록 + 실행 가드 통계
 ./run serve                                   # HTTP API + 대시보드 + 스케줄러
@@ -611,7 +611,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `[TESTS: FAIL]` + `[ROUTE: planner\|clarifier]` | test | 소스 오류 → 지정 단계로 되돌려 재작업 |
 | `[TESTS: PASS\|BLOCKED]`, 라우트 없는 FAIL | test | 다음 단계 진행 |
 
-- 라우팅은 `maxRoutes`(`--iterations`, 기본 2) 와 `safetyCap` 으로 이중 제한해 무한
+- 라우팅은 `maxRoutes`(`--iterations`, 기본 4, 최대 10) 와 `safetyCap` 으로 이중 제한해 무한
   루프를 막는다.
 - 테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 수정하므로 라우팅 대상이
   아니다. 라우팅되는 것은 **소스 코드 오류로 판정된 FAIL** 뿐이다.

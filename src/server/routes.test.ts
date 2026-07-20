@@ -20,6 +20,7 @@ vi.mock('../agents/clarifier.js', () => ({
   clarifier: vi.fn(),
 }));
 vi.mock('../workflows/spec.js', () => ({
+  MAX_ROUTE_LIMIT: 10,
   runSpec: vi.fn(),
 }));
 vi.mock('../workflows/spec-session.js', () => ({
@@ -82,6 +83,7 @@ describe('dashboard auto-clarify options', () => {
     body.set('project', 'demo');
     body.set('autoClarify', 'true');
     body.set('maxClarifyRounds', '0');
+    body.set('iterations', '4');
 
     const app = createRoutes();
     const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
@@ -90,6 +92,7 @@ describe('dashboard auto-clarify options', () => {
     expect(startSpecSession).toHaveBeenCalledWith('clarify and build', expect.objectContaining({
       autoClarify: true,
       maxClarifyRounds: 0,
+      iterations: 4,
     }));
   });
 
@@ -106,6 +109,20 @@ describe('dashboard auto-clarify options', () => {
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: 'maxClarifyRounds must be a non-negative integer' });
+  });
+
+  it('rejects a rework route limit above the safety cap', async () => {
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('input', 'clarify and build');
+    body.set('project', 'demo');
+    body.set('iterations', '11');
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: 'iterations must be an integer between 0 and 10' });
   });
 
   it('passes auto-clarify settings when resuming from answers', async () => {

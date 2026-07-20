@@ -89,7 +89,7 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 clarifier → planner → scaffold → test → review → cicd
 ```
 
-`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. 마지막 `cicd` 단계는 planner가 명시적인 CI/CD 작업을 할당할 때만 실행되며, 기본은 CI이고 배포 요청이 명시된 경우에만 CD 산출물을 만듭니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 scaffold→review 루프를 반복할 수 있습니다.
+`clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. 마지막 `cicd` 단계는 planner가 명시적인 CI/CD 작업을 할당할 때만 실행되며, 기본은 CI이고 배포 요청이 명시된 경우에만 CD 산출물을 만듭니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있습니다.
 
 ## 대시보드
 
@@ -103,6 +103,8 @@ clarifier → planner → scaffold → test → review → cicd
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
 - 자동 구체화는 추천 답안을 자동 승인하며, 제출 폼과 중단된 run의 답변 폼에서 최대 라운드를 조절할 수 있음 (`0`은 무제한이며 기본값); 중단 후 재개해도 설정 유지
+- 새 요청 폼에서 실행 단계를 선택할 수 있으며, 구현·테스트·리뷰·CI/CD 후속 단계를 선택하면 planner는 필수로 유지
+- 새 요청 폼에서 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있으며, 질문 답변·후속 실행·마지막 단계 재개 시에도 설정 유지
 - 상세 패널은 workflow 요약, 에이전트 간 이동, agent/model/input/output 기준 token debug breakdown 제공
 - 이력 표는 최상위 요청을 우선 표시하고 워크플로우 하위 단계는 접기/펼치기로 확인 가능, 완료된 spec run에는 행에서 바로 **재실행** 및 **마지막 단계부터 재개** 버튼 제공
 - 완료된 spec run은 자유 텍스트 후속 지시로 다시 실행하거나 마지막 단계부터 재개할 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행

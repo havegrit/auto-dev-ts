@@ -111,11 +111,14 @@ describe('startSpecSession (round 0)', () => {
       project: 'my-api',
       cwd: '/tmp/proj',
       steps: new Set(['clarifier', 'planner']),
+      iterations: 6,
     });
     await done;
 
     expect(stateStore.get(runId).steps).toEqual(['clarifier', 'planner']);
+    expect(stateStore.get(runId).iterations).toBe(6);
     expect(specOptions[0].steps).toEqual(new Set(['clarifier', 'planner']));
+    expect(specOptions[0].iterations).toBe(6);
   });
 
   it('passes the default CI intent into the workflow', async () => {
@@ -186,6 +189,7 @@ describe('resumeSpecSession (round N)', () => {
       slug: 'my-api',
       planFile: 'docs/plan/my-api.md',
       cwd: '/tmp/proj',
+      iterations: 6,
       rounds: [{ questions: [Q1] }],
     });
     specResult = { workflowRunId: 'y', steps: {}, totalDurationMs: 1, verdict: 'SHIP' };
@@ -207,6 +211,7 @@ describe('resumeSpecSession (round N)', () => {
       slug: 'my-api',
       planFile: 'docs/plan/my-api.md',
       cwd: '/tmp/proj',
+      iterations: 6,
       rounds: [{ questions: [Q1] }],
     });
 
@@ -234,6 +239,7 @@ describe('resumeSpecSession (round N)', () => {
     expect(inserted.find(r => r.id === runId).workflowRunId).toBeUndefined();
     expect(inserted.find(r => r.id === runId).triggerDetail).toBe('answers:parent');
     expect(specOptions[0].workflowRunId).toBe(runId);
+    expect(specOptions[0].iterations).toBe(6);
     expect(stateStore.get('parent').rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
     expect(stateStore.get(runId).rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
   });

@@ -75,7 +75,7 @@ program.command('clarifier <input>')
 program.command('spec <file>')
   .description('전체 스펙 워크플로우 실행')
   .option('--steps <steps>', '실행할 단계 (쉼표 구분)', '')
-  .option('--iterations <n>', '피드백 재작업(planner/clarifier 라우팅) 허용 횟수', '2')
+  .option('--iterations <n>', '피드백 재작업(planner/clarifier 라우팅) 허용 횟수', '4')
   .option('--project <project>', '프로젝트명 또는 경로')
   .action(async (file: string, options: { steps: string; iterations: string; project?: string }) => {
     const content = readFileSync(file, 'utf-8');
