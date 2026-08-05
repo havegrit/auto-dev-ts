@@ -65,6 +65,11 @@ Input can be an inline string or a file path — auto-dev detects automatically.
 # HTTP API + dashboard
 ./run serve          # or: npm run serve:user  (see "Running as non-root")
 
+# Install/start a user service independent of the SSH session
+npm run service:install
+npm run service:start
+npm run service:status
+
 # Scheduler only (daily worklog briefing)
 ./run daemon
 ```
@@ -80,6 +85,23 @@ For the server, `npm run serve:user` (→ `scripts/serve.sh`) auto-drops from ro
 a non-root user (`AUTO_DEV_RUN_AS_USER`, default `shin`) before starting; that user
 needs its own Claude credentials (`~/.claude/.credentials.json`). One-off workaround
 for sandboxed containers: set `IS_SANDBOX=1`.
+
+### Keeping the server alive after SSH exits
+
+Running `./run serve` in an SSH foreground terminal can terminate the server and its
+active specs when that terminal closes. `npm run service:install` writes and enables
+`~/.config/systemd/user/auto-dev.service` using the current project's absolute path.
+Start it with `npm run service:start`; the server and provider child processes then run
+outside the SSH session and restart after an unexpected process failure.
+
+The user service requires linger to survive logout. The installer checks it and, when
+disabled, prints the required `sudo loginctl enable-linger <user>` command. Read logs
+with `npm run service:logs`. Do not run `./run serve` and the service on the same port.
+
+Dashboard specs already run in the service background, independently of the HTTP
+response, so closing the browser or SSH port-forward does not cancel them. Durable
+queue/checkpoint recovery across a host reboot or service restart is not implemented;
+an in-flight run is recorded as a `server_restart` failure in that case.
 
 ## Spec workflow
 
@@ -171,7 +193,8 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 ```
 auto-dev-ts/
 ├── prompts/          System prompts for each agent (Markdown)
-├── scripts/          Ops scripts (serve.sh — non-root server launcher)
+├── deploy/systemd/   User-service template independent of SSH sessions
+├── scripts/          Ops scripts (non-root launcher + user-service installer)
 ├── static/           Dashboard frontend (vanilla HTML/JS)
 ├── src/
 │   ├── agents/       Agent implementations + registry

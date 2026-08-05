@@ -18,6 +18,11 @@
     "status": "tsx src/cli.ts status",
     "serve": "tsx src/cli.ts serve",
     "serve:user": "bash scripts/serve.sh",
+    "service:install": "bash scripts/install-user-service.sh",
+    "service:start": "systemctl --user start auto-dev.service",
+    "service:restart": "systemctl --user restart auto-dev.service",
+    "service:status": "systemctl --user status auto-dev.service",
+    "service:logs": "journalctl --user -u auto-dev.service -f",
     "test": "vitest run"
   },
   "dependencies": {

@@ -65,6 +65,11 @@ cp .env.example .env
 # HTTP API + 대시보드
 ./run serve          # 또는: npm run serve:user  ("비-root 실행" 참고)
 
+# SSH 세션과 독립된 user service 설치/시작
+npm run service:install
+npm run service:start
+npm run service:status
+
 # 스케줄러만 실행 (일일 워크로그 브리핑)
 ./run daemon
 ```
@@ -80,6 +85,24 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 (`AUTO_DEV_RUN_AS_USER`, 기본 `shin`)로 권한을 낮춰 실행합니다. 해당 유저는 자체 Claude
 자격증명(`~/.claude/.credentials.json`)이 필요합니다. 샌드박스 컨테이너용 임시 우회책:
 `IS_SANDBOX=1` 설정.
+
+### SSH 종료 후에도 서버 유지
+
+`./run serve`를 SSH 터미널의 foreground에서 실행하면 터미널 종료 시 서버와 실행 중인
+스펙도 함께 종료될 수 있습니다. `npm run service:install`은 현재 프로젝트 절대 경로로
+`~/.config/systemd/user/auto-dev.service`를 생성하고 enable합니다. 이후
+`npm run service:start`로 시작하면 서버와 provider 자식 프로세스가 SSH 세션에서
+분리되고, 비정상 종료 시 자동 재시작됩니다.
+
+user service가 로그아웃 뒤에도 유지되려면 linger가 필요합니다. 설치 스크립트가 상태를
+검사하고 꺼져 있으면 `sudo loginctl enable-linger <user>` 명령을 안내합니다. 로그는
+`npm run service:logs`로 확인합니다. 같은 포트에서 `./run serve`와 service를 동시에
+실행하지 마세요.
+
+대시보드가 시작한 스펙은 HTTP 응답과 분리된 background 작업이므로 브라우저나 SSH
+포트 포워딩을 닫아도 service 안에서 계속됩니다. 단, 호스트 재부팅이나 service
+재시작까지 이어가는 durable job queue/checkpoint 복구는 아직 지원하지 않으며, 이 경우
+실행 중 레코드는 `server_restart` 실패로 정리됩니다.
 
 ## 스펙 워크플로우
 
@@ -167,7 +190,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 ```
 auto-dev-ts/
 ├── prompts/          각 에이전트 시스템 프롬프트 (Markdown)
-├── scripts/          운영 스크립트 (serve.sh — 비-root 서버 런처)
+├── deploy/systemd/   SSH와 독립된 user service 템플릿
+├── scripts/          운영 스크립트 (비-root 런처 + user service 설치)
 ├── static/           대시보드 프론트엔드 (바닐라 HTML/JS)
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리

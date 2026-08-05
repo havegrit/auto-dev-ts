@@ -678,6 +678,11 @@ auto-dev-ts/
 ├── README.md / README.ko.md
 ├── docs/
 │   └── ARCHITECTURE.md               ← 본 문서
+├── deploy/systemd/
+│   └── auto-dev.service.in            # SSH 세션 독립 user service 템플릿
+├── scripts/
+│   ├── serve.sh                       # root 감지 시 비-root로 권한 강하
+│   └── install-user-service.sh        # 현재 절대 경로로 user unit 설치
 ├── static/
 │   └── index.html                    # 대시보드 (바닐라 HTML/JS)
 ├── prompts/                          # 에이전트 시스템 프롬프트
@@ -765,16 +770,38 @@ cp .env.example .env
 ./run scaffold "User CRUD REST API"
 ./run spec docs/feature.md
 ./run spec docs/feature.md --steps scaffold,test,review
+
+# SSH 세션과 분리해 상시 실행
+npm run service:install
+npm run service:start
+npm run service:status
 ```
 
-### 14.3 빌드 (프로덕션)
+### 14.3 SSH 독립 실행 (`systemd --user`)
+
+`scripts/install-user-service.sh`는 템플릿의 프로젝트 경로를 현재 checkout의 절대
+경로로 치환해 `~/.config/systemd/user/auto-dev.service`에 설치하고 enable한다.
+unit은 `scripts/serve.sh`를 foreground main process로 실행하며 `Restart=on-failure`,
+`KillMode=control-group`을 적용한다. 따라서 SSH terminal/cgroup과 분리되고 provider
+자식도 service cgroup에서 함께 관리된다.
+
+로그아웃 뒤 user manager 유지에는 `loginctl enable-linger <user>`가 필요하다. 설치
+스크립트는 linger를 검사해 비활성일 때 필요한 관리자 명령을 출력한다. 브라우저/SSH
+터널 종료는 이미 시작된 background spec promise에 영향을 주지 않는다.
+
+이 설계는 **SSH 연결 수명 문제**를 해결하지만 durable worker queue는 아니다. service
+재시작·호스트 재부팅 시 메모리 안의 workflow 상태는 사라지고, DB 초기화가 남은
+`RUNNING` 레코드를 `FAILED/server_restart`로 정리한다. crash-safe 재개에는 단계별
+checkpoint + idempotency 정책 + 별도 worker lease가 추가로 필요하다.
+
+### 14.4 빌드 (프로덕션)
 
 ```bash
 npm run build    # tsc → dist/
 node dist/cli.js serve
 ```
 
-### 14.4 네이티브 모듈 재빌드
+### 14.5 네이티브 모듈 재빌드
 
 Node.js 버전 업그레이드 후 `better-sqlite3` 가 `ERR_DLOPEN_FAILED` 오류를 내면:
 

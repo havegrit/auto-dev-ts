@@ -1,0 +1,20 @@
+[Unit]
+Description=auto-dev dashboard and spec workflow service
+Documentation=file://@PROJECT_ROOT@/README.ko.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_ROOT@
+Environment=AUTO_DEV_ENV_FILE=@PROJECT_ROOT@/.env
+ExecStart=@PROJECT_ROOT@/scripts/serve.sh
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
