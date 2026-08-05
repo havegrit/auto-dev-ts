@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto Dev Spec"
+  short_description: "Run and manage local auto-dev specs through OpenClaw"
+  default_prompt: "Use auto-dev to start, inspect, or cancel a local specification workflow."

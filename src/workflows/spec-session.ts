@@ -7,6 +7,7 @@ import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
 import { saveClarificationState, getClarificationState, type ClarificationState } from '../store/clarification.js';
 import { closeEmitter, emitRunEvent } from '../lib/run-events.js';
 import { registerRunCancellation } from '../lib/run-cancellation.js';
+import { notifyOpenClawSpec } from '../integrations/openclaw/notify.js';
 
 export interface SpecSessionOptions {
   project?: string;
@@ -301,6 +302,13 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
         durationMs: result.totalDurationMs,
       });
       finishRunEvents(runId, 'DONE');
+      await notifyOpenClawSpec({
+        runId,
+        project: opts.project,
+        verdict: result.verdict,
+        durationMs: result.totalDurationMs,
+        clarificationCount: result.clarification.questions.length,
+      });
       return;
     }
 
@@ -317,13 +325,28 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
           : {}),
     });
     finishRunEvents(runId, result.verdict === 'CANCELLED' ? 'CANCELLED' : status);
+    await notifyOpenClawSpec({
+      runId,
+      project: opts.project,
+      verdict: result.verdict ?? status,
+      durationMs: result.totalDurationMs,
+      reason: result.failure?.reason,
+    });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     updateRun(runId, {
-      output: `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+      output: `ERROR: ${message}`,
       status: 'FAILED',
       durationMs: Date.now() - wallStart,
     });
     finishRunEvents(runId, 'FAILED');
+    await notifyOpenClawSpec({
+      runId,
+      project: opts.project,
+      verdict: 'FAILED',
+      durationMs: Date.now() - wallStart,
+      reason: message,
+    });
   }
 }
 

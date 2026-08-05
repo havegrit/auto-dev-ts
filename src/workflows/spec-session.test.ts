@@ -44,6 +44,11 @@ vi.mock('../lib/run-events.js', () => ({
   closeEmitter: (...args: any[]) => closeEmitter(...args),
 }));
 
+const notifyOpenClawSpec = vi.fn(async (_notice: any) => true);
+vi.mock('../integrations/openclaw/notify.js', () => ({
+  notifyOpenClawSpec: (notice: any) => notifyOpenClawSpec(notice),
+}));
+
 const writes: Array<{ path: string; content: string }> = [];
 vi.mock('fs', () => ({
   writeFileSync: vi.fn((path: string, content: string) => writes.push({ path, content })),
@@ -66,6 +71,7 @@ beforeEach(() => {
   getClarificationState.mockClear();
   emitRunEvent.mockClear();
   closeEmitter.mockClear();
+  notifyOpenClawSpec.mockClear();
 });
 
 describe('startSpecSession (round 0)', () => {
@@ -97,6 +103,12 @@ describe('startSpecSession (round 0)', () => {
     expect(plan!.content).toContain('사용자 관리 기능');
     expect(emitRunEvent).toHaveBeenCalledWith(runId, expect.objectContaining({ type: 'status', data: 'DONE' }));
     expect(closeEmitter).toHaveBeenCalledWith(runId);
+    expect(notifyOpenClawSpec).toHaveBeenCalledWith(expect.objectContaining({
+      runId,
+      project: 'my-api',
+      verdict: 'NEEDS-CLARIFICATION',
+      clarificationCount: 1,
+    }));
   });
 
   it('serializes a partial steps filter into clarification state', async () => {

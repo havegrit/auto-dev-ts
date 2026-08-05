@@ -232,6 +232,54 @@ describe('dashboard auto-clarify options', () => {
   });
 });
 
+describe('OpenClaw local bridge', () => {
+  it('starts a detached spec session for the main Telegram account', async () => {
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'telegram-run', done: Promise.resolve() });
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://127.0.0.1/api/integrations/openclaw/specs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'demo', content: 'build the feature' }),
+    }));
+
+    expect(res.status).toBe(202);
+    expect(startSpecSession).toHaveBeenCalledWith('build the feature', expect.objectContaining({
+      project: 'demo',
+      autoClarify: true,
+      maxClarifyRounds: 0,
+      triggerSource: 'openclaw',
+      triggerDetail: 'telegram:main',
+    }));
+    await expect(res.json()).resolves.toEqual({
+      runId: 'telegram-run',
+      type: 'workflow',
+      status: 'RUNNING',
+    });
+  });
+
+  it('rejects a non-loopback integration request', async () => {
+    const callCount = vi.mocked(startSpecSession).mock.calls.length;
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://auto-dev.example/api/integrations/openclaw/specs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'build it' }),
+    }));
+
+    expect(res.status).toBe(403);
+    expect(startSpecSession).toHaveBeenCalledTimes(callCount);
+  });
+
+  it('requires the optional local bridge token when configured', async () => {
+    vi.stubEnv('AUTO_DEV_OPENCLAW_API_TOKEN', 'local-secret');
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://127.0.0.1/api/integrations/openclaw/health'));
+
+    expect(res.status).toBe(403);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe('routes resume-last guard', () => {
   it('rejects resume-last for a running run', async () => {
     const app = createRoutes();

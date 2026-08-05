@@ -104,6 +104,32 @@ user service가 로그아웃 뒤에도 유지되려면 linger가 필요합니다
 재시작까지 이어가는 durable job queue/checkpoint 복구는 아직 지원하지 않으며, 이 경우
 실행 중 레코드는 `server_restart` 실패로 정리됩니다.
 
+### OpenClaw + Telegram
+
+기존 OpenClaw Telegram 계정을 수신 게이트웨이로 재사용할 수 있습니다. 별도 공개
+도메인·웹훅·auto-dev 폴링은 필요 없습니다. OpenClaw가 Telegram 메시지를 받고,
+`integrations/openclaw/skills/auto-dev-spec` skill이 루프백 API로 background spec을
+시작합니다. 완료·실패·취소·추가 입력 필요 알림은 auto-dev가 OpenClaw의 지정 계정으로
+직접 전송합니다.
+
+```bash
+# .env
+AUTO_DEV_OPENCLAW_ENABLED=true
+AUTO_DEV_OPENCLAW_ACCOUNT=main
+AUTO_DEV_OPENCLAW_COMMAND=/home/user/.local/bin/openclaw
+AUTO_DEV_OPENCLAW_CONFIG_PATH=/home/user/.openclaw/openclaw.json
+
+# OpenClaw가 repo skill root를 읽도록 설정 후 gateway 재시작
+openclaw config set skills.load.extraDirs \
+  '["/absolute/path/auto-dev-ts/integrations/openclaw/skills"]' --strict-json
+```
+
+Telegram에서는 자연어로 auto-dev 실행을 요청하거나
+`/auto_dev_spec <요청>` 또는 `/skill auto-dev-spec <요청>`을 사용합니다. 상태 조회와
+취소도 run ID를 포함해 요청할 수 있습니다. integration API는
+`AUTO_DEV_BIND_ADDR=127.0.0.1`일 때만 허용되며, 필요하면
+`AUTO_DEV_OPENCLAW_API_TOKEN`을 auto-dev와 OpenClaw 실행 환경에 같이 설정합니다.
+
 ## 스펙 워크플로우
 
 `./run spec <file>`은 아래 순서로 전체 파이프라인을 실행합니다:
@@ -145,12 +171,14 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
 | `GET` | `/api/status` | 에이전트 목록 + 실행 가드 + 회로차단기 통계 |
-| `POST` | `/api/agents/:name` | 단일 에이전트 실행 (`project` 지정 가능) |
 | `GET` | `/api/auth/claude` | Claude Code 인증 상태 조회 (루프백 대시보드 전용) |
 | `POST` | `/api/auth/claude/login` | Claude.ai OAuth 로그인 시작 및 로그인 URL 반환 |
 | `POST` | `/api/auth/claude/code` | 브라우저에서 받은 `{ code }` (`code#state`) 제출 및 인증 완료 |
+| `POST` | `/api/agents/:name` | 단일 에이전트 실행 (`project` 지정 가능) |
 | `POST` | `/api/clarify` | Q&A 컨텍스트와 함께 clarifier 실행 |
 | `POST` | `/api/specs` | 스펙 워크플로우 실행 |
+| `GET` | `/api/integrations/openclaw/health` | OpenClaw 로컬 bridge 상태/계정 조회 (루프백 전용) |
+| `POST` | `/api/integrations/openclaw/specs` | OpenClaw에서 background spec 시작, 즉시 `202 + runId` 반환 |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
@@ -185,6 +213,12 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 서버 포트 |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 실행 횟수 한도 (비우면 무제한) |
+| `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 완료/실패 알림 활성 |
+| `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림에 사용할 OpenClaw Telegram 계정 |
+| `AUTO_DEV_OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI 명령 또는 절대 경로 |
+| `AUTO_DEV_OPENCLAW_CONFIG_PATH` | `~/.openclaw/openclaw.json` | 대상 allowlist를 읽을 OpenClaw 설정 |
+| `AUTO_DEV_OPENCLAW_TARGET` | 계정 `allowFrom[0]` | 명시적 Telegram chat ID override |
+| `AUTO_DEV_OPENCLAW_API_TOKEN` | 미설정 | 루프백 bridge 선택적 Bearer 토큰 |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker URL — 설정 시 연동 활성 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 리뷰 브리핑 스케줄러 활성화 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 스케줄 크론 표현식 |
@@ -195,6 +229,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 auto-dev-ts/
 ├── prompts/          각 에이전트 시스템 프롬프트 (Markdown)
 ├── deploy/systemd/   SSH와 독립된 user service 템플릿
+├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          운영 스크립트 (비-root 런처 + user service 설치)
 ├── static/           대시보드 프론트엔드 (바닐라 HTML/JS)
 ├── src/
@@ -202,7 +237,7 @@ auto-dev-ts/
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
 │   ├── workflows/    SpecWorkflow + 이슈 기반 워크플로우
 │   ├── llm/          LLM 프로바이더 seam (registry + anthropic/codex 구현)
-│   ├── integrations/ issue-tracker 클라이언트
+│   ├── integrations/ issue-tracker 클라이언트 + OpenClaw Telegram 알림
 │   ├── store/        SQLite 스키마 + CRUD
 │   ├── lib/          러너, 가드, 회로차단기, SSE, 워크스페이스 해석 등
 │   ├── server/       Hono HTTP 서버 + 라우트

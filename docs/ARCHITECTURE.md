@@ -40,6 +40,7 @@
 - ✅ issue-tracker 연동 (`/api/issues`, `work <key>` — 이슈 조회 + 자동 처리)
 - ✅ 프로젝트명 기반 워크스페이스 (경로 대신 프로젝트명 입력 → 루트 기준 해석)
 - ✅ 단발성 LLM 프록시 (`POST /api/llm/complete` — 외부 정적 앱이 구독으로 생성)
+- ✅ OpenClaw Telegram bridge (기존 계정 수신 → 루프백 spec 실행 + 종료 알림)
 - ⚠️ Planner 모드 (동적 plan 파싱) — 미구현 (고정 순서 + 라우팅 재진입)
 - ⚠️ 브라우저 검증 (Playwright) — 미구현
 
@@ -68,7 +69,7 @@
                 ┌──────────────────────────────────────────────────┐
                 │  Triggers                                         │
                 │  • CLI (Commander)   • HTTP API (POST /api/...)  │
-                │  • node-cron         • Future: webhook            │
+                │  • node-cron         • OpenClaw Telegram skill    │
                 └──────────────────────────┬───────────────────────┘
                                            ▼
                                  ┌──────────────────┐
@@ -516,6 +517,8 @@ data/
 | `POST` | `/api/agents/:name` | 단일 에이전트 실행 `{ input, project? }` |
 | `POST` | `/api/clarify` | clarifier 실행 `{ input }` |
 | `POST` | `/api/specs` | SpecWorkflow 실행 `{ content, steps?, iterations? }` |
+| `GET` | `/api/integrations/openclaw/health` | OpenClaw 루프백 bridge 상태 + 계정 |
+| `POST` | `/api/integrations/openclaw/specs` | background spec 시작, `202 + runId` 즉시 반환 |
 | `POST` | `/api/submit` | 대시보드 폼 제출 (multipart — 파일/프로젝트명 포함) |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 `{ system?, message, json? }` (CORS 허용) |
 | `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
@@ -667,6 +670,8 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 
 - 인증 없음. 기본 바인딩 `127.0.0.1` 으로만 보호
 - `AUTO_DEV_BIND_ADDR=0.0.0.0` 외부 노출 시 별도 인증 추가 필요
+- OpenClaw integration route는 서버 bind와 요청 host가 모두 loopback이어야 하며,
+  선택적으로 `AUTO_DEV_OPENCLAW_API_TOKEN` Bearer 검증을 적용한다.
 
 ---
 
@@ -687,6 +692,12 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 에이전트 실행 횟수 한도 (비우면 무제한) |
+| `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 종료 상태 알림 활성 |
+| `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림 전송 Telegram 계정 |
+| `AUTO_DEV_OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI 명령/절대 경로 |
+| `AUTO_DEV_OPENCLAW_CONFIG_PATH` | `~/.openclaw/openclaw.json` | 계정 allowlist 조회 설정 |
+| `AUTO_DEV_OPENCLAW_TARGET` | 계정 `allowFrom[0]` | Telegram chat ID override |
+| `AUTO_DEV_OPENCLAW_API_TOKEN` | 미설정 | 루프백 bridge 선택적 Bearer 토큰 |
 | `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS` | `300000` | rate-limit reset 미제공 시 회로 open 쿨다운(ms) |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker 베이스 URL — 설정 시 연동 활성 |
 | `AUTO_DEV_ISSUE_TRACKER_STATUS` | `OPEN` | 조회할 이슈 상태 필터 |
@@ -708,6 +719,8 @@ auto-dev-ts/
 │   └── ARCHITECTURE.md               ← 본 문서
 ├── deploy/systemd/
 │   └── auto-dev.service.in            # SSH 세션 독립 user service 템플릿
+├── integrations/openclaw/skills/
+│   └── auto-dev-spec/                  # OpenClaw user-invocable spec bridge
 ├── scripts/
 │   ├── serve.sh                       # root 감지 시 비-root로 권한 강하
 │   └── install-user-service.sh        # 현재 절대 경로로 user unit 설치
@@ -769,7 +782,7 @@ auto-dev-ts/
 │   │   └── logger.ts                 # JSON 구조화 로그
 │   ├── server/
 │   │   ├── index.ts                  # startServer() — Hono + serve-static
-│   │   └── routes.ts                 # 25개 API 엔드포인트 (§8.2)
+│   │   └── routes.ts                 # 27개 API 엔드포인트 (§8.2)
 │   └── schedule/
 │       └── briefing.ts               # node-cron 일일 브리핑
 └── data/                             # gitignore
@@ -777,7 +790,7 @@ auto-dev-ts/
     └── workspace/
 ```
 
-대략 **TypeScript 59 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
+대략 **TypeScript 60 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
 
 ---
 
@@ -823,14 +836,30 @@ unit은 `scripts/serve.sh`를 foreground main process로 실행하며 `Restart=o
 `RUNNING` 레코드를 `FAILED/server_restart`로 정리한다. crash-safe 재개에는 단계별
 checkpoint + idempotency 정책 + 별도 worker lease가 추가로 필요하다.
 
-### 14.4 빌드 (프로덕션)
+### 14.4 OpenClaw Telegram bridge
+
+Telegram 수신과 사용자 allowlist는 기존 OpenClaw gateway의 `main` 같은 계정이
+담당한다. repo의 `auto-dev-spec` skill은 `127.0.0.1:8080`의 integration route를
+호출하고 `202 + runId`만 받은 뒤 즉시 응답한다. 실제 workflow는 systemd user service
+프로세스에서 계속 실행된다.
+
+종료 알림은 `spec-session.finalize()`가 DB와 SSE 상태를 먼저 확정한 뒤
+`openclaw message send --channel telegram --account <account>`를 호출한다. 알림 실패는
+workflow 결과를 바꾸지 않는다. 대상 chat ID는 명시적 env가 없으면 해당 OpenClaw
+계정의 `allowFrom[0]`에서 읽으며 bot token은 auto-dev가 읽거나 저장하지 않는다.
+
+이 구성은 auto-dev 쪽 polling/webhook/public endpoint를 추가하지 않는다. Telegram
+transport 방식(long polling 또는 webhook)은 OpenClaw의 기존 설정과 수명주기가
+관리한다.
+
+### 14.5 빌드 (프로덕션)
 
 ```bash
 npm run build    # tsc → dist/
 node dist/cli.js serve
 ```
 
-### 14.5 네이티브 모듈 재빌드
+### 14.6 네이티브 모듈 재빌드
 
 Node.js 버전 업그레이드 후 `better-sqlite3` 가 `ERR_DLOPEN_FAILED` 오류를 내면:
 

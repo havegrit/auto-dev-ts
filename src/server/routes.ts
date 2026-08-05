@@ -48,6 +48,31 @@ function isClaudeAuthRequestAllowed(request: Request): boolean {
   }
 }
 
+function isOpenClawRequestAllowed(request: Request): boolean {
+  if (!isLoopbackHostname(process.env.AUTO_DEV_BIND_ADDR ?? '127.0.0.1')) return false;
+
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(request.url);
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHostname(requestUrl.hostname)) return false;
+
+  const expectedToken = process.env.AUTO_DEV_OPENCLAW_API_TOKEN?.trim();
+  if (!expectedToken) return true;
+  return request.headers.get('authorization') === `Bearer ${expectedToken}`;
+}
+
+interface OpenClawSpecBody {
+  content?: string;
+  project?: string;
+  steps?: string[];
+  iterations?: number;
+  autoClarify?: boolean;
+  maxClarifyRounds?: number;
+  deliveryIntent?: 'ci' | 'cd';
+}
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -175,6 +200,51 @@ export function createRoutes(): Hono {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return c.json({ error: msg }, msg.startsWith('Invalid project name') ? 400 : 500);
+    }
+  });
+
+  app.get('/api/integrations/openclaw/health', (c) => {
+    if (!isOpenClawRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'OpenClaw integration is available on loopback only.' }, 403);
+    }
+    return c.json({
+      status: 'ok',
+      account: process.env.AUTO_DEV_OPENCLAW_ACCOUNT?.trim() || 'main',
+    });
+  });
+
+  app.post('/api/integrations/openclaw/specs', async (c) => {
+    if (!isOpenClawRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'OpenClaw integration is available on loopback only.' }, 403);
+    }
+
+    const body = await c.req.json<OpenClawSpecBody>().catch((): OpenClawSpecBody => ({}));
+    const content = body.content?.trim() ?? '';
+    if (!content) return c.json({ error: 'content is required' }, 400);
+    if (body.iterations !== undefined && (!Number.isInteger(body.iterations) || body.iterations < 0 || body.iterations > MAX_ROUTE_LIMIT)) {
+      return c.json({ error: `iterations must be an integer between 0 and ${MAX_ROUTE_LIMIT}` }, 400);
+    }
+    if (body.maxClarifyRounds !== undefined && (!Number.isInteger(body.maxClarifyRounds) || body.maxClarifyRounds < 0)) {
+      return c.json({ error: 'maxClarifyRounds must be a non-negative integer' }, 400);
+    }
+
+    try {
+      const project = body.project?.trim() || undefined;
+      const cwd = resolveProjectDir(project, content);
+      const { runId } = startSpecSession(content, {
+        project,
+        cwd,
+        steps: body.steps ? new Set(body.steps) : undefined,
+        iterations: body.iterations,
+        autoClarify: body.autoClarify ?? true,
+        maxClarifyRounds: body.maxClarifyRounds ?? 0,
+        deliveryIntent: body.deliveryIntent === 'cd' ? 'cd' : 'ci',
+        triggerSource: 'openclaw',
+        triggerDetail: `telegram:${process.env.AUTO_DEV_OPENCLAW_ACCOUNT?.trim() || 'main'}`,
+      });
+      return c.json({ runId, type: 'workflow', status: 'RUNNING' }, 202);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
   });
 

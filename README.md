@@ -103,6 +103,32 @@ response, so closing the browser or SSH port-forward does not cancel them. Durab
 queue/checkpoint recovery across a host reboot or service restart is not implemented;
 an in-flight run is recorded as a `server_restart` failure in that case.
 
+### OpenClaw + Telegram
+
+An existing OpenClaw Telegram account can act as the inbound gateway. No public domain,
+webhook, or additional auto-dev poller is required. OpenClaw receives Telegram messages,
+and the `integrations/openclaw/skills/auto-dev-spec` skill starts a background spec through
+the loopback API. auto-dev sends completion, failure, cancellation, and clarification
+notifications directly through the selected OpenClaw account.
+
+```bash
+# .env
+AUTO_DEV_OPENCLAW_ENABLED=true
+AUTO_DEV_OPENCLAW_ACCOUNT=main
+AUTO_DEV_OPENCLAW_COMMAND=/home/user/.local/bin/openclaw
+AUTO_DEV_OPENCLAW_CONFIG_PATH=/home/user/.openclaw/openclaw.json
+
+# Let OpenClaw load the repository skill root, then restart its gateway
+openclaw config set skills.load.extraDirs \
+  '["/absolute/path/auto-dev-ts/integrations/openclaw/skills"]' --strict-json
+```
+
+In Telegram, request an auto-dev run naturally or use
+`/auto_dev_spec <request>` / `/skill auto-dev-spec <request>`. Include a run ID to request
+status or cancellation. Integration endpoints are accepted only while
+`AUTO_DEV_BIND_ADDR=127.0.0.1`; optionally set the same
+`AUTO_DEV_OPENCLAW_API_TOKEN` in the auto-dev and OpenClaw execution environments.
+
 ## Spec workflow
 
 `./run spec <file>` runs the full pipeline in order:
@@ -144,12 +170,14 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/status` | Agent list + run guard + circuit breaker stats |
-| `POST` | `/api/agents/:name` | Invoke a single agent (accepts `project`) |
 | `GET` | `/api/auth/claude` | Get Claude Code authentication status (loopback dashboard only) |
 | `POST` | `/api/auth/claude/login` | Start Claude.ai OAuth login and return the login URL |
 | `POST` | `/api/auth/claude/code` | Submit browser `{ code }` (`code#state`) and finish authentication |
+| `POST` | `/api/agents/:name` | Invoke a single agent (accepts `project`) |
 | `POST` | `/api/clarify` | Run clarifier with Q&A context |
 | `POST` | `/api/specs` | Run spec workflow |
+| `GET` | `/api/integrations/openclaw/health` | OpenClaw local bridge account/health (loopback only) |
+| `POST` | `/api/integrations/openclaw/specs` | Start a background OpenClaw spec; immediately return `202 + runId` |
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
@@ -188,6 +216,12 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP server bind address |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP server port |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | Max agent runs per day (empty = unlimited) |
+| `AUTO_DEV_OPENCLAW_ENABLED` | `false` | Enable OpenClaw Telegram terminal-state notifications |
+| `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | OpenClaw Telegram account used for notifications |
+| `AUTO_DEV_OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI command or absolute path |
+| `AUTO_DEV_OPENCLAW_CONFIG_PATH` | `~/.openclaw/openclaw.json` | OpenClaw config used to resolve the account allowlist |
+| `AUTO_DEV_OPENCLAW_TARGET` | account `allowFrom[0]` | Explicit Telegram chat ID override |
+| `AUTO_DEV_OPENCLAW_API_TOKEN` | unset | Optional Bearer token for the loopback bridge |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (none) | Issue-tracker URL — enables integration when set |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | Enable daily review briefing cron |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | Cron expression for briefing schedule |
@@ -198,6 +232,7 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 auto-dev-ts/
 ├── prompts/          System prompts for each agent (Markdown)
 ├── deploy/systemd/   User-service template independent of SSH sessions
+├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          Ops scripts (non-root launcher + user-service installer)
 ├── static/           Dashboard frontend (vanilla HTML/JS)
 ├── src/
@@ -205,7 +240,7 @@ auto-dev-ts/
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
 │   ├── workflows/    SpecWorkflow + issue-driven workflow
 │   ├── llm/          LLM provider seam (registry + anthropic/codex impls)
-│   ├── integrations/ issue-tracker client
+│   ├── integrations/ issue-tracker client + OpenClaw Telegram notifications
 │   ├── store/        SQLite schema + CRUD
 │   ├── lib/          Runner, guards, circuit breaker, SSE, workspace resolver
 │   ├── server/       Hono HTTP server + routes
