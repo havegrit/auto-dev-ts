@@ -49,7 +49,7 @@ vi.mock('../agents/planner.js', () => ({
   planner: vi.fn(async (input: string) => {
     calls.push('planner');
     inputs.planner.push(input);
-    return plannerResult ?? { runId: 'planner-run', output: 'PLAN:\n1. scaffold | build\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    return plannerResult ?? { runId: 'planner-run', output: 'PLAN:\n1. scaffold | build\n2. review | verify\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
   }),
 }));
 
@@ -212,7 +212,7 @@ describe('runSpec clarification gate', () => {
       output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
       tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
     };
-    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    plannerResult = { runId: 'planner-run', output: 'PLAN:\n1. scaffold | fix contract\n2. review | verify contract\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
     const { review } = await import('../agents/review/index.js');
     (review as any).mockResolvedValueOnce({
       runId: 'review-run',
@@ -238,7 +238,7 @@ describe('runSpec clarification gate', () => {
       output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
       tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
     };
-    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    plannerResult = { runId: 'planner-run', output: 'PLAN:\n1. scaffold | fix findings\n2. review | verify findings\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
     const { review } = await import('../agents/review/index.js');
     for (let attempt = 1; attempt <= 3; attempt++) {
       (review as any).mockResolvedValueOnce({
@@ -256,13 +256,38 @@ describe('runSpec clarification gate', () => {
     expect(calls.filter(step => step === 'planner')).toHaveLength(4);
   });
 
+  it('defaults a markerless review rework response to planner', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = { runId: 'planner-run', output: 'PLAN:\n1. scaffold | fix regression\n2. review | verify regression\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    const { review } = await import('../agents/review/index.js');
+    (review as any).mockResolvedValueOnce({
+      runId: 'review-run-needs-work',
+      output: 'Review found a high-impact regression that requires code changes.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['clarifier', 'planner', 'review']),
+      maxRoutes: 1,
+    });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.routeCount).toBe(1);
+    expect(calls.filter(step => step === 'planner')).toHaveLength(2);
+    expect(inputs.planner[1]).toContain('Review found a high-impact regression');
+  });
+
   it('stops on an unroutable test failure instead of continuing to review', async () => {
     clarifierResult = {
       runId: 'clarifier-run',
       output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
       tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
     };
-    plannerResult = { runId: 'planner-run', output: 'PLAN', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    plannerResult = { runId: 'planner-run', output: 'PLAN:\n1. scaffold | fix production bug\n2. test | verify production bug\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
     const { test } = await import('../agents/test.js');
     (test as any).mockResolvedValueOnce({
       runId: 'test-run-fail',
@@ -281,6 +306,30 @@ describe('runSpec clarification gate', () => {
     expect(calls).not.toContain('review');
   });
 
+  it('defaults a markerless test failure route to planner', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = { runId: 'planner-run', output: 'PLAN:\n1. scaffold | fix production bug\n2. test | verify production bug\nEND.', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    const { test } = await import('../agents/test.js');
+    (test as any).mockResolvedValueOnce({
+      runId: 'test-run-fail',
+      output: 'Production bug\n[TESTS: FAIL]',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['clarifier', 'planner', 'test']),
+      maxRoutes: 1,
+    });
+
+    expect(result.verdict).toBeUndefined();
+    expect(result.routeCount).toBe(1);
+    expect(calls.filter(step => step === 'planner')).toHaveLength(2);
+  });
+
   it('returns the planner output text as planOutput', async () => {
     clarifierResult = {
       runId: 'clarifier-run',
@@ -290,7 +339,55 @@ describe('runSpec clarification gate', () => {
 
     const result = await runSpec('명확한 요청', { steps: new Set(['clarifier', 'planner']) });
 
-    expect(result.planOutput).toBe('PLAN:\n1. scaffold | build\nEND.');
+    expect(result.planOutput).toBe('PLAN:\n1. scaffold | build\n2. review | verify\nEND.');
+  });
+
+  it('blocks invalid planner output without replacing the last valid plan', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'Your organization has disabled Claude subscription access for Claude Code',
+      tokensIn: 0, tokensOut: 0, durationMs: 10, status: 'DONE',
+    };
+    const previousPlan = 'PLAN:\n1. scaffold | keep valid plan\n2. review | verify valid plan\nEND.';
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['planner', 'scaffold']),
+      startStep: 'planner',
+      initialPlanOutput: previousPlan,
+    });
+
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.failure).toMatchObject({ step: 'planner', cause: 'invalid_output' });
+    expect(result.steps.planner.status).toBe('BLOCKED');
+    expect(result.planOutput).toBe(previousPlan);
+    expect(calls).toEqual(['planner']);
+  });
+
+  it('blocks markerless test output instead of continuing to review', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    const { test } = await import('../agents/test.js');
+    (test as any).mockResolvedValueOnce({
+      runId: 'test-run-invalid', output: 'Tests look fine.', tokensIn: 1, tokensOut: 1,
+      durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['clarifier', 'planner', 'test', 'review']),
+    });
+
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.failure).toMatchObject({ step: 'test', cause: 'invalid_output' });
+    expect(result.steps.test.status).toBe('BLOCKED');
+    expect(calls).not.toContain('review');
   });
 
   it('skips cicd when the planner did not assign a CI/CD task', async () => {

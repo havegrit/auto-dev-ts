@@ -73,7 +73,7 @@ Only when the code under test exposes an HTTP UI that's actually reachable
 2. **Test run result** — exit code + brief failure analysis if any.
 3. **Gaps** — what you couldn't test here and why.
 
-## Test verdict (REQUIRED — last line, on its own line)
+## Test verdict (REQUIRED — final marker block)
 
 End your response with EXACTLY one of these markers, square brackets included:
 
@@ -98,6 +98,9 @@ or
   fixture requires a service that's down, etc. **Use this whenever another
   attempt would just hit the same environmental wall** — it stops the loop
   immediately so a human can act.
+- For `PASS` and `BLOCKED`, this verdict marker is the very last line.
+- For production-code `FAIL`, the verdict is followed by the required route
+  marker below, so the route marker is the very last line.
 
 Be honest. Repeating FAIL across attempts when the issue is environmental
 just burns tokens — switch to BLOCKED.

@@ -376,9 +376,12 @@ while cursor < len(STEP_ORDER):
     result = await agent(step)(inputFor(step) + pendingFeedback)
     if step == 'clarifier' and ready == false:
         verdict = NEEDS-CLARIFICATION; break
-    if step == 'planner': planOutput = result.output
+    if step == 'planner':
+        if invalid PLAN contract: verdict = BLOCKED; break
+        planOutput = result.output
 
     # test: 소스 코드 오류로 판정된 FAIL 만 되돌린다 (테스트 코드 오류는 test 가 직접 수정)
+    if step == 'test' and missing [TESTS: ...]: verdict = BLOCKED; break
     if step == 'test' and parseTests == FAIL and [ROUTE: planner|clarifier]:
         cursor = index(route); pendingFeedback = result; continue
 
@@ -409,8 +412,16 @@ while cursor < len(STEP_ORDER):
   또는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다. 라우팅된 경우
   직전 단계 출력 전문이 피드백 블록으로 덧붙는다. cicd 는 planner 가 할당한 cicd 항목만
   전달받으며, 할당이 없으면 해당 단계를 건너뛴다.
+- **단계 출력 계약**: Codex 실행에서도 `clarifier`/`planner`/`test`/`review`는 generic
+  JSON 변환 없이 raw 출력을 보존한다. planner의 `PLAN: ... END.` 구조와 test의
+  `[TESTS: ...]` 마커가 없으면 `invalid_output`으로 즉시 BLOCKED 처리하며, 유효한 이전
+  `planOutput`을 오류 문자열로 덮어쓰지 않는다.
+- **review 작업 경계**: review는 지정된 `cwd`만 검사한다. 대상에 `.git`이 없어도 부모나
+  형제 디렉터리에서 다른 저장소를 찾지 않고 현재 프로젝트 파일을 직접 읽는다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
+  `NEEDS-WORK`/`TESTS: FAIL`인데 provider가 ROUTE 마커를 누락하면 구현 결함의 기본
+  소유자인 planner로 폴백한다. 마커 누락만으로 workflow를 종료하지 않는다.
 - **재작업 루프 방지**: `maxRoutes`(= `--iterations`, 기본 4, 최대 10) 만큼만 review/test 라우팅을
   되돌리고, `safetyCap` 으로 라우팅 기반 총 실행 횟수도 제한한다. 자동 구체화가 무제한이면
   clarifier 반복은 이 cap에서 제외되므로 모델이 계속 질문할 경우 비용과 시간이 계속 증가한다.
@@ -606,11 +617,13 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 |---|---|---|
 | `[VERDICT: SHIP]` | review | 통과 → cicd 진행 |
 | `[VERDICT: NEEDS-WORK]` + `[ROUTE: planner\|clarifier]` | review | 지정 단계로 되돌려 재작업 |
-| `[VERDICT: NEEDS-WORK]` (라우트 없음/대상 비활성/예산 소진) | review | 원인을 `failure cause`에 기록하고 cicd 미진행, 종료 |
+| `[VERDICT: NEEDS-WORK]` (라우트 없음) | review | `planner`로 폴백 |
+| `[VERDICT: NEEDS-WORK]` (대상 비활성/예산 소진) | review | 원인을 `failure cause`에 기록하고 cicd 미진행, 종료 |
 | `[VERDICT: BLOCKED]` | review | 종료 (사람 개입 필요) |
 | `[TESTS: FAIL]` + `[ROUTE: planner\|clarifier]` | test | 소스 오류 → 지정 단계로 되돌려 재작업 |
 | `[TESTS: PASS]` | test | 다음 단계 진행 |
-| `[TESTS: FAIL]` (라우트 없음/대상 비활성/예산 소진) | test | 원인을 기록하고 즉시 실패 종료 |
+| `[TESTS: FAIL]` (라우트 없음) | test | `planner`로 폴백 |
+| `[TESTS: FAIL]` (대상 비활성/예산 소진) | test | 원인을 기록하고 즉시 실패 종료 |
 | `[TESTS: BLOCKED]` | test | 차단 원인을 기록하고 즉시 실패 종료 |
 
 - 라우팅은 `maxRoutes`(`--iterations`, 기본 4, 최대 10) 와 `safetyCap` 으로 이중 제한해 무한

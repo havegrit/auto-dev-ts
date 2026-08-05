@@ -465,6 +465,24 @@ describe('resumeLastSpecStep', () => {
     expect(specOptions[0].initialFeedback).toContain('Finding: broken contract');
   });
 
+  it('resumes a review with no verdict or route markers at planner', async () => {
+    stateStore.set('parent', {
+      spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',
+      planFile: 'docs/plan/my-api.md', cwd: '/tmp/proj', rounds: [], planOutput: 'PLAN',
+    });
+    childRuns = [{
+      agent_name: 'review', status: 'DONE',
+      output: 'Review found a high-impact regression that requires code changes.',
+    }];
+    specResult = { workflowRunId: 'r', steps: {}, totalDurationMs: 1, verdict: 'SHIP', planOutput: 'PLAN' };
+
+    const { done } = resumeLastSpecStep('parent');
+    await done;
+
+    expect(specOptions[0].startStep).toBe('planner');
+    expect(specOptions[0].initialFeedback).toContain('Review found a high-impact regression');
+  });
+
   it('continues to the next step after a completed agent instead of rerunning it', async () => {
     stateStore.set('parent', {
       spec: '사용자 관리 기능', project: 'my-api', slug: 'my-api',

@@ -108,6 +108,19 @@ function parseTests(output: string): 'PASS' | 'FAIL' | 'BLOCKED' | undefined {
   return 'FAIL';
 }
 
+/** planner strict contract: PLAN block containing 2-8 numbered specialist assignments. */
+function isValidPlanOutput(output: string): boolean {
+  const lines = output.split(/\r?\n/).map((line) => line.trim());
+  const start = lines.indexOf('PLAN:');
+  const end = lines.indexOf('END.', start + 1);
+  if (start < 0 || end < 0) return false;
+  const steps = lines.slice(start + 1, end).filter(Boolean);
+  if (steps.length < 2 || steps.length > 8) return false;
+  return steps.every((line, index) =>
+    new RegExp(`^${index + 1}\\.\\s*(?:scaffold|test|review|cicd)\\s+\\|\\s+\\S`, 'i').test(line),
+  );
+}
+
 function extractJsonObjectText(output: string): string {
   const text = output.trim();
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -315,15 +328,43 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       }
     }
 
-    if (step === 'planner' && r.output) planOutput = r.output;
+    if (step === 'planner') {
+      if (!isValidPlanOutput(r.output)) {
+        verdict = 'BLOCKED';
+        results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'BLOCKED' };
+        failure = {
+          step,
+          status: 'BLOCKED',
+          cause: 'invalid_output',
+          reason: r.output.trim() || 'The planner returned an invalid response.',
+          routeAvailable: false,
+        };
+        break;
+      }
+      planOutput = r.output;
+    }
 
     // test: 소스 코드 오류로 판정된 실패만 planner/clarifier 로 되돌린다.
     // (테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 고친다.)
     if (step === 'test') {
       const tests = parseTests(r.output);
+      if (!tests) {
+        verdict = 'BLOCKED';
+        results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'BLOCKED' };
+        failure = {
+          step,
+          status: 'BLOCKED',
+          cause: 'invalid_output',
+          reason: r.output.trim() || 'The test agent returned an invalid response.',
+          routeAvailable: false,
+        };
+        break;
+      }
       if (tests === 'FAIL') {
-        const route = parseRoute(r.output);
-        if (route && routeTo(route, 'test', r.output)) continue;
+        // LLM이 필수 ROUTE 마커를 빠뜨려도 명확한 구현 결함은 planner가 기본 소유한다.
+        // 마커 누락만으로 이미 끝난 테스트/리뷰 비용을 버리고 workflow를 중단하지 않는다.
+        const route = parseRoute(r.output) ?? 'planner';
+        if (routeTo(route, 'test', r.output)) continue;
         verdict = 'FAILED';
         failure = routeFailure(route, 'test', r.output);
         break;
@@ -346,8 +387,8 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       verdict = parseVerdict(r.output) ?? 'NEEDS-WORK';
       if (verdict === 'SHIP') { cursor++; continue; } // 통과 → cicd 진행
       if (verdict === 'NEEDS-WORK') {
-        const route = parseRoute(r.output);
-        if (route && routeTo(route, 'review', r.output)) continue;
+        const route = parseRoute(r.output) ?? 'planner';
+        if (routeTo(route, 'review', r.output)) continue;
         failure = routeFailure(route, 'review', r.output);
       } else if (verdict === 'BLOCKED') {
         failure = {

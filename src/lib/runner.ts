@@ -117,7 +117,9 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         subagents: opts.subagents,
         model,
         effort,
-        resultMode: opts.name === 'clarifier' ? 'raw' : 'generic',
+        // These agents expose text marker contracts parsed by runSpec. A generic
+        // Codex JSON contract would override/strip PLAN, TESTS, ROUTE, and VERDICT.
+        resultMode: ['clarifier', 'planner', 'test', 'review'].includes(opts.name) ? 'raw' : 'generic',
         abortController,
       }, onEvent);
       return abortable(providerRun, abortController.signal);

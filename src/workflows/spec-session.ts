@@ -205,12 +205,16 @@ function resumeTarget(lastRun: ReturnType<typeof lastExecutedWorkflowRun>, confi
   const lastStep = lastRun.agent_name as Step;
   const verdict = markerValue(lastRun.output, 'VERDICT');
   const tests = markerValue(lastRun.output, 'TESTS');
-  const route = routedStep(lastRun.output);
+  // runSpec은 review verdict가 누락되면 안전하게 NEEDS-WORK로 해석한다.
+  // 과거 실행 resume도 같은 규칙을 써야 marker가 모두 빠진 최신 실패를 복구할 수 있다.
+  const needsRework = verdict === 'needs-work' || tests === 'fail' || (lastStep === 'review' && !verdict);
+  // 과거/비준수 에이전트 출력에 ROUTE가 없으면 구현 수정의 기본 소유자인 planner로 복구한다.
+  const route = routedStep(lastRun.output) ?? (needsRework ? 'planner' : undefined);
 
   // The agent completed but requested rework. Resume at the routed owner and
   // carry the original review/test output into that agent instead of rerunning
   // the reviewer/tester and spending tokens on the same work.
-  if (lastRun.status === 'DONE' && route && (verdict === 'needs-work' || tests === 'fail')) {
+  if (lastRun.status === 'DONE' && route && needsRework) {
     return enabled.has(route) ? { startStep: route, useFeedback: true } : undefined;
   }
 

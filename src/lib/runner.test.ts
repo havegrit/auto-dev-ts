@@ -101,6 +101,23 @@ describe('runAgent dispatch', () => {
     expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ output: rawOutput }));
   });
 
+  it.each(['planner', 'test', 'review'])('preserves the %s workflow marker contract', async (name) => {
+    let receivedReq: any;
+    fakeRunnerImpl = {
+      run: async (req) => {
+        receivedReq = req;
+        return {
+          status: 'success', output: '[MARKER]', tokensIn: 1, tokensOut: 1,
+          numTurns: 1, stopReason: 'end_turn',
+        };
+      },
+    };
+
+    await runAgent({ name, prompt: 'contract output' });
+
+    expect(receivedReq.resultMode).toBe('raw');
+  });
+
   it('aborts an active provider run and records CANCELLED', async () => {
     fakeRunnerImpl = {
       // Some provider iterators can remain pending while their subprocess performs graceful cleanup.
