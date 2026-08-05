@@ -11,5 +11,8 @@ export function isAnthropicAuthFailure(output: unknown): boolean {
     .trim()
     .replace(/\s+/g, ' ');
 
-  return /^(?:not logged in(?:\s*[·•:\-]\s*please run\s+\/login)?|please run\s+\/login)$/i.test(normalized);
+  return [
+    /^(?:not logged in(?:\s*[·•:\-]\s*please run\s+\/login)?|please run\s+\/login)$/i,
+    /^your organization has disabled claude subscription access for claude code(?:\s*[·•:\-]\s*use an anthropic api key instead, or ask your admin to enable access)?[.!]?$/i,
+  ].some((pattern) => pattern.test(normalized));
 }

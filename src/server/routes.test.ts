@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 vi.mock('../lib/complete.js', () => ({
   complete: vi.fn(),
@@ -49,6 +49,19 @@ vi.mock('../lib/circuit-breaker.js', () => ({
 }));
 vi.mock('../lib/model-config.js', () => ({
   modelConfig: { stats: vi.fn(() => ({})), set: vi.fn() },
+  loadModelsFromCli: vi.fn(async () => {}),
+}));
+vi.mock('../lib/claude-auth.js', () => ({
+  claudeAuth: {
+    status: vi.fn(async () => ({ available: true, loggedIn: false, phase: 'idle' })),
+    start: vi.fn(async () => ({
+      available: true,
+      loggedIn: false,
+      phase: 'awaiting_code',
+      loginUrl: 'https://claude.com/oauth/example',
+    })),
+    submitCode: vi.fn(async () => ({ available: true, loggedIn: true, phase: 'authenticated' })),
+  },
 }));
 vi.mock('../lib/run-events.js', () => ({
   getOrCreateEmitter: vi.fn(),
@@ -73,6 +86,76 @@ import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession } from '../workflows/spec-session.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
 import { getRun, updateRun } from '../store/runs.js';
+import { claudeAuth } from '../lib/claude-auth.js';
+import { loadModelsFromCli } from '../lib/model-config.js';
+
+describe('Claude dashboard authentication', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the current auth status on the loopback dashboard', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/auth/claude'));
+
+    expect(res.status).toBe(200);
+    expect(claudeAuth.status).toHaveBeenCalled();
+    await expect(res.json()).resolves.toEqual({
+      available: true,
+      loggedIn: false,
+      phase: 'idle',
+    });
+  });
+
+  it('starts a Claude OAuth flow and returns only its public status', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/auth/claude/login', {
+      method: 'POST',
+      headers: { origin: 'http://localhost' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(claudeAuth.start).toHaveBeenCalled();
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      phase: 'awaiting_code',
+      loginUrl: 'https://claude.com/oauth/example',
+    }));
+  });
+
+  it('submits the pasted OAuth code and reloads the model catalog', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/auth/claude/code', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'http://localhost',
+      },
+      body: JSON.stringify({ code: 'authorization-code#matching-state' }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(claudeAuth.submitCode).toHaveBeenCalledWith('authorization-code#matching-state');
+    expect(loadModelsFromCli).toHaveBeenCalled();
+  });
+
+  it('rejects auth requests from a non-loopback origin', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/auth/claude/login', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    }));
+
+    expect(res.status).toBe(403);
+    expect(claudeAuth.start).not.toHaveBeenCalled();
+  });
+
+  it('rejects auth requests when the dashboard is addressed by a non-loopback host', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://dashboard.example/api/auth/claude'));
+
+    expect(res.status).toBe(403);
+  });
+});
 
 describe('dashboard auto-clarify options', () => {
   it('passes an unlimited round setting from the submit form', async () => {

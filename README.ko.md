@@ -119,10 +119,11 @@ clarifier → planner → scaffold → test → review → cicd
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
 
 - 에이전트 현황 및 일일 실행 횟수
+- Claude Code 로그아웃 감지 시 브라우저 OAuth 로그인 모달 표시, 인증 완료 시 같은 모달에서 성공 확인 표시 — 닫으면 같은 탭 세션에서는 숨기고, 새 `anthropic_auth_failed` 실행이 발생하면 다시 표시; 로그인 URL을 열고 브라우저의 `code#state`를 붙여넣어 완료 (루프백 접속 전용, 토큰은 브라우저나 DB에 저장하지 않음)
 - 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신, `더 보기` 버튼으로 추가 로드
 - 실행 중인 작업은 SSE로 라이브 갱신, 실행 행 클릭 시 상세 패널로 앵커 이동
 - 실행 중인 행, 제출 결과 패널, 실행 상세 패널에서 강제 중단 가능; 실제 provider 프로세스를 중단하고 UI에는 `CANCELLED`로 표시
-- Claude의 `Not logged in · Please run /login` 응답은 `FAILED`(`anthropic_auth_failed`)로 기록하고, 연결된 spec도 해당 에이전트 단계에서 실패 처리하여 정상 종료로 표시하지 않음
+- Claude 로그인 및 조직 구독 권한 거부 응답은 `anthropic_auth_failed`로 정규화; 다른 fallback 모델이 설정돼 있으면 1회 재시도하고, 없거나 재시도도 실패하면 해당 에이전트와 연결된 spec을 `FAILED`로 기록
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
 - 자동 구체화는 추천 답안을 자동 승인하며, 제출 폼과 중단된 run의 답변 폼에서 최대 라운드를 조절할 수 있음 (`0`은 무제한이며 기본값); 중단 후 재개해도 설정 유지
@@ -145,6 +146,9 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 |--------|------|------|
 | `GET` | `/api/status` | 에이전트 목록 + 실행 가드 + 회로차단기 통계 |
 | `POST` | `/api/agents/:name` | 단일 에이전트 실행 (`project` 지정 가능) |
+| `GET` | `/api/auth/claude` | Claude Code 인증 상태 조회 (루프백 대시보드 전용) |
+| `POST` | `/api/auth/claude/login` | Claude.ai OAuth 로그인 시작 및 로그인 URL 반환 |
+| `POST` | `/api/auth/claude/code` | 브라우저에서 받은 `{ code }` (`code#state`) 제출 및 인증 완료 |
 | `POST` | `/api/clarify` | Q&A 컨텍스트와 함께 clarifier 실행 |
 | `POST` | `/api/specs` | 스펙 워크플로우 실행 |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |

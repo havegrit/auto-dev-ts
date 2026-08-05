@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 import type { AgentRunOutcome } from '../llm/types.js';
 import { registerRunCancellation } from './run-cancellation.js';
+import { isAnthropicAuthFailure } from '../llm/anthropic/auth-failure.js';
 
 export interface RunOptions {
   name: string;
@@ -41,6 +42,12 @@ function clarifierOutput(outcome: AgentRunOutcome): string {
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
   return start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
+}
+
+function successfulAnthropicAuthFailure(outcome: AgentRunOutcome): string | undefined {
+  if (outcome.status !== 'success') return undefined;
+  const candidates = [outcome.output, outcome.rawOutput];
+  return candidates.find((candidate) => isAnthropicAuthFailure(candidate));
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -132,8 +139,21 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     suppressCircuitForFallback = Boolean(fallbackModelId && fallbackModelId !== modelId);
     let outcome = await runWithModel(modelId, modelConfig.getModelForAgent(opts.name), modelConfig.getEffortOptionForAgent(opts.name));
     if (abortController.signal.aborted) return cancelledResult();
-    if (sawRateLimit && fallbackModelId && fallbackModelId !== modelId) {
-      log.warn({ ...ctx, modelId, fallbackModelId }, 'Primary model rate-limited — retrying fallback model');
+    const primaryAuthFailed = (outcome.status === 'error' &&
+      (outcome.errorType === 'anthropic_auth_failed' || outcome.errorType === 'codex_auth_failed')) ||
+      Boolean(successfulAnthropicAuthFailure(outcome));
+    if ((sawRateLimit || primaryAuthFailed) && fallbackModelId && fallbackModelId !== modelId) {
+      log.warn(
+        {
+          ...ctx,
+          modelId,
+          fallbackModelId,
+          reason: primaryAuthFailed
+            ? outcome.status === 'error' ? outcome.errorType : 'anthropic_auth_failed'
+            : 'rate_limit',
+        },
+        'Primary model unavailable — retrying fallback model',
+      );
       sawRateLimit = false;
       suppressCircuitForFallback = false;
       actualModelId = fallbackModelId;
@@ -147,6 +167,27 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
     }
 
     const durationMs = Date.now() - start;
+    const disguisedAuthFailure = successfulAnthropicAuthFailure(outcome);
+    if (disguisedAuthFailure) {
+      output = disguisedAuthFailure;
+      tokensIn = outcome.tokensIn;
+      tokensOut = outcome.tokensOut;
+      updateRun(runId, {
+        output,
+        tokensIn,
+        tokensOut,
+        status: 'FAILED',
+        durationMs,
+        modelId: actualModelId,
+        errorType: 'anthropic_auth_failed',
+        stopReason: 'authentication_required',
+        numTurns: outcome.numTurns,
+      });
+      log.error({ ...ctx, modelId: actualModelId, errorType: 'anthropic_auth_failed', durationMs }, 'Agent result contained Anthropic authentication failure');
+      emitRunEvent(runId, { type: 'status', ts: now(), data: 'FAILED:anthropic_auth_failed' });
+      closeEmitter(runId);
+      return { runId, output, tokensIn, tokensOut, durationMs, status: 'FAILED' };
+    }
     if (outcome.status === 'success') {
       // clarifier output is a workflow contract ({ ready, summary, questions }), not the
       // generic Codex result contract. Preserve provider raw output so runSpec can parse it.

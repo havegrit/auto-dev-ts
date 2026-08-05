@@ -195,6 +195,39 @@
     }
     .save-btn:hover { background: #2ea043; }
     .save-status { position: absolute; top: 1.25rem; right: 1.25rem; font-size: 0.75rem; color: #3fb950; white-space: nowrap; }
+    body.auth-modal-open { overflow: hidden; }
+    .auth-modal-backdrop {
+      position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+      padding: 1rem; background: rgba(1, 4, 9, 0.78); backdrop-filter: blur(3px);
+    }
+    .auth-modal {
+      width: min(620px, 100%); max-height: calc(100vh - 2rem); overflow-y: auto;
+      background: #161b22; border: 1px solid #3d444d; border-radius: 10px; padding: 1.25rem;
+      box-shadow: 0 18px 55px rgba(0, 0, 0, 0.5);
+    }
+    .auth-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+    .auth-modal-header h2 { color: #e6edf3; font-size: 1rem; margin-bottom: 0.35rem; }
+    .auth-modal-header p { color: #8b949e; font-size: 0.8rem; line-height: 1.45; }
+    .auth-modal-close {
+      flex: 0 0 auto; background: none; border: 1px solid #30363d; color: #8b949e;
+      width: 2rem; height: 2rem; border-radius: 6px; cursor: pointer; font-size: 1rem;
+    }
+    .auth-modal-close:hover { border-color: #8b949e; color: #e6edf3; }
+    .auth-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .auth-state { display: inline-flex; align-items: center; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .auth-state.authenticated { background: #1a4731; color: #3fb950; }
+    .auth-state.pending { background: #1c2d4a; color: #58a6ff; }
+    .auth-state.failed { background: #3b1219; color: #f85149; }
+    .auth-state.idle { background: #2d333b; color: #adbac7; }
+    .auth-detail { color: #8b949e; font-size: 0.78rem; flex: 1; min-width: 220px; }
+    .auth-login-panel { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid #30363d; }
+    .auth-login-link { color: #58a6ff; font-size: 0.82rem; text-decoration: none; }
+    .auth-login-link:hover { text-decoration: underline; }
+    .auth-code-row { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.65rem; flex-wrap: wrap; }
+    .auth-code-row input { flex: 1; min-width: min(420px, 100%); font-family: monospace; font-size: 0.8rem; }
+    .auth-message { margin-top: 0.5rem; color: #8b949e; font-size: 0.75rem; line-height: 1.4; }
+    .auth-message.error { color: #f85149; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
     .circuit-badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
     .circuit-CLOSED { background: #1a4731; color: #3fb950; }
     .circuit-OPEN   { background: #3b1219; color: #f85149; }
@@ -516,6 +549,48 @@
     </div>
   </div>
 
+  <!-- Claude 로그인이 필요할 때만 표시되는 모달 -->
+  <div
+    class="auth-modal-backdrop"
+    id="claude-auth-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="claude-auth-title"
+    style="display:none"
+    onclick="dismissClaudeAuthModal()"
+  >
+    <div class="auth-modal" onclick="event.stopPropagation()">
+      <div class="auth-modal-header">
+        <div>
+          <h2 id="claude-auth-title">Claude 로그인이 필요합니다</h2>
+          <p id="claude-auth-description">Claude 에이전트를 실행하려면 이 서버의 Claude Code 인증을 갱신해야 합니다.</p>
+        </div>
+        <button class="auth-modal-close" type="button" aria-label="Claude 인증 모달 닫기" onclick="dismissClaudeAuthModal()">×</button>
+      </div>
+      <div class="auth-row">
+        <span class="auth-state idle" id="claude-auth-state">확인 중</span>
+        <span class="auth-detail" id="claude-auth-detail">Claude Code 인증 상태를 확인합니다.</span>
+        <button class="save-btn" id="claude-auth-login-btn" onclick="startClaudeLogin()" disabled>로그인</button>
+        <button class="save-btn" id="claude-auth-confirm-btn" onclick="dismissClaudeAuthModal()" style="display:none">확인</button>
+      </div>
+      <div class="auth-login-panel" id="claude-auth-login-panel" style="display:none">
+        <a class="auth-login-link" id="claude-auth-login-link" href="#" target="_blank" rel="noopener noreferrer">Claude 로그인 페이지 열기 ↗</a>
+        <div class="auth-code-row">
+          <input
+            type="text"
+            id="claude-auth-code"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="브라우저에 표시된 전체 코드 붙여넣기 (code#state)"
+          />
+          <button class="save-btn" id="claude-auth-code-btn" onclick="submitClaudeAuthCode()">인증 완료</button>
+        </div>
+        <div class="auth-message">로그인 페이지에서 승인 후 표시되는 전체 <code>code#state</code> 값을 붙여넣으세요. 코드는 저장되지 않습니다.</div>
+      </div>
+      <div class="auth-message error" id="claude-auth-error" style="display:none"></div>
+    </div>
+  </div>
+
   <script src="marked.min.js"></script>
   <script src="purify.min.js"></script>
   <script>
@@ -528,6 +603,15 @@
     let liveEventSource = null;
     let detailElapsedTimer = null;
     let detailWorkflowTimer = null;
+    let claudeAuthLoading = false;
+    let claudeAuthSuccessVisible = false;
+    let claudeAuthSnapshot = { available: true, loggedIn: false, phase: 'idle' };
+    let claudeAuthFailureBaselineReady = false;
+    let claudeAuthFailureWatchStartedAt = 0;
+    let claudeAuthFailureCheckPending = false;
+    const observedRunIds = new Set();
+    const observedClaudeAuthFailureIds = new Set();
+    const CLAUDE_AUTH_DISMISSED_KEY = 'auto-dev.claude-auth-dismissed.v1';
     let configAgents = [];
     const WORKFLOW_STEPS = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'];
     const WORKFLOW_STEP_LABELS = {
@@ -663,6 +747,230 @@
       try { localStorage.removeItem(clarifyDraftKey(runId)); } catch {}
     }
 
+    function claudeAuthModalDismissed() {
+      try {
+        return sessionStorage.getItem(CLAUDE_AUTH_DISMISSED_KEY) === '1';
+      } catch {
+        return false;
+      }
+    }
+
+    function setClaudeAuthModalDismissed(dismissed) {
+      try {
+        if (dismissed) sessionStorage.setItem(CLAUDE_AUTH_DISMISSED_KEY, '1');
+        else sessionStorage.removeItem(CLAUDE_AUTH_DISMISSED_KEY);
+      } catch {}
+    }
+
+    function showClaudeAuthModal(force = false) {
+      if (!force && claudeAuthModalDismissed()) return;
+      const modal = document.getElementById('claude-auth-modal');
+      const wasHidden = modal.style.display === 'none';
+      modal.style.display = 'flex';
+      document.body.classList.add('auth-modal-open');
+      if (wasHidden) {
+        requestAnimationFrame(() => {
+          const target = claudeAuthSuccessVisible
+            ? document.getElementById('claude-auth-confirm-btn')
+            : document.getElementById('claude-auth-login-btn');
+          target?.focus();
+        });
+      }
+    }
+
+    function hideClaudeAuthModal() {
+      document.getElementById('claude-auth-modal').style.display = 'none';
+      document.body.classList.remove('auth-modal-open');
+    }
+
+    function dismissClaudeAuthModal() {
+      if (!claudeAuthSuccessVisible) setClaudeAuthModalDismissed(true);
+      claudeAuthSuccessVisible = false;
+      hideClaudeAuthModal();
+    }
+
+    function renderClaudeAuth(status, options = {}) {
+      claudeAuthSnapshot = { ...status };
+      const stateEl = document.getElementById('claude-auth-state');
+      const detailEl = document.getElementById('claude-auth-detail');
+      const titleEl = document.getElementById('claude-auth-title');
+      const descriptionEl = document.getElementById('claude-auth-description');
+      const loginBtn = document.getElementById('claude-auth-login-btn');
+      const confirmBtn = document.getElementById('claude-auth-confirm-btn');
+      const panel = document.getElementById('claude-auth-login-panel');
+      const link = document.getElementById('claude-auth-login-link');
+      const codeBtn = document.getElementById('claude-auth-code-btn');
+      const errorEl = document.getElementById('claude-auth-error');
+      const phase = status?.phase ?? 'failed';
+      const busy = claudeAuthLoading || phase === 'starting' || phase === 'exchanging';
+      const authenticated = status?.loggedIn || phase === 'authenticated';
+      if (authenticated && options.showSuccess === true) claudeAuthSuccessVisible = true;
+      else if (!authenticated) claudeAuthSuccessVisible = false;
+
+      titleEl.textContent = authenticated ? 'Claude 로그인 성공' : 'Claude 로그인이 필요합니다';
+      descriptionEl.textContent = authenticated
+        ? 'Claude Code 인증이 완료되었습니다. 이제 Claude 에이전트를 실행할 수 있습니다.'
+        : 'Claude 에이전트를 실행하려면 이 서버의 Claude Code 인증을 갱신해야 합니다.';
+
+      const labels = {
+        idle: '로그인 필요',
+        starting: '로그인 준비 중',
+        awaiting_code: '코드 대기 중',
+        exchanging: '인증 확인 중',
+        authenticated: '인증됨',
+        failed: '인증 실패',
+      };
+      stateEl.textContent = labels[phase] ?? phase;
+      stateEl.className = 'auth-state ' + (
+        phase === 'authenticated' ? 'authenticated'
+          : phase === 'starting' || phase === 'awaiting_code' || phase === 'exchanging' ? 'pending'
+            : phase === 'failed' ? 'failed' : 'idle'
+      );
+
+      if (status?.loggedIn) {
+        const method = status.authMethod && status.authMethod !== 'none' ? ` · ${status.authMethod}` : '';
+        detailEl.textContent = `Claude Code 로그인 정상${method}`;
+      } else if (!status?.available) {
+        detailEl.textContent = 'Claude Code CLI 상태를 확인할 수 없습니다.';
+      } else if (phase === 'awaiting_code') {
+        detailEl.textContent = '브라우저 로그인 후 표시된 전체 코드를 입력하세요.';
+      } else if (phase === 'exchanging') {
+        detailEl.textContent = 'Claude가 로그인 코드를 확인하고 있습니다.';
+      } else {
+        detailEl.textContent = 'Claude 에이전트 실행 전에 로그인이 필요합니다.';
+      }
+
+      loginBtn.disabled = busy || status?.available === false;
+      loginBtn.textContent = busy ? '처리 중…' : status?.loggedIn ? '다시 로그인' : '로그인';
+      loginBtn.style.display = authenticated ? 'none' : '';
+      confirmBtn.style.display = authenticated ? '' : 'none';
+      codeBtn.disabled = busy;
+
+      const waitingForCode = phase === 'awaiting_code' && typeof status.loginUrl === 'string';
+      panel.style.display = waitingForCode ? '' : 'none';
+      if (waitingForCode) link.href = status.loginUrl;
+      else link.removeAttribute('href');
+
+      const error = status?.error ?? '';
+      errorEl.textContent = error;
+      errorEl.style.display = error ? '' : 'none';
+
+      if (authenticated) {
+        setClaudeAuthModalDismissed(false);
+        if (claudeAuthSuccessVisible) showClaudeAuthModal(true);
+        else hideClaudeAuthModal();
+      } else if (status?.available !== false) {
+        showClaudeAuthModal(options.forceOpen === true);
+      }
+    }
+
+    async function loadClaudeAuth(options = {}) {
+      if (claudeAuthLoading) return;
+      try {
+        const res = await fetch('/api/auth/claude');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error ?? 'Claude 인증 상태 확인 실패');
+        renderClaudeAuth(data, options);
+      } catch (err) {
+        renderClaudeAuth({ available: false, loggedIn: false, phase: 'failed', error: err.message });
+      }
+    }
+
+    function isClaudeAuthFailureRun(run) {
+      return run?.error_type === 'anthropic_auth_failed'
+        || run?.stop_reason === 'authentication_required'
+        || String(run?.output ?? '').includes('failure cause: anthropic_auth_failed');
+    }
+
+    function observeClaudeAuthFailures(runs) {
+      const list = Array.isArray(runs) ? runs : [runs];
+      if (!claudeAuthFailureBaselineReady) {
+        for (const run of list) {
+          if (!run?.id) continue;
+          observedRunIds.add(run.id);
+          if (isClaudeAuthFailureRun(run)) observedClaudeAuthFailureIds.add(run.id);
+        }
+        claudeAuthFailureWatchStartedAt = Date.now();
+        claudeAuthFailureBaselineReady = true;
+        return;
+      }
+
+      let foundNewFailure = false;
+      for (const run of list) {
+        if (!run?.id) continue;
+        const previouslyObserved = observedRunIds.has(run.id);
+        observedRunIds.add(run.id);
+        if (!isClaudeAuthFailureRun(run) || observedClaudeAuthFailureIds.has(run.id)) continue;
+        observedClaudeAuthFailureIds.add(run.id);
+        const startedAt = Date.parse(run.started_at ?? '');
+        const startedAfterWatch = Number.isFinite(startedAt) && startedAt >= claudeAuthFailureWatchStartedAt;
+        if (previouslyObserved || startedAfterWatch) foundNewFailure = true;
+      }
+
+      if (foundNewFailure && !claudeAuthFailureCheckPending) {
+        claudeAuthFailureCheckPending = true;
+        setClaudeAuthModalDismissed(false);
+        loadClaudeAuth({ forceOpen: true }).finally(() => {
+          claudeAuthFailureCheckPending = false;
+        });
+      }
+    }
+
+    async function startClaudeLogin() {
+      if (claudeAuthLoading) return;
+      claudeAuthLoading = true;
+      renderClaudeAuth({ available: true, loggedIn: false, phase: 'starting' });
+      try {
+        const res = await fetch('/api/auth/claude/login', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          renderClaudeAuth({ ...data, available: data.available ?? true, loggedIn: data.loggedIn ?? false, phase: data.phase ?? 'failed', error: data.error ?? 'Claude 로그인 시작 실패' });
+          return;
+        }
+        renderClaudeAuth(data);
+        if (data.loginUrl) window.open(data.loginUrl, '_blank', 'noopener,noreferrer');
+      } catch (err) {
+        renderClaudeAuth({ available: true, loggedIn: false, phase: 'failed', error: err.message });
+      } finally {
+        claudeAuthLoading = false;
+        renderClaudeAuth(claudeAuthSnapshot);
+      }
+    }
+
+    async function submitClaudeAuthCode() {
+      if (claudeAuthLoading) return;
+      const input = document.getElementById('claude-auth-code');
+      const code = input.value.trim();
+      if (!code) {
+        renderClaudeAuth({ ...claudeAuthSnapshot, error: '전체 code#state 값을 입력하세요.' });
+        return;
+      }
+
+      claudeAuthLoading = true;
+      renderClaudeAuth({ ...claudeAuthSnapshot, phase: 'exchanging', error: undefined });
+      try {
+        const res = await fetch('/api/auth/claude/code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          renderClaudeAuth({ ...data, available: data.available ?? true, loggedIn: data.loggedIn ?? false, phase: data.phase ?? 'failed', error: data.error ?? 'Claude 인증 실패' });
+          return;
+        }
+        input.value = '';
+        renderClaudeAuth(data, { showSuccess: true });
+        loadConfig().catch(() => {});
+      } catch (err) {
+        renderClaudeAuth({ ...claudeAuthSnapshot, error: err.message });
+      } finally {
+        input.value = '';
+        claudeAuthLoading = false;
+        renderClaudeAuth(claudeAuthSnapshot);
+      }
+    }
+
     async function loadConfig() {
       const cfg = await fetch('/api/config').then(r => r.json());
       availableModels = cfg.availableModels ?? [];
@@ -678,7 +986,7 @@
       selectedEffort = cfg.effort;
       renderEffortBtns(cfg.model, cfg.effort);
 
-      sel.addEventListener('change', () => renderEffortBtns(sel.value, selectedEffort));
+      sel.onchange = () => renderEffortBtns(sel.value, selectedEffort);
     }
 
     function modelOptions(selected, opts = {}) {
@@ -911,6 +1219,7 @@
       const tick = async () => {
         try {
           const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
+          observeClaudeAuthFailures(run);
           const statusEl = document.getElementById('result-status-label');
           const spinnerEl = document.getElementById('result-spinner');
 
@@ -924,6 +1233,7 @@
           // 워크플로우면 sub-runs 폴링
           if (type === 'workflow') {
             const children = await fetch(`/api/runs/${runId}/children`).then(r => r.json());
+            observeClaudeAuthFailures(children);
             const subEl = document.getElementById('sub-runs');
             const signature = JSON.stringify(children.map(c => [c.id, c.status, c.duration_ms]));
             const html = children.length > 0 ? children.map(c => `
@@ -963,6 +1273,7 @@
       ]);
       const runsRes = runsPage.rows ?? [];
       hasMoreRuns = !!runsPage.hasMore;
+      observeClaudeAuthFailures(runsRes);
 
       document.getElementById('today-runs').textContent = statsRes.todayCount ?? '—';
       const g = statusRes.guard;
@@ -1897,13 +2208,21 @@
     }
 
     loadConfig();
+    loadClaudeAuth();
     initProjectCombobox();
     loadRequestDraft();
     bindRequestDraftPersistence();
     loadProjects();
     loadStats();
     toggleAutoClarifyRow();
+    document.addEventListener('keydown', (event) => {
+      const modal = document.getElementById('claude-auth-modal');
+      if (event.key === 'Escape' && modal.style.display !== 'none') {
+        dismissClaudeAuthModal();
+      }
+    });
     setInterval(loadStats, 10000);
+    setInterval(loadClaudeAuth, 30000);
   </script>
 </body>
 </html>

@@ -110,6 +110,22 @@ describe('reduceMessage', () => {
     });
   });
 
+  it('maps disabled organization subscription access to an auth error', () => {
+    const output = 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    const { outcome } = collect([
+      { type: 'result', subtype: 'success', result: output,
+        num_turns: 1, stop_reason: 'stop_sequence', usage: { input_tokens: 0, output_tokens: 0 } },
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: 'error',
+      errorType: 'anthropic_auth_failed',
+      output,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+  });
+
   it('does not mistake normal output discussing /login for an auth failure', () => {
     const output = 'Update the login page and document that users may run /login.';
     const { outcome } = collect([

@@ -22,19 +22,23 @@ describe('repairAnthropicAuthFailures', () => {
       VALUES ('planner', 'planner', 'Not logged in · Please run /login', 'DONE', '2026-01-01T00:00:01Z', 'parent');
       INSERT INTO agent_run (id, agent_name, output, status, started_at, workflow_run_id)
       VALUES ('test', 'test', 'Not logged in · Please run /login', 'DONE', '2026-01-01T00:00:02Z', 'parent');
+      INSERT INTO agent_run (id, agent_name, output, status, started_at, workflow_run_id)
+      VALUES ('org-disabled', 'planner', 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access', 'DONE', '2026-01-01T00:00:02.500Z', 'parent');
       INSERT INTO agent_run (id, agent_name, output, status, started_at)
       VALUES ('normal', 'planner', 'Add a /login route to the application.', 'DONE', '2026-01-01T00:00:03Z');
     `);
 
-    expect(repairAnthropicAuthFailures(db)).toBe(2);
+    expect(repairAnthropicAuthFailures(db)).toBe(3);
 
     const planner = db.prepare('SELECT status, error_type, stop_reason FROM agent_run WHERE id = ?').get('planner') as any;
     const test = db.prepare('SELECT status, error_type, stop_reason FROM agent_run WHERE id = ?').get('test') as any;
+    const orgDisabled = db.prepare('SELECT status, error_type, stop_reason FROM agent_run WHERE id = ?').get('org-disabled') as any;
     const parent = db.prepare('SELECT status, error_type, stop_reason, output FROM agent_run WHERE id = ?').get('parent') as any;
     const normal = db.prepare('SELECT status FROM agent_run WHERE id = ?').get('normal') as any;
 
     expect(planner).toEqual({ status: 'FAILED', error_type: 'anthropic_auth_failed', stop_reason: 'authentication_required' });
     expect(test).toEqual({ status: 'FAILED', error_type: 'anthropic_auth_failed', stop_reason: 'authentication_required' });
+    expect(orgDisabled).toEqual({ status: 'FAILED', error_type: 'anthropic_auth_failed', stop_reason: 'authentication_required' });
     expect(parent).toMatchObject({ status: 'FAILED', error_type: 'workflow_failure', stop_reason: 'planner' });
     expect(parent.output).toContain('verdict: FAILED');
     expect(parent.output).toContain('failure: planner (FAILED)');

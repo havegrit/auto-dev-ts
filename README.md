@@ -118,10 +118,11 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
 
 - Live agent status and daily run count
+- Browser OAuth login modal shown when Claude Code is logged out, with a success confirmation in the same modal after authentication — dismissal lasts for the current tab session, while a new `anthropic_auth_failed` run shows it again; open the login URL and paste the browser's `code#state` to finish (loopback access only; tokens are never stored in the browser or database)
 - Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
 - Running jobs update live over SSE; click any run row to anchor the detail panel
 - Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
-- Claude's `Not logged in · Please run /login` response is recorded as `FAILED` (`anthropic_auth_failed`), and a linked spec workflow is failed at that agent instead of being shown as successfully completed
+- Claude login and organization subscription-denial responses are normalized to `anthropic_auth_failed`; when a different fallback model is configured it is tried once, otherwise the agent and linked spec workflow are recorded as `FAILED`
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
@@ -144,6 +145,9 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 |--------|------|-------------|
 | `GET` | `/api/status` | Agent list + run guard + circuit breaker stats |
 | `POST` | `/api/agents/:name` | Invoke a single agent (accepts `project`) |
+| `GET` | `/api/auth/claude` | Get Claude Code authentication status (loopback dashboard only) |
+| `POST` | `/api/auth/claude/login` | Start Claude.ai OAuth login and return the login URL |
+| `POST` | `/api/auth/claude/code` | Submit browser `{ code }` (`code#state`) and finish authentication |
 | `POST` | `/api/clarify` | Run clarifier with Q&A context |
 | `POST` | `/api/specs` | Run spec workflow |
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |

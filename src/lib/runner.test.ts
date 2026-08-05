@@ -170,6 +170,30 @@ describe('runAgent dispatch', () => {
     expect(result.tokensOut).toBe(3);
   });
 
+  it('records a subscription failure returned as success as FAILED', async () => {
+    const getFallbackModel = vi.spyOn(modelConfig, 'getFallbackModel').mockReturnValue(undefined);
+    fakeRunnerImpl = {
+      run: async () => ({
+        status: 'success',
+        output: 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+        tokensIn: 0,
+        tokensOut: 0,
+        numTurns: 1,
+        stopReason: 'stop_sequence',
+      }),
+    };
+
+    const result = await runAgent({ name: 'clarifier', prompt: 'clarify this' });
+
+    expect(result.status).toBe('FAILED');
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      status: 'FAILED',
+      errorType: 'anthropic_auth_failed',
+      stopReason: 'authentication_required',
+    }));
+    getFallbackModel.mockRestore();
+  });
+
   it('passes the agent-specific resolved model to the provider runner', async () => {
     let receivedReq: any;
     const getModelIdForAgent = vi.spyOn(modelConfig, 'getModelIdForAgent').mockReturnValue('codex-cli:agent-model');
@@ -226,6 +250,45 @@ describe('runAgent dispatch', () => {
     expect(requests.map(r => r.resultMode)).toEqual(['raw', 'raw']);
     expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:gpt-5.5' }));
     expect(circuitBreaker.isOpen()).toBe(false);
+    getModelIdForAgent.mockRestore();
+    getModelForAgent.mockRestore();
+    getEffortOptionForAgent.mockRestore();
+    getFallbackModel.mockRestore();
+    getModelForModelId.mockRestore();
+    getEffortOptionForModelId.mockRestore();
+  });
+
+  it('retries once with the fallback model when the primary model has an auth failure', async () => {
+    const requests: any[] = [];
+    const getModelIdForAgent = vi.spyOn(modelConfig, 'getModelIdForAgent').mockReturnValue('anthropic:sonnet');
+    const getModelForAgent = vi.spyOn(modelConfig, 'getModelForAgent').mockReturnValue('sonnet');
+    const getEffortOptionForAgent = vi.spyOn(modelConfig, 'getEffortOptionForAgent').mockReturnValue('high');
+    const getFallbackModel = vi.spyOn(modelConfig, 'getFallbackModel').mockReturnValue('codex-cli:gpt-5.5');
+    const getModelForModelId = vi.spyOn(modelConfig, 'getModelForModelId').mockReturnValue('gpt-5.5');
+    const getEffortOptionForModelId = vi.spyOn(modelConfig, 'getEffortOptionForModelId').mockReturnValue('high');
+    fakeRunnerImpl = {
+      run: async (req) => {
+        requests.push(req);
+        if (requests.length === 1) {
+          return {
+            status: 'error', output: 'subscription disabled', errorType: 'anthropic_auth_failed',
+            tokensIn: 0, tokensOut: 0, numTurns: 1, stopReason: 'stop_sequence',
+          };
+        }
+        return {
+          status: 'success', output: '[TESTS: PASS]', tokensIn: 1, tokensOut: 1,
+          numTurns: 1, stopReason: 'end_turn',
+        };
+      },
+    };
+
+    const result = await runAgent({ name: 'test', prompt: 'verify it' });
+
+    expect(result).toMatchObject({ status: 'DONE', output: '[TESTS: PASS]' });
+    expect(getAgentRunnerMock).toHaveBeenNthCalledWith(1, 'anthropic:sonnet');
+    expect(getAgentRunnerMock).toHaveBeenNthCalledWith(2, 'codex-cli:gpt-5.5');
+    expect(requests.map(r => r.resultMode)).toEqual(['raw', 'raw']);
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ modelId: 'codex-cli:gpt-5.5' }));
     getModelIdForAgent.mockRestore();
     getModelForAgent.mockRestore();
     getEffortOptionForAgent.mockRestore();

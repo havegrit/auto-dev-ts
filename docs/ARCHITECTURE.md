@@ -183,10 +183,12 @@ export function getModelCatalog(): ModelCatalog
 `agent-runner.ts` 는 `query()` 로 Claude Code CLI 를 subprocess 구동하고,
 `message-reducer.ts` 가 SDK 메시지 스트림을 프로바이더-무관 `AgentEvent`
 (`text` / `tool_call` / `tool_result` / `rate_limit`)와 `AgentRunOutcome` 으로 환원한다.
-일부 SDK 버전은 Claude CLI 비로그인 응답(`Not logged in · Please run /login`)을
-`result.subtype=success`로 전달하므로, reducer가 정확한 전체 출력 패턴을 검사해
-`anthropic_auth_failed` 오류로 교정한다. 서버 시작 시 `store/run-repairs.ts`도 같은
-판정으로 과거 `DONE` child와 연결된 spec 부모를 `FAILED`로 한 번 교정한다.
+일부 SDK 버전은 Claude CLI 비로그인 응답(`Not logged in · Please run /login`)과
+조직 구독 권한 거부 응답을 `result.subtype=success`로 전달하므로, reducer가 정확한
+전체 출력 패턴을 검사해 `anthropic_auth_failed` 오류로 교정한다. 다른 fallback 모델이
+설정돼 있으면 `lib/runner.ts`가 auth 실패에도 한 번 재시도한다. 서버 시작 시
+`store/run-repairs.ts`도 같은 판정으로 과거 `DONE` child와 연결된 spec 부모를
+`FAILED`로 한 번 교정한다.
 
 ```typescript
 // src/llm/anthropic/agent-runner.ts (요지)
@@ -508,6 +510,9 @@ data/
 | Method | Path | 설명 |
 |---|---|---|
 | `GET` | `/api/status` | 에이전트 목록 + 실행 가드 + 회로차단기 통계 |
+| `GET` | `/api/auth/claude` | Claude Code 로그인 상태 조회 (루프백 대시보드 전용) |
+| `POST` | `/api/auth/claude/login` | SDK OAuth flow 시작 + allowlist 검증된 로그인 URL 반환 |
+| `POST` | `/api/auth/claude/code` | 브라우저의 `code#state` 교환 완료 + 모델 목록 갱신 |
 | `POST` | `/api/agents/:name` | 단일 에이전트 실행 `{ input, project? }` |
 | `POST` | `/api/clarify` | clarifier 실행 `{ input }` |
 | `POST` | `/api/specs` | SpecWorkflow 실행 `{ content, steps?, iterations? }` |
@@ -566,6 +571,8 @@ cron.schedule('0 9 * * *', async () => {
 - 실행 중(RUNNING) 행은 `/api/runs/:id/events` **SSE** 로 라이브 갱신
 - run 행 클릭 → 상세 패널 펼치기 (메타 + 출력, 실행 중이면 라이브 이벤트 스트림)
 - 작업 제출 폼: 에이전트 선택 + 프로젝트명 입력(자동완성) + 모델/effort 설정
+- Claude 로그아웃 때 OAuth 모달 표시. `code#state` 교환 성공 뒤 같은 모달을
+  `authenticated` 성공 상태로 유지하고 사용자가 확인하면 닫는다.
 
 ### 9.2 Java 버전 대비 미구현
 
@@ -598,6 +605,10 @@ cron.schedule('0 9 * * *', async () => {
 
 `_initRun` 이 실행 전 `circuitBreaker.isOpen()` 을 검사하고, open 이면 BLOCKED row 를
 남기고 반환한다. 상태는 메모리(재시작 시 닫힘).
+
+rate limit 또는 `anthropic_auth_failed`/`codex_auth_failed`가 발생하고 서로 다른
+`AUTO_DEV_FALLBACK_MODEL`이 설정돼 있으면 현재 실행 안에서 fallback을 한 번 시도한다.
+auth fallback은 회로를 열지 않으며, fallback도 실패하면 최종 오류를 그대로 기록한다.
 
 ### 10.3 SDK 내장 안전망
 
@@ -640,6 +651,10 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 - `claude` CLI 가 사전 인증된 상태여야 동작
 - 별도 API 키 불필요 — Claude.ai 구독 플랜 사용
 - 인증 정보는 Claude Code 자체 관리 (`~/.claude/`)
+- 루프백 대시보드에서만 SDK OAuth 로그인 flow를 시작할 수 있다. 서버는
+  Claude/Anthropic HTTPS host allowlist와 OAuth state를 검증한다.
+- 브라우저에는 로그인 URL과 공개 상태만 반환한다. OAuth code는 교환 직후 폐기하며
+  토큰·자격증명을 브라우저 저장소나 SQLite에 기록하지 않는다.
 
 ### 11.2 워크스페이스 격리
 
@@ -664,7 +679,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`src/llm/registry.ts`). 미등록 값이면 fail-fast |
 | `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 id/별칭. 미지정 시 CLI 디스커버리 결과의 default |
 | `AUTO_DEV_AGENT_<AGENT>_MODEL` | 미설정 | 에이전트별 모델 override. 예: `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
-| `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택 모델이 provider 목록에 없을 때 사용할 폴백 모델 |
+| `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택 모델의 rate limit/auth 실패 시 한 번 재시도할 폴백 모델 |
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`/`medium`/`high`/`xhigh`/`max`). 모델이 미지원이면 무시 |
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일. 저장값이 env보다 우선 |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd (프로젝트명 해석 기준 루트) |
@@ -743,6 +758,7 @@ auto-dev-ts/
 │   │   └── clarification.ts          # clarification_state 저장·조회 (재개용)
 │   ├── lib/
 │   │   ├── runner.ts                 # runAgent() — 공통 실행 파이프라인 (AgentRunner 소비)
+│   │   ├── claude-auth.ts            # Claude CLI 상태 + SDK OAuth flow 관리자
 │   │   ├── complete.ts               # 단발성 생성 래퍼 (Completer 소비)
 │   │   ├── model-config.ts           # 모델/effort 선택 + 동적 목록 (ModelCatalog 소비)
 │   │   ├── cost-guard.ts             # 일일 실행 가드 (메모리)
@@ -753,7 +769,7 @@ auto-dev-ts/
 │   │   └── logger.ts                 # JSON 구조화 로그
 │   ├── server/
 │   │   ├── index.ts                  # startServer() — Hono + serve-static
-│   │   └── routes.ts                 # 15개 API 엔드포인트 (§8.2)
+│   │   └── routes.ts                 # 25개 API 엔드포인트 (§8.2)
 │   └── schedule/
 │       └── briefing.ts               # node-cron 일일 브리핑
 └── data/                             # gitignore
@@ -761,7 +777,7 @@ auto-dev-ts/
     └── workspace/
 ```
 
-대략 **TypeScript 37 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
+대략 **TypeScript 59 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
 
 ---
 

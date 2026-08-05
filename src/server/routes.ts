@@ -12,11 +12,42 @@ import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats, updateRun } f
 import { getRunEvents } from '../store/run-events.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
-import { modelConfig } from '../lib/model-config.js';
+import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
+import { claudeAuth } from '../lib/claude-auth.js';
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '0:0:0:0:0:0:0:1'
+    || normalized.startsWith('127.');
+}
+
+function isClaudeAuthRequestAllowed(request: Request): boolean {
+  if (!isLoopbackHostname(process.env.AUTO_DEV_BIND_ADDR ?? '127.0.0.1')) return false;
+
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(request.url);
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHostname(requestUrl.hostname)) return false;
+
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    return isLoopbackHostname(originUrl.hostname) && originUrl.origin === requestUrl.origin;
+  } catch {
+    return false;
+  }
+}
+
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -50,6 +81,41 @@ export function createRoutes(): Hono {
       guard: costGuard.stats().limit !== null ? costGuard.stats() : null,
       circuit: circuitBreaker.stats(),
     });
+  });
+
+  app.get('/api/auth/claude', async (c) => {
+    if (!isClaudeAuthRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'Claude 인증은 루프백 대시보드에서만 사용할 수 있습니다.' }, 403);
+    }
+    return c.json(await claudeAuth.status());
+  });
+
+  app.post('/api/auth/claude/login', async (c) => {
+    if (!isClaudeAuthRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'Claude 인증은 루프백 대시보드에서만 사용할 수 있습니다.' }, 403);
+    }
+    const status = await claudeAuth.start();
+    if (status.phase === 'failed') return c.json(status, 502);
+    return c.json(status);
+  });
+
+  app.post('/api/auth/claude/code', async (c) => {
+    if (!isClaudeAuthRequestAllowed(c.req.raw)) {
+      return c.json({ error: 'Claude 인증은 루프백 대시보드에서만 사용할 수 있습니다.' }, 403);
+    }
+    const body: { code?: string } = await c.req.json<{ code?: string }>().catch(() => ({}));
+    if (!body.code) return c.json({ error: 'code is required' }, 400);
+    try {
+      const status = await claudeAuth.submitCode(body.code);
+      await loadModelsFromCli();
+      return c.json(status);
+    } catch (err) {
+      const status = await claudeAuth.status();
+      return c.json({
+        ...status,
+        error: err instanceof Error ? err.message : String(err),
+      }, 400);
+    }
   });
 
   app.post('/api/agents/:name', async (c) => {
