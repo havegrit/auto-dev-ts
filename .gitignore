@@ -3,3 +3,7 @@ dist/
 data/
 .env
 *.tsbuildinfo
+.tmp
+coverage/
+*.log
+.DS_Store
