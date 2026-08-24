@@ -61,8 +61,7 @@ Severity guide:
 If you have nothing to say in your lens, return `{"lens": "correctness",
 "findings": [], "summary": "No issues found"}`. Empty findings is a valid signal.
 
-**Language**: English for all `summary` and `suggestion` values. Code/file
-paths stay in their original form.
+`summary`와 `suggestion`은 한글로 작성한다. 코드와 파일 경로는 원문을 유지한다.
 
 **Do NOT** include `[VERDICT: ...]` marker — the parent agent computes
 verdict from your findings.

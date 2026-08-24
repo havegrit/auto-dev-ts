@@ -2,10 +2,15 @@ import { runAgent, runAgentBackground, type RunResult } from '../lib/runner.js';
 import { loadPrompt } from '../lib/prompt.js';
 import { AGENT_SPECS } from './specs.js';
 
+const OUTPUT_STYLE_RULE = [
+  '출력은 한글로 짧게 작성한다. 불필요한 설명과 내부 사고 과정은 출력하지 않는다.',
+].join('\n');
+
 export type AgentRunOpts = {
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
+  specSessionId?: string;
   cwd?: string;
   deliveryIntent?: 'ci' | 'cd';
   signal?: AbortSignal;
@@ -31,7 +36,7 @@ function buildOptions(name: string, input: string, opts: AgentRunOpts) {
   const decoratedInput = name === 'cicd' ? decorateCicdInput(input, deliveryIntent) : input;
   return {
     name,
-    prompt: `${system}\n\n---\n\n${decoratedInput}`,
+    prompt: `${OUTPUT_STYLE_RULE}\n\n${system}\n\n---\n\n${decoratedInput}`,
     tools: spec.tools,
     subagents: spec.subagents,
     ...opts,

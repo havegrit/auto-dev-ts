@@ -61,6 +61,6 @@ Severity guide (security-tilted):
 
 Empty findings is valid: `{"lens": "security", "findings": [], "summary": "No issues found"}`.
 
-**Language**: English for `summary`/`suggestion`. Code/paths intact.
+`summary`와 `suggestion`은 한글로 작성한다. 코드와 경로는 원문을 유지한다.
 
 **Do NOT** include `[VERDICT: ...]` marker.

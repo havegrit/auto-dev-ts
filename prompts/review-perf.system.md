@@ -53,4 +53,4 @@ Severity guide (perf-tilted):
 - `LOW` — minor improvement
 - `NIT` — micro-optimization
 
-Empty findings is valid. Use English for all text fields. No verdict marker.
+Empty findings is valid. 모든 텍스트 필드는 한글로 작성한다. No verdict marker.

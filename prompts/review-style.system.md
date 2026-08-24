@@ -49,4 +49,4 @@ Severity guide (style findings are usually low severity):
 - `LOW` — worthwhile cleanup
 - `NIT` — subjective polish
 
-Empty findings is valid. Use English for all text fields. No verdict marker.
+Empty findings is valid. 모든 텍스트 필드는 한글로 작성한다. No verdict marker.
