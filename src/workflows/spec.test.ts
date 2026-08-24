@@ -12,6 +12,9 @@ const inputs: Record<string, string[]> = {
 let clarifierResult: any;
 let clarifierQueue: any[] = [];
 let plannerResult: any;
+const { commitSuccessfulSpec } = vi.hoisted(() => ({
+  commitSuccessfulSpec: vi.fn(async (): Promise<any> => ({ steps: {} })),
+}));
 
 vi.mock('../store/runs.js', () => ({
   insertRun: vi.fn(),
@@ -85,6 +88,10 @@ vi.mock('../agents/cicd.js', () => ({
   }),
 }));
 
+vi.mock('./post-success-commit.js', () => ({
+  commitSuccessfulSpec,
+}));
+
 import { runSpec, workflowOutput, workflowRunStatus } from './spec.js';
 
 describe('runSpec clarification gate', () => {
@@ -94,6 +101,7 @@ describe('runSpec clarification gate', () => {
     clarifierResult = undefined;
     clarifierQueue = [];
     plannerResult = undefined;
+    commitSuccessfulSpec.mockClear();
   });
 
   it('stops before planning and implementation when clarifier says requirements are not ready', async () => {
@@ -105,6 +113,7 @@ describe('runSpec clarification gate', () => {
     expect(result.steps).toEqual({
       clarifier: { runId: 'clarifier-run', durationMs: 10, status: 'NEEDS-CLARIFICATION' },
     });
+    expect(commitSuccessfulSpec).not.toHaveBeenCalled();
   });
 
   it('blocks the workflow when clarifier output is not parseable JSON', async () => {
@@ -406,6 +415,36 @@ describe('runSpec clarification gate', () => {
 
     expect(calls).not.toContain('cicd');
     expect(result.steps.cicd).toBeUndefined();
+    expect(commitSuccessfulSpec).toHaveBeenCalledOnce();
+    expect(commitSuccessfulSpec).toHaveBeenCalledWith(expect.objectContaining({
+      specContent: '애플리케이션 기능 구현',
+      clarifiedSpec: '명확한 스펙',
+    }));
+  });
+
+  it('keeps the spec successful when background post-success processing fails', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    commitSuccessfulSpec.mockResolvedValueOnce({
+      steps: {
+        'checking-docs-before-commit': { runId: 'docs-run', durationMs: 4, status: 'BLOCKED' },
+      },
+      failure: {
+        step: 'checking-docs-before-commit',
+        status: 'BLOCKED',
+        cause: 'invalid_output',
+        reason: 'docs were not ready',
+      },
+    });
+
+    const result = await runSpec('애플리케이션 기능 구현');
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.failure).toBeUndefined();
+    expect(workflowRunStatus(result)).toBe('DONE');
   });
 
   it('passes only the assigned cicd task instead of the whole planner output', async () => {

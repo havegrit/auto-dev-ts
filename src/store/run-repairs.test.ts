@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { repairAnthropicAuthFailures } from './run-repairs.js';
+import { repairAnthropicAuthFailures, repairCodexCompletedTimeouts } from './run-repairs.js';
 
 describe('repairAnthropicAuthFailures', () => {
   it('marks login outputs and their successful workflow parent as failed', () => {
@@ -44,6 +44,32 @@ describe('repairAnthropicAuthFailures', () => {
     expect(parent.output).toContain('failure: planner (FAILED)');
     expect(normal.status).toBe('DONE');
 
+    db.close();
+  });
+});
+
+describe('repairCodexCompletedTimeouts', () => {
+  it('recovers a complete child result and leaves its interrupted workflow resumable', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE agent_run (
+        id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, output TEXT, status TEXT NOT NULL,
+        started_at TEXT NOT NULL, workflow_run_id TEXT, error_type TEXT, stop_reason TEXT
+      );
+      INSERT INTO agent_run VALUES
+        ('parent', 'spec', 'scaffold: FAILED', 'FAILED', '2026-01-01T00:00:00Z', NULL, 'workflow_failure', 'scaffold'),
+        ('child', 'scaffold', '{"status":"success","summary":"done"}', 'FAILED', '2026-01-01T00:00:01Z', 'parent', 'codex_cli_exit_124', 'codex_cli_exit_124'),
+        ('bad', 'scaffold', 'partial output', 'FAILED', '2026-01-01T00:00:02Z', 'parent', 'codex_cli_exit_124', 'codex_cli_exit_124');
+    `);
+
+    expect(repairCodexCompletedTimeouts(db)).toBe(1);
+    expect(db.prepare('SELECT status, error_type, stop_reason FROM agent_run WHERE id = ?').get('child')).toEqual({
+      status: 'DONE', error_type: null, stop_reason: 'codex_cli_exit_124_after_result',
+    });
+    const parent = db.prepare('SELECT status, error_type, output FROM agent_run WHERE id = ?').get('parent') as any;
+    expect(parent).toMatchObject({ status: 'FAILED', error_type: 'workflow_incomplete' });
+    expect(parent.output).toContain('Use resume-last to continue');
+    expect(db.prepare('SELECT status FROM agent_run WHERE id = ?').get('bad')).toEqual({ status: 'FAILED' });
     db.close();
   });
 });

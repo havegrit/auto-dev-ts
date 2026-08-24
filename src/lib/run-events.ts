@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { appendRunEvent } from '../store/run-events.js';
 
 export interface RunEvent {
-  type: 'tool_call' | 'tool_result' | 'text' | 'status';
+  type: 'tool_call' | 'tool_result' | 'text' | 'usage' | 'status';
   ts: string;
   data: string;
 }

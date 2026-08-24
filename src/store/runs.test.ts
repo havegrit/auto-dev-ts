@@ -64,6 +64,89 @@ describe('getRecentRunUnits', () => {
     expect(page2.rows.map((r) => r.id)).toEqual(['spec-B', 'b-1', 'b-2', 'solo', 'spec-A', 'a-1', 'a-2', 'a-3']);
     expect(page2.hasMore).toBe(false);
   });
+
+  it('groups clarification resume attempts as one spec unit', async () => {
+    const { insertRun, getRecentRunUnits, getRunsBySpecSessionId } = await import('./runs.js');
+    const { db } = await import('./db.js');
+    db.exec('DELETE FROM agent_run');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 3, 0, 0, n)).toISOString();
+
+    insertRun({ id: 'spec-root', agentName: 'spec', status: 'DONE', startedAt: t(0), specSessionId: 'spec-root' });
+    insertRun({ id: 'clarifier-1', agentName: 'clarifier', status: 'DONE', startedAt: t(1), workflowRunId: 'spec-root', specSessionId: 'spec-root' });
+    insertRun({ id: 'spec-resumed', agentName: 'spec', status: 'RUNNING', startedAt: t(2), specSessionId: 'spec-root' });
+    insertRun({ id: 'planner-2', agentName: 'planner', status: 'RUNNING', startedAt: t(3), workflowRunId: 'spec-resumed', specSessionId: 'spec-root' });
+
+    const page = getRecentRunUnits(10);
+    expect(page.rows.map((row) => row.id)).toEqual(['spec-resumed', 'clarifier-1', 'planner-2']);
+    expect(getRunsBySpecSessionId('spec-root').map((row) => row.id)).toEqual(['clarifier-1', 'planner-2']);
+  });
+
+  it('hides background docs and commit agents from recent run units', async () => {
+    const { insertRun, getRecentRunUnits } = await import('./runs.js');
+    const { db } = await import('./db.js');
+    db.exec('DELETE FROM agent_run');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 3, 1, 0, n)).toISOString();
+
+    insertRun({ id: 'docs', agentName: 'checking-docs-before-commit', status: 'DONE', startedAt: t(2) });
+    insertRun({ id: 'commit', agentName: 'atomic-commit', status: 'DONE', startedAt: t(1) });
+    insertRun({ id: 'review', agentName: 'review', status: 'DONE', startedAt: t(0) });
+
+    expect(getRecentRunUnits(10).rows.map((row) => row.id)).toEqual(['review']);
+  });
+
+  it('carries earlier attempt durations on the spec unit row so resumed runs show total elapsed', async () => {
+    const { insertRun, getRecentRunUnits } = await import('./runs.js');
+    const { db } = await import('./db.js');
+    db.exec('DELETE FROM agent_run');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 4, 0, 0, n)).toISOString();
+
+    // 재시도 한도로 실패한 1차 시도(60초) → 마지막 단계부터 재개한 2차 시도(진행 중).
+    insertRun({ id: 'spec-1st', agentName: 'spec', status: 'FAILED', startedAt: t(0), durationMs: 60_000, specSessionId: 'spec-1st' });
+    insertRun({ id: 'planner-1', agentName: 'planner', status: 'DONE', startedAt: t(1), durationMs: 40_000, workflowRunId: 'spec-1st', specSessionId: 'spec-1st' });
+    insertRun({ id: 'spec-2nd', agentName: 'spec', status: 'RUNNING', startedAt: t(70), specSessionId: 'spec-1st' });
+    insertRun({ id: 'review-2', agentName: 'review', status: 'RUNNING', startedAt: t(71), workflowRunId: 'spec-2nd', specSessionId: 'spec-1st' });
+    insertRun({ id: 'solo', agentName: 'review', status: 'DONE', startedAt: t(80), durationMs: 5_000 });
+
+    const rows = getRecentRunUnits(10).rows;
+    const unit = rows.find((row) => row.id === 'spec-2nd');
+    expect(unit?.session_prior_duration_ms).toBe(60_000);
+    // 단독 실행과 자식 행에는 누적분이 붙지 않는다.
+    expect(rows.find((row) => row.id === 'solo')?.session_prior_duration_ms).toBeUndefined();
+    expect(rows.find((row) => row.id === 'review-2')?.session_prior_duration_ms).toBeUndefined();
+  });
+
+  it('leaves the first attempt of a session without prior duration', async () => {
+    const { insertRun, getRecentRunUnits } = await import('./runs.js');
+    const { db } = await import('./db.js');
+    db.exec('DELETE FROM agent_run');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 5, 0, 0, n)).toISOString();
+
+    insertRun({ id: 'spec-only', agentName: 'spec', status: 'DONE', startedAt: t(0), durationMs: 30_000, specSessionId: 'spec-only' });
+    insertRun({ id: 'planner-only', agentName: 'planner', status: 'DONE', startedAt: t(1), durationMs: 30_000, workflowRunId: 'spec-only', specSessionId: 'spec-only' });
+
+    const rows = getRecentRunUnits(10).rows;
+    expect(rows.find((row) => row.id === 'spec-only')?.session_prior_duration_ms).toBeUndefined();
+  });
+});
+
+describe('getRunWithSessionTotals', () => {
+  it('adds prior attempt duration to a resumed spec run', async () => {
+    const { insertRun, getRunWithSessionTotals } = await import('./runs.js');
+    const { db } = await import('./db.js');
+    db.exec('DELETE FROM agent_run');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 6, 0, 0, n)).toISOString();
+
+    insertRun({ id: 'sess-1', agentName: 'spec', status: 'FAILED', startedAt: t(0), durationMs: 12_000, specSessionId: 'sess-1' });
+    insertRun({ id: 'sess-2', agentName: 'spec', status: 'FAILED', startedAt: t(20), durationMs: 8_000, specSessionId: 'sess-1' });
+    insertRun({ id: 'sess-3', agentName: 'spec', status: 'RUNNING', startedAt: t(40), specSessionId: 'sess-1' });
+    insertRun({ id: 'child-1', agentName: 'review', status: 'DONE', startedAt: t(41), durationMs: 3_000, workflowRunId: 'sess-3', specSessionId: 'sess-1' });
+
+    expect(getRunWithSessionTotals('sess-3')?.session_prior_duration_ms).toBe(20_000);
+    expect(getRunWithSessionTotals('sess-1')?.session_prior_duration_ms).toBeUndefined();
+    // 하위 단계 run 은 그 단계의 소요시간만 유지한다.
+    expect(getRunWithSessionTotals('child-1')?.session_prior_duration_ms).toBeUndefined();
+    expect(getRunWithSessionTotals('nope')).toBeUndefined();
+  });
 });
 
 describe('getStats', () => {

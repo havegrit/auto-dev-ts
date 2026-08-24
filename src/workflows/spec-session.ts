@@ -78,7 +78,7 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
 
   const autoClarify = resumeOpts.autoClarify ?? prev.autoClarify ?? false;
   const maxClarifyRounds = resumeOpts.maxClarifyRounds ?? prev.maxClarifyRounds ?? 0;
-  const state: ClarificationState = { ...prev, rounds, autoClarify, maxClarifyRounds };
+  const state: ClarificationState = { ...prev, sessionId: prev.sessionId ?? parentRunId, rounds, autoClarify, maxClarifyRounds };
   saveClarificationState(parentRunId, state);
   return launch(state, {
     project: prev.project,
@@ -105,7 +105,7 @@ export function continueSpecSession(parentRunId: string, instruction: string): S
   const rounds: ClarificationRound[] = text
     ? [...prev.rounds.map((r) => ({ ...r })), { questions: [], followup: text }]
     : [...prev.rounds.map((r) => ({ ...r }))];
-  const state: ClarificationState = { ...prev, rounds };
+  const state: ClarificationState = { ...prev, sessionId: prev.sessionId ?? parentRunId, rounds };
   return launch(state, {
     project: prev.project,
     cwd: prev.cwd,
@@ -121,19 +121,24 @@ export function continueSpecSession(parentRunId: string, instruction: string): S
 /**
  * 실패했거나 다시 시도하고 싶은 spec run 을 마지막으로 실행된 단계부터 재개한다.
  * 이전 planner 산출물을 상태에서 복원해 scaffold/test/review/cicd 입력으로 그대로 사용한다.
+ * startStepOverride 를 주면 자동 판단(resumeTarget) 대신 그 단계부터 강제로 재개한다 —
+ * 예: clarifier 가 유효하지 않은 응답으로 막혔을 때 사용자가 clarifier/planner를 건너뛰고
+ * scaffold 부터 바로 실행하고 싶은 경우.
  */
-export function resumeLastSpecStep(parentRunId: string, instruction?: string): SpecSessionHandle {
+export function resumeLastSpecStep(parentRunId: string, instruction?: string, startStepOverride?: Step): SpecSessionHandle {
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
   const lastRun = lastExecutedWorkflowRun(parentRunId);
   if (!lastRun) throw new Error(`No workflow steps found for run: ${parentRunId}`);
 
-  const resume = resumeTarget(lastRun, prev.steps);
+  const resume = startStepOverride
+    ? { startStep: startStepOverride, useFeedback: false }
+    : resumeTarget(lastRun, prev.steps);
   if (!resume) throw new Error('No remaining workflow steps to resume');
 
   const extra = (instruction ?? '').trim();
-  const state: ClarificationState = { ...prev, rounds: prev.rounds.map((r) => ({ ...r })) };
+  const state: ClarificationState = { ...prev, sessionId: prev.sessionId ?? parentRunId, rounds: prev.rounds.map((r) => ({ ...r })) };
   const feedback = resume.useFeedback && lastRun.output?.trim()
     ? [lastRun.output.trim(), extra].filter(Boolean).join('\n\n')
     : extra || undefined;
@@ -237,8 +242,9 @@ function restoreSteps(steps: string[] | undefined): Set<string> | undefined {
 
 function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { startStep: Step }): SpecSessionHandle {
   const runId = randomUUID();
-  const input = composeClarifierInput(state.spec, state.rounds);
-  mkdirSync(state.cwd, { recursive: true });
+  const sessionState: ClarificationState = { ...state, sessionId: state.sessionId ?? runId };
+  const input = composeClarifierInput(sessionState.spec, sessionState.rounds);
+  mkdirSync(sessionState.cwd, { recursive: true });
   insertRun({
     id: runId,
     agentName: 'spec',
@@ -247,14 +253,15 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
     startedAt: new Date().toISOString(),
     triggerSource: opts.triggerSource ?? 'dashboard',
     triggerDetail: opts.triggerDetail,
+    specSessionId: sessionState.sessionId,
   });
   // 모든 spec run 의 상태를 영속화해 나중에 후속 수정 지시로 이어갈 수 있게 한다.
   // (게이트에서 멈추면 finalize 가 질문 라운드를 더해 다시 저장한다.)
-  saveClarificationState(runId, state);
+  saveClarificationState(runId, sessionState);
 
   const abortController = new AbortController();
   const unregisterCancellation = registerRunCancellation(runId, abortController);
-  const done = finalize(runId, state, opts, input, resume, abortController.signal)
+  const done = finalize(runId, sessionState, opts, input, resume, abortController.signal)
     .finally(unregisterCancellation);
   return { runId, done };
 }
@@ -264,6 +271,7 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
   try {
     const result = await runSpec(input, {
       workflowRunId: runId,
+      specSessionId: state.sessionId,
       steps: opts.steps,
       iterations: opts.iterations,
       autoClarify: opts.autoClarify,

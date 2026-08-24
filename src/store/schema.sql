@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS agent_run (
   trigger_source TEXT,
   trigger_detail TEXT,
   workflow_run_id TEXT,
+  spec_session_id TEXT,
   model_id TEXT,
   error_type TEXT,
   stop_reason TEXT,

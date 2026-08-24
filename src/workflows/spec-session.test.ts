@@ -92,6 +92,7 @@ describe('startSpecSession (round 0)', () => {
     expect(specInputs).toEqual(['사용자 관리 기능']);
 
     const saved = stateStore.get(runId);
+    expect(saved.sessionId).toBe(runId);
     expect(saved.spec).toBe('사용자 관리 기능');
     expect(saved.slug).toBe('my-api');
     expect(saved.planFile).toBe('docs/plan/my-api.md');
@@ -250,7 +251,9 @@ describe('resumeSpecSession (round N)', () => {
     expect(saveClarificationState).toHaveBeenCalled();
     expect(inserted.find(r => r.id === runId).workflowRunId).toBeUndefined();
     expect(inserted.find(r => r.id === runId).triggerDetail).toBe('answers:parent');
+    expect(inserted.find(r => r.id === runId).specSessionId).toBe('parent');
     expect(specOptions[0].workflowRunId).toBe(runId);
+    expect(specOptions[0].specSessionId).toBe('parent');
     expect(specOptions[0].iterations).toBe(6);
     expect(stateStore.get('parent').rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
     expect(stateStore.get(runId).rounds.at(-1).answers).toEqual({ q1: 'CRUD + 검색' });
@@ -507,6 +510,23 @@ describe('resumeLastSpecStep', () => {
     await done;
 
     expect(specOptions[0].startStep).toBe('review');
+    expect(specOptions[0].initialFeedback).toBeUndefined();
+  });
+
+  it('overrides the auto-detected step when startStepOverride is given', async () => {
+    // clarifier 가 유효하지 않은(JSON이 아닌) 응답으로 막힌 경우, 자동 판단은 planner를
+    // 고르지만 사용자가 명시적으로 scaffold부터 재개하도록 강제할 수 있어야 한다.
+    stateStore.set('parent', {
+      spec: '이 섹션을 위로 옮기고 기존 섹션은 삭제해줘', slug: 's', planFile: 'docs/plan/s.md',
+      cwd: '/tmp/proj', rounds: [],
+    });
+    childRuns = [{ agent_name: 'clarifier', status: 'DONE', output: 'I need to clarify my role...' }];
+    specResult = { workflowRunId: 'r', steps: {}, totalDurationMs: 1, verdict: 'SHIP', planOutput: 'PLAN' };
+
+    const { done } = resumeLastSpecStep('parent', undefined, 'scaffold');
+    await done;
+
+    expect(specOptions[0].startStep).toBe('scaffold');
     expect(specOptions[0].initialFeedback).toBeUndefined();
   });
 

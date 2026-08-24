@@ -21,6 +21,7 @@ export interface RunOptions {
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
+  specSessionId?: string;
   subagents?: Record<string, AgentDefinition>;
   tools?: string[];
   signal?: AbortSignal;
@@ -97,6 +98,11 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         emitRunEvent(runId, { type: 'tool_call', ts: now(), data: `${e.name}(${e.input.slice(0, 200)})` });
       } else if (e.kind === 'tool_result') {
         emitRunEvent(runId, { type: 'tool_result', ts: now(), data: e.content.slice(0, 200) });
+      } else if (e.kind === 'usage') {
+        tokensIn = e.tokensIn;
+        tokensOut = e.tokensOut;
+        updateRun(runId, { tokensIn, tokensOut, durationMs: Date.now() - start });
+        emitRunEvent(runId, { type: 'usage', ts: now(), data: JSON.stringify({ tokensIn, tokensOut }) });
       } else if (e.kind === 'rate_limit') {
         sawRateLimit = true;
         if (suppressCircuitForFallback) {
@@ -157,7 +163,9 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
       sawRateLimit = false;
       suppressCircuitForFallback = false;
       actualModelId = fallbackModelId;
-      updateRun(runId, { modelId: actualModelId });
+      tokensIn = 0;
+      tokensOut = 0;
+      updateRun(runId, { modelId: actualModelId, tokensIn, tokensOut });
       outcome = await runWithModel(
         fallbackModelId,
         modelConfig.getModelForModelId(fallbackModelId),
@@ -242,6 +250,7 @@ function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId
     status: 'BLOCKED' as const, startedAt, durationMs: 0,
     triggerSource: opts.triggerSource, triggerDetail: opts.triggerDetail,
     workflowRunId: opts.workflowRunId,
+    specSessionId: opts.specSessionId,
   };
 
   if (circuitBreaker.isOpen()) {
@@ -264,6 +273,7 @@ function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId
     status: 'RUNNING', startedAt,
     triggerSource: opts.triggerSource, triggerDetail: opts.triggerDetail,
     workflowRunId: opts.workflowRunId,
+    specSessionId: opts.specSessionId,
     modelId: modelConfig.getModelIdForAgent(opts.name),
   });
   return { runId, blocked: false };

@@ -150,6 +150,23 @@ describe('runAgent dispatch', () => {
     expect(circuitBreaker.isOpen()).toBe(true);
   });
 
+  it('persists token usage while provider run is still active', async () => {
+    fakeRunnerImpl = {
+      run: async (_req, onEvent) => {
+        onEvent({ kind: 'usage', tokensIn: 120, tokensOut: 30 });
+        return { status: 'success', output: 'ok', tokensIn: 120, tokensOut: 30, numTurns: 1, stopReason: 'end_turn' };
+      },
+    };
+
+    await runAgent({ name: 'scaffold', prompt: 'build' });
+
+    expect(updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      tokensIn: 120,
+      tokensOut: 30,
+      durationMs: expect.any(Number),
+    }));
+  });
+
   it('ERROR: fake returns error outcome — runAgent resolves (does not throw)', async () => {
     fakeRunnerImpl = {
       run: async (_req, _onEvent) => ({
