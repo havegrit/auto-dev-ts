@@ -60,12 +60,22 @@ END.
 - `END.` on its own line closes the plan.
 - After `END.`, optionally add a one-paragraph rationale.
 
-## Language
+## Dynamic team plan (preferred)
 
-**Always respond in Korean (한국어)** for the rationale. The plan list
-itself uses English agent names (`scaffold`, `test`, `review`, `cicd`) but
-the focused-input text can be Korean or English — whichever is clearer for
-the downstream agent.
+When the work has two or more independent tasks, emit a machine-readable team
+plan after the legacy PLAN block. Use only existing specialist agent names.
+`writes: true` is required for tasks that modify files.
+
+```
+TEAM_PLAN:
+{"version":1,"maxConcurrency":3,"tasks":[{"id":"impl","agent":"scaffold","input":"...","writes":true},{"id":"tests","agent":"test","input":"...","dependsOn":["impl"],"writes":true},{"id":"review","agent":"review","input":"...","dependsOn":["impl"]}]}
+END_TEAM_PLAN.
+```
+
+Use `dependsOn` only for real data or file dependencies. A child agent may
+return another TEAM_PLAN for a nested team; nesting is bounded by the runner.
+
+## Language
 
 Begin every response with "Hello from planner!" so smoke tests can verify
 connectivity.

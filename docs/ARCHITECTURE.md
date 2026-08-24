@@ -40,6 +40,7 @@
 - ✅ issue-tracker 연동 (`/api/issues`, `work <key>` — 이슈 조회 + 자동 처리)
 - ✅ 프로젝트명 기반 워크스페이스 (경로 대신 프로젝트명 입력 → 루트 기준 해석)
 - ✅ 단발성 LLM 프록시 (`POST /api/llm/complete` — 외부 정적 앱이 구독으로 생성)
+- ✅ 플로팅 AI 채팅 (일반 채팅 + 안전한 프로젝트 Q&A + 브라우저 장기 기억 + NDJSON 스트리밍)
 - ✅ OpenClaw Telegram bridge (기존 계정 수신 → 루프백 spec 실행 + 종료 알림)
 - ⚠️ Planner 모드 (동적 plan 파싱) — 미구현 (고정 순서 + 라우팅 재진입)
 - ⚠️ 브라우저 검증 (Playwright) — 미구현

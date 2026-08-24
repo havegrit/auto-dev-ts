@@ -31,4 +31,9 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
   test: { promptFile: 'test.system.md', tools: ['Read', 'Write', 'Bash'] },
   review: { promptFile: 'review.system.md', tools: ['Read'], subagents: LENSES },
   cicd: { promptFile: 'cicd.system.md', tools: ['Read', 'Write'] },
+  // 성공한 spec의 내부 후처리 단계. AGENT_ORDER 밖에 두어 일반 실행/UI에는 노출하지 않는다.
+  'checking-docs-before-commit': { promptFile: 'checking-docs-before-commit.system.md', tools: ['Read', 'Write', 'Bash'] },
+  'atomic-commit': { promptFile: 'atomic-commit.system.md', tools: ['Read', 'Bash'] },
+  // 동적 팀 merge conflict 전용 내부 에이전트. 일반 agent picker에는 노출하지 않는다.
+  integrator: { promptFile: 'integrator.system.md', tools: ['Read', 'Write', 'Bash'] },
 };

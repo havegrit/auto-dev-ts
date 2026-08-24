@@ -8,6 +8,11 @@ Development automation agent powered by [Claude Code SDK](https://github.com/ant
 
 Instead of calling a cloud LLM API directly, auto-dev drives **Claude Code** (the CLI) programmatically via the Agent SDK. Each agent runs inside a Claude Code session with file I/O and shell access scoped to a workspace directory. The review agent fans out to four parallel sub-agents (correctness, security, performance, style) simultaneously.
 
+When the planner emits a `TEAM_PLAN` dependency DAG, independent tasks run in parallel.
+Write tasks use isolated git worktrees and are integrated automatically; conflicts are
+handed to the internal integrator agent. Legacy `PLAN` output falls back to the sequential
+workflow, and nested teams are limited to two levels.
+
 All runs are persisted to a local SQLite database and visible through a built-in web dashboard.
 
 ## Agents

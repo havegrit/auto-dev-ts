@@ -9,6 +9,9 @@ import { decorateCicdInput } from '../agents/dispatch.js';
 import { randomUUID } from 'crypto';
 import type { RunResult } from '../lib/runner.js';
 import { insertRun, updateRun } from '../store/runs.js';
+import { commitSuccessfulSpec } from './post-success-commit.js';
+import { log } from '../lib/logger.js';
+import { executeTeam, parseTeamPlan, type TeamExecutionResult } from './team.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
@@ -18,6 +21,8 @@ export interface SpecOptions {
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
+  /** clarification 답변 전후 workflow를 묶는 spec 세션 ID. */
+  specSessionId?: string;
   cwd?: string;
   /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
   autoClarify?: boolean;
@@ -66,10 +71,12 @@ export interface SpecResult {
     step: string;
     status: string;
     reason: string;
-    cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing';
+    cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable';
     route?: string;
     routeAvailable: boolean;
   };
+  /** planner가 생성한 동적 팀 실행 결과. */
+  team?: TeamExecutionResult;
 }
 
 export const STEP_ORDER = AGENT_ORDER;
@@ -184,7 +191,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> = [];
   const autoQaLines: string[] = [];
 
-  const runOpts = { workflowRunId, triggerSource: opts.triggerSource ?? 'cli', cwd: opts.cwd, deliveryIntent: opts.deliveryIntent ?? 'ci', signal: opts.signal };
+  const runOpts = {
+    workflowRunId,
+    specSessionId: opts.specSessionId,
+    triggerSource: opts.triggerSource ?? 'cli',
+    cwd: opts.cwd,
+    deliveryIntent: opts.deliveryIntent ?? 'ci',
+    signal: opts.signal,
+  };
   const agents: Record<string, (input: string, opts: any) => Promise<RunResult>> = {
     clarifier, planner, scaffold, test, review, cicd,
   };
@@ -342,6 +356,60 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
         break;
       }
       planOutput = r.output;
+
+      // 구조화된 팀 계획이 있으면 남은 고정 단계를 동적 DAG로 실행한다.
+      // 기존 PLAN만 반환하는 planner는 아래의 legacy 순차 workflow로 fallback한다.
+      const teamPlan = parseTeamPlan(r.output);
+      if (teamPlan) {
+        const team = await executeTeam(teamPlan, {
+          cwd: opts.cwd ?? process.env.AUTO_DEV_WORKSPACE_ROOT ?? process.cwd(),
+          input: clarifiedSpec,
+          runOpts,
+          maxDepth: 2,
+        });
+        for (const task of team.tasks) {
+          results[task.taskId] = {
+            runId: task.run?.runId ?? `${workflowRunId}:${task.taskId}`,
+            durationMs: task.run?.durationMs ?? 0,
+            status: task.status,
+          };
+        }
+        const reviewTask = team.tasks.find(task => task.agent === 'review');
+        const verdict = team.failed
+          ? 'FAILED'
+          : reviewTask ? (parseVerdict(reviewTask.output) ?? 'SHIP') : 'SHIP';
+        if (!team.failed && !opts.signal?.aborted) {
+          void commitSuccessfulSpec({
+            specContent: baseSpec,
+            clarifiedSpec,
+            planOutput,
+            runOpts: {
+              ...runOpts,
+              workflowRunId: undefined,
+              specSessionId: undefined,
+              triggerSource: 'background',
+              triggerDetail: 'post-success',
+              signal: undefined,
+            },
+          }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background dynamic-team post-success failed'));
+        }
+        return {
+          workflowRunId,
+          steps: results,
+          totalDurationMs: Date.now() - start,
+          verdict,
+          planOutput,
+          routeCount,
+          team,
+          failure: team.failed ? {
+            step: reviewTask?.taskId ?? team.tasks.find(task => task.status !== 'DONE')?.taskId ?? 'team',
+            status: 'FAILED',
+            cause: 'agent_stopped',
+            reason: team.conflict ?? team.tasks.find(task => task.status !== 'DONE')?.error ?? 'Dynamic team failed.',
+            routeAvailable: false,
+          } : undefined,
+        };
+      }
     }
 
     // test: 소스 코드 오류로 판정된 실패만 planner/clarifier 로 되돌린다.
@@ -403,6 +471,32 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     }
 
     cursor++;
+  }
+
+  // Clarification wait, failure, cancellation, and safety-cap exits are not successful specs.
+  // Only a fully traversed workflow may audit docs and create commits.
+  if (cursor >= STEP_ORDER.length && executed > 0 && !failure && !clarification && !opts.signal?.aborted) {
+    // 문서 점검/커밋은 핵심 spec 결과와 무관한 후처리다. 별도 실행으로 넘겨
+    // spec children/status를 오염시키지 않고, review 통과 뒤 백그라운드에서 수행한다.
+    void commitSuccessfulSpec({
+      specContent: baseSpec,
+      clarifiedSpec,
+      planOutput,
+      runOpts: {
+        ...runOpts,
+        workflowRunId: undefined,
+        specSessionId: undefined,
+        triggerSource: 'background',
+        triggerDetail: 'post-success',
+        signal: undefined,
+      },
+    }).then((postSuccess) => {
+      if (postSuccess.failure) {
+        log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+      }
+    }).catch((err) => {
+      log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background post-success workflow failed');
+    });
   }
 
   return {

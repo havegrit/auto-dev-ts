@@ -8,6 +8,11 @@
 
 클라우드 LLM API를 직접 호출하는 대신, Agent SDK를 통해 **Claude Code** CLI를 프로그래밍으로 제어합니다. 각 에이전트는 워크스페이스 디렉토리로 파일 I/O와 쉘 접근이 제한된 Claude Code 세션 안에서 실행됩니다. 리뷰 에이전트는 정확성 · 보안 · 성능 · 스타일 4개 서브에이전트를 동시에 병렬 실행합니다.
 
+planner가 작업을 dependency DAG로 분해해 `TEAM_PLAN`을 반환하면 독립 task는 동시에
+실행됩니다. 수정 task는 별도 git worktree에서 실행되고 결과는 자동 통합됩니다.
+충돌 시 내부 integrator가 해결을 시도합니다. 기존 `PLAN`만 반환하는 실행은 기존
+순차 workflow로 fallback하며, 팀 중첩은 최대 2단계입니다.
+
 모든 실행 기록은 로컬 SQLite 데이터베이스에 저장되며, 내장 웹 대시보드에서 확인할 수 있습니다.
 
 ## 에이전트
