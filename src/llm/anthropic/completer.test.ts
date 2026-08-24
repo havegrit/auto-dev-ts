@@ -30,4 +30,19 @@ describe('anthropicCompleter', () => {
     queryMock.mockReturnValue(asyncGen([{ type: 'result', subtype: 'error_during_execution' }]));
     await expect(anthropicCompleter.complete({ message: 'hi' })).rejects.toThrow(/completion failed/);
   });
+
+  it('streams partial text events', async () => {
+    queryMock.mockReturnValue(asyncGen([
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hel' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'lo' } } },
+      { type: 'result', subtype: 'success', result: 'hello' },
+    ]));
+    const chunks: string[] = [];
+
+    const output = await anthropicCompleter.stream!({ message: 'hi' }, (text) => chunks.push(text));
+
+    expect(output).toBe('hello');
+    expect(chunks).toEqual(['hel', 'lo']);
+    expect(queryMock.mock.calls[0][0].options.includePartialMessages).toBe(true);
+  });
 });

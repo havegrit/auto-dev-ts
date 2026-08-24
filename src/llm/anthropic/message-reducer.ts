@@ -17,11 +17,16 @@ export function newAccumulator(): OutcomeAccumulator {
  */
 export function reduceMessage(
   msg: any,
-  // _acc는 미래의 스트리밍 누적 usage 집계를 위해 예약된 파라미터이며, 현재는 result 메시지의 usage를 직접 읽으므로 변경하지 않는다.
-  _acc: OutcomeAccumulator,
+  acc: OutcomeAccumulator,
   onEvent: (e: AgentEvent) => void,
 ): AgentRunOutcome | null {
   if (msg.type === 'assistant') {
+    const usage = msg.message?.usage;
+    if (usage) {
+      acc.tokensIn += Number(usage.input_tokens ?? 0);
+      acc.tokensOut += Number(usage.output_tokens ?? 0);
+      onEvent({ kind: 'usage', tokensIn: acc.tokensIn, tokensOut: acc.tokensOut });
+    }
     for (const block of (msg.message?.content ?? [])) {
       if (block.type === 'text' && block.text?.trim()) {
         onEvent({ kind: 'text', text: block.text.trim() });

@@ -133,6 +133,30 @@ describe('codexAgentRunner', () => {
     });
   });
 
+  it('accepts a complete success contract emitted before process timeout', async () => {
+    const response = JSON.stringify({
+      status: 'success', summary: 'implemented', changedFiles: ['src/a.ts'], notes: [],
+    });
+    const { exec } = fakeExec([
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: response } }),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 20 } }),
+    ], { exitCode: 124 });
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => ['src/a.ts'] });
+
+    const outcome = await runner.run(
+      { prompt: 'p', cwd: '/repo', tools: ['Read', 'Write'], model: 'gpt-5' },
+      () => {},
+    );
+
+    expect(outcome).toMatchObject({
+      status: 'success',
+      output: expect.stringContaining('implemented'),
+      stopReason: 'codex_cli_exit_124_after_result',
+      tokensIn: 100,
+      tokensOut: 20,
+    });
+  });
+
   it('does not pass Anthropic fallback model ids to Codex CLI', async () => {
     const { exec, calls } = fakeExec(['{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}']);
     const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });

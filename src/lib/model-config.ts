@@ -14,8 +14,9 @@ export interface ModelSpec {
 /** CLI 조회 실패 시 사용하는 폴백 목록 (전체 모델 ID 기준 — SDK가 별칭/풀네임 모두 허용). */
 const FALLBACK_MODELS: ModelSpec[] = [
   { id: 'anthropic:claude-opus-4-8', provider: 'anthropic', providerModel: 'claude-opus-4-8', displayName: 'anthropic / Claude Opus 4.8', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'anthropic:claude-sonnet-4-6', provider: 'anthropic', providerModel: 'claude-sonnet-4-6', displayName: 'anthropic / Claude Sonnet 4.6', effortLevels: ['low', 'medium', 'high', 'max'] },
-  { id: 'anthropic:claude-haiku-4-5-20251001', provider: 'anthropic', providerModel: 'claude-haiku-4-5-20251001', displayName: 'anthropic / Claude Haiku 4.5', effortLevels: ['low', 'medium', 'high'] },
+  { id: 'anthropic:claude-sonnet-5', provider: 'anthropic', providerModel: 'claude-sonnet-5', displayName: 'anthropic / Claude Sonnet 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'anthropic:claude-fable-5', provider: 'anthropic', providerModel: 'claude-fable-5', displayName: 'anthropic / Claude Fable 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'anthropic:claude-haiku-4-5-20251001', provider: 'anthropic', providerModel: 'claude-haiku-4-5-20251001', displayName: 'anthropic / Claude Haiku 4.5', effortLevels: [] },
   { id: 'codex-cli:gpt-5.5', provider: 'codex-cli', providerModel: 'gpt-5.5', displayName: 'codex-cli / GPT-5.5', effortLevels: ['none', 'low', 'medium', 'high', 'xhigh'] },
   { id: 'codex-cli:gpt-5.4-mini', provider: 'codex-cli', providerModel: 'gpt-5.4-mini', displayName: 'codex-cli / GPT-5.4 mini', effortLevels: ['none', 'low', 'medium', 'high'] },
 ];
@@ -30,6 +31,17 @@ let currentEffort = DEFAULT_EFFORT;
 let fallbackModel = storedConfig.fallbackModel ?? process.env.AUTO_DEV_FALLBACK_MODEL;
 let agentModels: Record<string, string> = storedConfig.agentModels ?? {};
 let loadedFromCli = false;
+
+// 역할별 기본값: 비용이 큰 판단/구현은 상위 모델, 단순 분류/설정은 경량 모델 우선.
+const AGENT_MODEL_PREFERENCES: Record<string, string[]> = {
+  clarifier: ['haiku', 'sonnet'],
+  planner: ['sonnet', 'opus'],
+  scaffold: ['opus', 'sonnet'],
+  test: ['sonnet', 'opus'],
+  review: ['opus', 'sonnet'],
+  cicd: ['sonnet', 'haiku'],
+};
+const CONFIG_AGENT_NAMES = Object.keys(AGENT_MODEL_PREFERENCES);
 
 /** 현재 선택값이 목록과 모순되지 않도록 보정한다. */
 function reconcileSelection(): void {
@@ -57,15 +69,25 @@ function availableModel(id: string | undefined): ModelSpec | undefined {
   return id ? availableModels.find(m => m.id === id) : undefined;
 }
 
+function preferredModel(agentName: string): ModelSpec | undefined {
+  const preferences = AGENT_MODEL_PREFERENCES[agentName] ?? [];
+  return availableModels.find((model) => {
+    if (!supportsAgentRuns(model)) return false;
+    const text = `${model.id} ${model.displayName}`.toLowerCase();
+    return preferences.some((preference) => text.includes(preference));
+  });
+}
+
 function supportsAgentRuns(spec: ModelSpec): boolean {
   return spec.provider !== 'openai-compatible';
 }
 
 function resolveModelSpec(agentName?: string): ModelSpec {
   const agentModel = agentName ? agentModels[agentName] ?? process.env[envKeyForAgent(agentName)] : undefined;
+  const preferred = agentName ? preferredModel(agentName)?.id : undefined;
   const candidates = agentModel !== undefined
-    ? [agentModel, fallbackModel, currentModel]
-    : [currentModel, fallbackModel];
+    ? [agentModel, preferred, fallbackModel, currentModel]
+    : [preferred, currentModel, fallbackModel];
   for (const id of candidates) {
     const spec = availableModel(id);
     if (spec && (!agentName || supportsAgentRuns(spec))) return spec;
@@ -128,7 +150,9 @@ export const modelConfig = {
   getProvider(): string | undefined { return resolveModelSpec().provider; },
   getModelIdForAgent(agentName: string): string { return resolveModelSpec(agentName).id; },
   getFallbackModel(): string | undefined { return fallbackModel; },
-  getAgentModels(): Record<string, string> { return { ...agentModels }; },
+  getAgentModels(): Record<string, string> {
+    return Object.fromEntries(CONFIG_AGENT_NAMES.map((agent) => [agent, resolveModelSpec(agent).id]));
+  },
   getProviderForAgent(agentName: string): string | undefined { return resolveModelSpec(agentName).provider; },
   getModelForAgent(agentName: string): string { return rawModelId(resolveModelSpec(agentName)); },
   getModelForModelId(modelId: string): string { return rawModelId(resolveModelSpecById(modelId)); },
@@ -181,6 +205,6 @@ export const modelConfig = {
   },
 
   stats(): { model: string; fallbackModel?: string; agentModels: Record<string, string>; effort: string; availableModels: ModelSpec[]; loadedFromCli: boolean; configPath: string } {
-    return { model: currentModel, fallbackModel, agentModels: { ...agentModels }, effort: currentEffort, availableModels, loadedFromCli, configPath: appConfig.path() };
+    return { model: currentModel, fallbackModel, agentModels: this.getAgentModels(), effort: currentEffort, availableModels, loadedFromCli, configPath: appConfig.path() };
   },
 };

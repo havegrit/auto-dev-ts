@@ -82,7 +82,7 @@ export function foldCodexEvent(obj: any, state: CodexStreamState): AgentEvent[] 
   if (obj.type === 'turn.completed' && obj.usage) {
     state.tokensIn += Number(obj.usage.input_tokens ?? 0);
     state.tokensOut += Number(obj.usage.output_tokens ?? 0);
-    return [];
+    return [{ kind: 'usage', tokensIn: state.tokensIn, tokensOut: state.tokensOut }];
   }
   // item.completed 만 처리한다. codex 는 각 단계가 끝날 때 이 이벤트를 흘리므로
   // 진행 상황이 단계별로 라이브 갱신된다. (started/updated 는 관측되지 않아 중복 위험만 있음)

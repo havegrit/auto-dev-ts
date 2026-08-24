@@ -114,7 +114,13 @@ export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
   const jsonChangedFiles = arrayOfStrings(parsed?.changedFiles);
   const changedFiles = mergeChangedFiles(jsonChangedFiles, input.gitChangedFiles);
   const blocked = blockedContract(parsed) || permissionBlocked(input.stderr, input.stdout, parsed);
-  const isSuccess = input.exitCode === 0 && parsed?.status !== 'failed' && parsed?.status !== 'error' && !blocked;
+  // Codex가 최종 success 계약을 보낸 뒤 CLI 정리 과정에서 timeout(124)되는 경우가 있다.
+  // 완결된 generic 결과가 확인됐으면 작업 실패로 뒤집지 않는다.
+  const completedAfterTimeout = input.exitCode === 124 && parsed?.status?.toLowerCase() === 'success';
+  const isSuccess = (input.exitCode === 0 || completedAfterTimeout)
+    && parsed?.status !== 'failed'
+    && parsed?.status !== 'error'
+    && !blocked;
   const combinedOutput = outputWithStderr(input.stdout, input.stderr);
   const errorText = input.stderr.trim() || input.stdout.trim() || combinedOutput;
   const output = parsed && isSuccess ? formatCodexMarkdown(parsed, changedFiles) : combinedOutput;
@@ -127,7 +133,7 @@ export function normalizeCodexResult(input: NormalizeInput): AgentRunOutcome {
     tokensIn: input.tokensIn ?? 0,
     tokensOut: input.tokensOut ?? 0,
     numTurns: 1,
-    stopReason: `codex_cli_exit_${input.exitCode}`,
+    stopReason: completedAfterTimeout ? 'codex_cli_exit_124_after_result' : `codex_cli_exit_${input.exitCode}`,
     ...(isSuccess ? {} : {
       errorType: authFailure(input.stderr, input.stdout)
         ? 'codex_auth_failed'

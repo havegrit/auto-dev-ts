@@ -96,4 +96,21 @@ describe('openaiCompleter', () => {
     const completer = createOpenAICompleter({ fetch: fetchMock });
     await expect(completer.complete({ message: 'hi', model: 'm' })).rejects.toThrow(/429.*rate limited/s);
   });
+
+  it('streams SSE text deltas', async () => {
+    const body = [
+      'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    const completer = createOpenAICompleter({ fetch: fetchMock });
+    const chunks: string[] = [];
+
+    const output = await completer.stream!({ message: 'hi', model: 'm' }, (text) => chunks.push(text));
+
+    expect(output).toBe('hello');
+    expect(chunks).toEqual(['hel', 'lo']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).stream).toBe(true);
+  });
 });

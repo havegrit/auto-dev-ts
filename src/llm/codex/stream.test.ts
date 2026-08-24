@@ -43,13 +43,17 @@ describe('codex stream parser', () => {
     expect(events).toEqual([{ kind: 'tool_call', name: 'edit', input: 'src/a.ts, src/b.ts' }]);
   });
 
-  it('accumulates token usage from turn.completed', () => {
-    const { state } = run([
+  it('accumulates and emits token usage from turn.completed', () => {
+    const { state, events } = run([
       '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}',
       '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}',
     ]);
     expect(state.tokensIn).toBe(105);
     expect(state.tokensOut).toBe(23);
+    expect(events).toEqual([
+      { kind: 'usage', tokensIn: 100, tokensOut: 20 },
+      { kind: 'usage', tokensIn: 105, tokensOut: 23 },
+    ]);
   });
 
   it('tracks the last agent_message as the result text', () => {

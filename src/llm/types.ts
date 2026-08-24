@@ -17,6 +17,7 @@ export type AgentEvent =
   | { kind: 'text'; text: string }
   | { kind: 'tool_call'; name: string; input: string }
   | { kind: 'tool_result'; content: string }
+  | { kind: 'usage'; tokensIn: number; tokensOut: number }
   | { kind: 'rate_limit'; resetsAt?: number; retryDelayMs?: number };
 
 /** 한 에이전트 실행의 최종 결과. */
@@ -44,11 +45,14 @@ export interface CompleteRequest {
   message: string;
   json?: boolean;
   model?: string;
+  signal?: AbortSignal;
 }
 
 /** 도구 없는 단발성 텍스트 생성. */
 export interface Completer {
   complete(req: CompleteRequest): Promise<string>;
+  /** 가능한 경우 프로바이더 토큰 델타를 전달한다. 반환값은 최종 전체 텍스트다. */
+  stream?(req: CompleteRequest, onText: (text: string) => void): Promise<string>;
 }
 
 export interface ModelSpec {

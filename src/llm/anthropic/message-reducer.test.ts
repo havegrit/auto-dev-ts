@@ -27,6 +27,18 @@ describe('reduceMessage', () => {
     ]);
   });
 
+  it('emits cumulative usage while assistant turns are running', () => {
+    const { events, acc } = collect([
+      { type: 'assistant', message: { usage: { input_tokens: 10, output_tokens: 2 }, content: [] } },
+      { type: 'assistant', message: { usage: { input_tokens: 4, output_tokens: 3 }, content: [] } },
+    ]);
+    expect(events).toEqual([
+      { kind: 'usage', tokensIn: 10, tokensOut: 2 },
+      { kind: 'usage', tokensIn: 14, tokensOut: 5 },
+    ]);
+    expect(acc).toEqual({ tokensIn: 14, tokensOut: 5 });
+  });
+
   it('skips empty text blocks', () => {
     const { events } = collect([
       { type: 'assistant', message: { content: [{ type: 'text', text: '   ' }] } },

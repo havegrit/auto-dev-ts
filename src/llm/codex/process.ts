@@ -28,7 +28,13 @@ export type ExecStream = (
 ) => Promise<ExecResult>;
 
 export const execStream: ExecStream = (command, args, options, onStdoutLine) => new Promise((resolve) => {
-  const child = spawn(command, args, { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  // 서버가 SSH 세션에서 직접 시작된 경우에도 provider CLI를 터미널의
+  // process group에서 분리한다. 취소/timeout 시에는 기존처럼 명시적으로 종료한다.
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
   let stdout = '';
   let stderr = '';
   let timedOut = false;
