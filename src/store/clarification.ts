@@ -6,6 +6,8 @@ import type { ClarificationRound } from '../workflows/clarification.js';
  * 전체 상태. 원본 스펙(잘리지 않은 전문) + 프로젝트/plan 파일 위치 + 라운드별 Q&A 를 담는다.
  */
 export interface ClarificationState {
+  /** clarification/후속 실행 전체를 하나로 묶는 최초 spec run ID. */
+  sessionId?: string;
   spec: string;
   project?: string;
   slug: string;
