@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>auto-dev</title>
+  <link rel="stylesheet" href="chat.css" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 2rem; }
@@ -63,7 +64,6 @@
     .workflow-step-toggle.locked { cursor: not-allowed; opacity: 0.72; }
     .workflow-step-toggle .step-dot { width: 0.42rem; height: 0.42rem; border-radius: 50%; background: #484f58; }
     .workflow-step-toggle.active .step-dot { background: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.15); }
-    .workflow-step-summary { color: #8b949e; font-size: 0.72rem; margin-top: 0.45rem; }
     select, input[type="text"] {
       background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
       border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; flex: 1;
@@ -263,8 +263,6 @@
     .token-table td { color: #c9d1d9; }
     .token-table td:not(:first-child), .token-table th:not(:first-child) { text-align: right; font-family: monospace; }
     .token-table td:nth-child(2), .token-table th:nth-child(2) { text-align: left; }
-    .token-hints { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
-    .token-hint { background: #15120a; border: 1px solid #5f4b16; color: #e3b341; border-radius: 999px; padding: 0.18rem 0.55rem; font-size: 0.7rem; }
     .clarify-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 0.85rem; }
     .clarify-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.55rem; }
     .clarify-card-title { color: #e6edf3; font-size: 0.9rem; line-height: 1.55; margin-bottom: 0.7rem; }
@@ -281,6 +279,7 @@
     .log-type-tool_call   { color: #79c0ff; }
     .log-type-tool_result { color: #56d364; }
     .log-type-text        { color: #c9d1d9; }
+    .log-type-usage       { color: #d2a8ff; }
     .log-type-status      { color: #e3b341; font-weight: 600; }
     .live-badge { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; color: #58a6ff; }
     .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #58a6ff; animation: pulse 1.2s ease-in-out infinite; }
@@ -338,24 +337,10 @@
   <div class="submit-card">
     <h2>새 요청 실행</h2>
 
-    <div class="form-row">
+    <div class="form-row workflow-step-row" id="workflow-step-row">
       <label>에이전트</label>
-      <select id="agent-select" onchange="toggleAutoClarifyRow()">
-        <option value="spec">전체 워크플로우 (clarifier → planner → scaffold → test → review → cicd)</option>
-        <option value="clarifier">clarifier — 스펙 명확화</option>
-        <option value="planner">planner — 개발 계획</option>
-        <option value="scaffold">scaffold — 코드 스캐폴딩</option>
-        <option value="test">test — 테스트 생성</option>
-        <option value="review">review — 코드 리뷰</option>
-        <option value="cicd">cicd — CI/CD 설정</option>
-      </select>
-    </div>
-
-    <div class="form-row workflow-step-row" id="workflow-step-row" style="display:none">
-      <label>실행 단계</label>
       <div class="workflow-step-config">
         <div class="workflow-step-picker" id="workflow-step-picker"></div>
-        <div class="workflow-step-summary" id="workflow-step-summary"></div>
       </div>
     </div>
 
@@ -601,6 +586,7 @@
     let selectedEffort = 'high';
     let selectedRunId = null;
     let liveEventSource = null;
+    let liveActivityRunId = null;
     let detailElapsedTimer = null;
     let detailWorkflowTimer = null;
     let claudeAuthLoading = false;
@@ -1067,15 +1053,21 @@
 
     // 구체화 자동 진행 옵션은 spec(전체 워크플로우)일 때만 노출한다.
     function toggleAutoClarifyRow() {
-      const isSpec = document.getElementById('agent-select').value === 'spec';
+      const isSpec = selectedAgent() === 'spec';
       const stepRow = document.getElementById('workflow-step-row');
       const autoClarify = document.getElementById('auto-clarify').checked;
       document.getElementById('auto-clarify-row').style.display = isSpec ? '' : 'none';
       document.getElementById('auto-clarify-limit-row').style.display = isSpec && autoClarify ? '' : 'none';
       document.getElementById('route-limit-row').style.display = isSpec ? '' : 'none';
-      document.getElementById('delivery-intent-row').style.display = (isSpec || document.getElementById('agent-select').value === 'cicd') ? '' : 'none';
-      stepRow.style.display = isSpec ? '' : 'none';
-      if (isSpec) renderWorkflowStepPicker();
+      document.getElementById('delivery-intent-row').style.display = (isSpec || selectedAgent() === 'cicd') ? '' : 'none';
+      stepRow.style.display = '';
+      renderWorkflowStepPicker();
+    }
+
+    function selectedAgent() {
+      if (selectedWorkflowSteps.size === WORKFLOW_STEPS.length) return 'spec';
+      if (selectedWorkflowSteps.size === 1) return [...selectedWorkflowSteps][0];
+      return 'spec';
     }
 
     function renderWorkflowStepPicker() {
@@ -1090,10 +1082,6 @@
           <span class="step-dot"></span>${WORKFLOW_STEP_LABELS[step]}
         </button>`;
       }).join('');
-      const labels = WORKFLOW_STEPS.filter(step => selectedWorkflowSteps.has(step)).map(step => WORKFLOW_STEP_LABELS[step]);
-      document.getElementById('workflow-step-summary').textContent = labels.length
-        ? `이번 실행: ${labels.join(' → ')}`
-        : '실행할 단계가 없습니다.';
       const clarifyEnabled = selectedWorkflowSteps.has('clarifier');
       const autoClarifyEl = document.getElementById('auto-clarify');
       autoClarifyEl.disabled = !clarifyEnabled;
@@ -1139,7 +1127,7 @@
     }
 
     async function submitRequest() {
-      const agent = document.getElementById('agent-select').value;
+      const agent = selectedAgent();
       const formData = new FormData();
       formData.append('agent', agent);
 
@@ -1235,12 +1223,14 @@
             const children = await fetch(`/api/runs/${runId}/children`).then(r => r.json());
             observeClaudeAuthFailures(children);
             const subEl = document.getElementById('sub-runs');
-            const signature = JSON.stringify(children.map(c => [c.id, c.status, c.duration_ms]));
+            const signature = JSON.stringify(children.map(c => [
+              c.id, c.status, Math.floor(elapsedMs(c) / 1000), c.tokens_in, c.tokens_out,
+            ]));
             const html = children.length > 0 ? children.map(c => `
               <div class="sub-run-row" style="cursor:pointer" onclick="showRunDetail('${c.id}')">
                 <span class="agent-name">${escapeHtml(c.agent_name)}</span>
                 ${statusBadge(c)}
-                <span class="duration">${formatDuration(c.duration_ms)}</span>
+                <span class="duration">${formatDuration(elapsedMs(c))}</span>
               </div>`).join('') : '<div class="sub-run-row"><span class="duration">하위 에이전트 시작 대기...</span></div>';
             if (subEl.__signature !== signature) {
               subEl.innerHTML = html;
@@ -1279,10 +1269,11 @@
       const g = statusRes.guard;
       const limitEl = document.getElementById('today-limit');
       if (g) {
-        limitEl.textContent = `한도 ${g.limit}회 중 ${g.count}회 사용`;
+        limitEl.textContent = `실행 한도 ${g.limit}회`;
         limitEl.style.display = '';
       } else {
-        limitEl.style.display = 'none';
+        limitEl.textContent = '실행 한도 없음';
+        limitEl.style.display = '';
       }
       document.getElementById('total-runs').textContent = statsRes.total ?? '—';
 
@@ -1321,7 +1312,10 @@
       // 이번 페이지에 자식이 존재하는 부모 id 와 부모별 자식 수.
       const childCounts = {};
       for (const r of rows) {
-        if (r.workflow_run_id) childCounts[r.workflow_run_id] = (childCounts[r.workflow_run_id] ?? 0) + 1;
+        if (r.workflow_run_id) {
+          const groupId = r.spec_session_id || r.workflow_run_id;
+          childCounts[groupId] = (childCounts[groupId] ?? 0) + 1;
+        }
       }
 
       const tbody = document.getElementById('runs');
@@ -1332,24 +1326,29 @@
         const preview = (r.output ?? '').replace(/</g,'&lt;').slice(0, 120);
         const isSelected = r.id === selectedRunId;
         const isChild = !!r.workflow_run_id;
-        const hasKids = childCounts[r.id] > 0;
-        const collapsed = !expandedRuns.has(r.id);
+        const groupId = r.spec_session_id || r.workflow_run_id || r.id;
+        const specId = !isChild && r.agent_name === 'spec' ? groupId : '';
+        const specIdLabel = specId
+          ? `<span class="child-count" title="${escapeHtml(specId)}">spec ${escapeHtml(specId.slice(0, 8))}</span>`
+          : '';
+        const hasKids = !isChild && childCounts[groupId] > 0;
+        const collapsed = !expandedRuns.has(groupId);
 
         let agentCell;
         if (hasKids) {
           // 접기/펼치기 캐럿. 접힘일 때 숨긴 하위 개수를 함께 보여준다.
-          const caret = `<span class="tree-toggle" onclick="toggleSpecChildren(event, '${r.id}')">${collapsed ? '▶' : '▼'}</span>`;
-          const count = collapsed ? `<span class="child-count">하위 ${childCounts[r.id]}개</span>` : '';
-          agentCell = `${caret}<span class="agent-name">${r.agent_name}</span>${count}`;
+          const caret = `<span class="tree-toggle" onclick="toggleSpecChildren(event, '${groupId}')">${collapsed ? '▶' : '▼'}</span>`;
+          const count = collapsed ? `<span class="child-count">하위 ${childCounts[groupId]}개</span>` : '';
+          agentCell = `${caret}<span class="agent-name">${r.agent_name}</span>${specIdLabel}${count}`;
         } else if (isChild) {
           agentCell = `<span class="sub-arrow">↳</span><span class="agent-name">${r.agent_name}</span>`;
         } else {
-          agentCell = `<span class="agent-name">${r.agent_name}</span>`;
+          agentCell = `<span class="agent-name">${r.agent_name}</span>${specIdLabel}`;
         }
 
         // 부모가 펼쳐져 있지 않으면(기본 접힘) 그 자식 행은 숨긴다.
-        const hidden = isChild && !expandedRuns.has(r.workflow_run_id);
-        const dataParent = isChild ? ` data-parent="${r.workflow_run_id}"` : '';
+        const hidden = isChild && !expandedRuns.has(groupId);
+        const dataParent = isChild ? ` data-parent="${groupId}"` : '';
         const rowStyle = hidden ? ' style="display:none"' : '';
 
         // 완료된 spec 워크플로우 중 상태가 저장된 것만 표에서 바로 이어갈 수 있다.
@@ -1363,7 +1362,7 @@
         return `<tr class="run-row${isSelected ? ' selected' : ''}"${dataParent}${rowStyle} onclick="showRunDetail('${r.id}')">
           <td style="white-space:nowrap">${agentCell}</td>
           <td>${statusBadge(r)}</td>
-          <td><span class="duration">${formatDuration(r.duration_ms)}</span></td>
+          <td><span class="duration" data-live-started-at="${escapeHtml(r.started_at || '')}" data-live-status="${escapeHtml(r.status || '')}" data-duration-ms="${Number(r.duration_ms ?? 0)}" data-prior-duration-ms="${priorMs(r)}">${formatDuration(elapsedMs(r))}</span></td>
           <td><span class="duration">${r.num_turns ?? '—'}</span></td>
           <td>${errorBadge}<span class="output-preview">${preview}</span></td>
           <td><span class="duration">${r.started_at ? new Date(r.started_at).toLocaleString('ko-KR') : '—'}</span></td>
@@ -1510,17 +1509,50 @@
     }
 
     function renderActivityEntry(event) {
+      if (event.type === 'text' || event.type === 'usage') return null;
       const ts = event.ts ? new Date(event.ts).toLocaleTimeString('ko-KR') : '';
       const line = document.createElement('div');
       line.className = 'log-line';
-      line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-type-${event.type}">${escHtml(event.data)}</span>`;
+      let data = compactActivity(event);
+      line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-type-${event.type}">${escHtml(data)}</span>`;
       return line;
+    }
+
+    // 실시간 로그는 원문/사고과정을 노출하지 않고, 짧은 한글 작업 요약만 표시한다.
+    function compactActivity(event) {
+      const original = String(event.data ?? '').trim();
+      const raw = original.replace(/\s+/g, ' ').trim();
+      if (event.type === 'tool_call') {
+        const match = raw.match(/^([^ (]+)(?:\((.*)\))?$/);
+        const tool = match?.[1] ?? raw;
+        const args = match?.[2] ?? '';
+        const labels = { Read: '읽기', Write: '쓰기', Bash: '실행', shell: '실행', edit: '수정', Agent: '하위 agent', web_search: '검색' };
+        let detail = args;
+        try {
+          const parsed = JSON.parse(args);
+          detail = parsed.path ?? parsed.file_path ?? parsed.command ?? parsed.cmd ?? '';
+        } catch {}
+        detail = String(detail).replace(/^.*?\/workspace\//, '');
+        if (tool === 'Bash' || tool === 'shell') return detail ? `실행: ${detail}` : '실행';
+        detail = detail.slice(0, 90);
+        return `${labels[tool] ?? '도구'}${detail ? `: ${detail}` : ''}`;
+      }
+      if (event.type === 'tool_result') {
+        const result = raw.length > 140 ? `${raw.slice(0, 137)}...` : raw;
+        return result || '결과 없음';
+      }
+      if (event.type === 'status') {
+        const status = { RUNNING: '실행 중', DONE: '완료', FAILED: '실패', BLOCKED: '차단', CANCELLED: '취소' };
+        return status[raw] ?? raw;
+      }
+      return raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
     }
 
     function appendLiveLog(event) {
       const el = document.getElementById('live-log');
       if (el.querySelector('.log-type-text')?.textContent === '활동 내역 없음') el.innerHTML = '';
-      el.appendChild(renderActivityEntry(event));
+      const entry = renderActivityEntry(event);
+      if (entry) el.appendChild(entry);
       el.scrollTop = el.scrollHeight;
     }
 
@@ -1537,21 +1569,44 @@
       return minutes ? `${hours}시간 ${minutes}분` : `${hours}시간`;
     }
 
+    // 재시도/이어가기로 재개된 spec 은 시도마다 새 run 이 생기고 duration_ms 에는
+    // 이번 시도분만 담긴다. 서버가 실어 준 이전 시도 누적분을 더해 세션 전체 시간을 보여준다.
+    function priorMs(run) {
+      const value = Number(run?.session_prior_duration_ms ?? 0);
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+
     function elapsedMs(run) {
       if (run?.status === 'RUNNING' && run.started_at) {
         const started = new Date(run.started_at).getTime();
-        if (Number.isFinite(started)) return Math.max(0, Date.now() - started);
+        if (Number.isFinite(started)) return priorMs(run) + Math.max(0, Date.now() - started);
       }
-      return run?.duration_ms ?? 0;
+      return priorMs(run) + Number(run?.duration_ms ?? 0);
+    }
+
+    function updateLiveDurationNodes() {
+      document.querySelectorAll('[data-live-started-at]').forEach((el) => {
+        const running = el.dataset.liveStatus === 'RUNNING';
+        const started = new Date(el.dataset.liveStartedAt || '').getTime();
+        const stored = Number(el.dataset.durationMs || 0);
+        const prior = Number(el.dataset.priorDurationMs || 0);
+        const current = running && Number.isFinite(started) ? Math.max(0, Date.now() - started) : stored;
+        el.textContent = formatDuration((Number.isFinite(prior) ? Math.max(0, prior) : 0) + current);
+      });
     }
 
     function startDetailElapsedTimer(run) {
       if (detailElapsedTimer) { clearInterval(detailElapsedTimer); detailElapsedTimer = null; }
       const el = document.getElementById('run-detail-elapsed');
       if (!el) return;
-      const update = () => { el.textContent = formatDuration(elapsedMs(run)); };
+      const update = () => {
+        const value = formatDuration(elapsedMs(run));
+        el.textContent = value;
+        const summaryElapsed = document.getElementById('run-summary-elapsed');
+        if (summaryElapsed) summaryElapsed.textContent = value;
+      };
       update();
-      if (run.status === 'RUNNING') detailElapsedTimer = setInterval(update, 1000);
+      if (run.status === 'RUNNING') detailElapsedTimer = setInterval(update, 200);
     }
 
     function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -1573,13 +1628,16 @@
       }
 
       for (const event of events) {
-        el.appendChild(renderActivityEntry(event));
+        const entry = renderActivityEntry(event);
+        if (entry) el.appendChild(entry);
       }
       el.scrollTop = el.scrollHeight;
     }
 
     function startLiveStream(runId) {
       if (liveEventSource) { liveEventSource.close(); liveEventSource = null; }
+      liveActivityRunId = runId;
+      const detailId = selectedRunId || runId;
       document.getElementById('live-badge').style.display = '';
 
       const es = new EventSource(`/api/runs/${runId}/events`);
@@ -1587,21 +1645,29 @@
       es.onmessage = (e) => {
         const evt = JSON.parse(e.data);
         if (evt.type === 'status') {
+          appendLiveLog(evt);
           es.close();
           liveEventSource = null;
           document.getElementById('live-badge').style.display = 'none';
           loadStats();
-          setTimeout(() => refreshRunDetail(runId), 500);
+          setTimeout(() => refreshRunDetail(detailId, { preserveActivity: true }), 500);
         } else {
           appendLiveLog(evt);
+          if (evt.type === 'usage') {
+            try {
+              const usage = JSON.parse(evt.data);
+              const tokenEl = document.getElementById('run-summary-tokens');
+              if (tokenEl) tokenEl.textContent = `in ${formatTokens(usage.tokensIn)} / out ${formatTokens(usage.tokensOut)}`;
+            } catch {}
+          }
         }
       };
       es.onerror = () => { es.close(); liveEventSource = null; };
     }
 
-    async function refreshRunDetail(runId) {
+    async function refreshRunDetail(runId, options = {}) {
       const run = await fetch(`/api/runs/${runId}`).then(r => r.json());
-      await renderRunDetail(run);
+      await renderRunDetail(run, options);
     }
 
     async function renderWorkflowNav(run) {
@@ -1668,36 +1734,11 @@
       return short.length > 28 ? `${short.slice(0, 25)}...` : short;
     }
 
-    function tokenDebugHints(rows) {
-      const active = rows.filter(r => tokenTotal(r) > 0);
-      if (active.length === 0) return [];
-      const totalInput = active.reduce((sum, r) => sum + Number(r.tokens_in ?? 0), 0);
-      const totalOutput = active.reduce((sum, r) => sum + Number(r.tokens_out ?? 0), 0);
-      const byTotal = [...active].sort((a, b) => tokenTotal(b) - tokenTotal(a));
-      const top = byTotal[0];
-      const hints = [];
-
-      if (tokenTotal(top) >= active.reduce((sum, r) => sum + tokenTotal(r), 0) * 0.5 && active.length > 1) {
-        hints.push(`${top.agent_name} token 집중`);
-      }
-      if (totalInput >= totalOutput * 4 && totalInput > 0) {
-        hints.push('input 중심: 컨텍스트 과다 여부 확인');
-      }
-      if (totalOutput >= totalInput * 0.6 && totalOutput > 0) {
-        hints.push('output 비중 높음: 응답 장황함 확인');
-      }
-
-      const verbose = active.find(r => Number(r.tokens_out ?? 0) >= 3000);
-      if (verbose) hints.push(`${verbose.agent_name} output verbose`);
-      return hints.slice(0, 3);
-    }
-
     function renderTokenDebug(rows) {
       const tokenRows = rows.filter(r => tokenTotal(r) > 0);
       if (tokenRows.length === 0) return '';
       const totalIn = tokenRows.reduce((sum, r) => sum + Number(r.tokens_in ?? 0), 0);
       const totalOut = tokenRows.reduce((sum, r) => sum + Number(r.tokens_out ?? 0), 0);
-      const hints = tokenDebugHints(tokenRows);
       return `
         <div class="token-debug">
           <div class="token-debug-head">
@@ -1725,7 +1766,6 @@
               `).join('')}
             </tbody>
           </table>
-          ${hints.length ? `<div class="token-hints">${hints.map(h => `<span class="token-hint">${escapeHtml(h)}</span>`).join('')}</div>` : ''}
         </div>
       `;
     }
@@ -1746,11 +1786,14 @@
       const completed = isWorkflow ? children.filter(c => displayStatus(c) === 'DONE').length : 0;
       const title = isWorkflow ? '실행 요약' : '단일 실행 요약';
       const tokenRows = isWorkflow ? children : [run];
+      const totalInput = tokenRows.reduce((sum, r) => sum + Number(r.tokens_in ?? 0), 0);
+      const totalOutput = tokenRows.reduce((sum, r) => sum + Number(r.tokens_out ?? 0), 0);
       const signature = JSON.stringify({
         runId: run.id,
         status: displayStatus(run),
         output: run.output,
         errorType: run.error_type,
+        elapsedSecond: run.status === 'RUNNING' ? Math.floor(elapsedMs(run) / 1000) : undefined,
         children: children.map(c => [c.id, displayStatus(c), c.duration_ms, c.tokens_in, c.tokens_out, c.error_type]),
       });
       if (section.__signature === signature) {
@@ -1760,7 +1803,7 @@
       const summaryItems = [
         ['결과', verdict],
         ['소요시간', formatDuration(elapsedMs(run))],
-        ['토큰', formatTokens(tokenRows.reduce((sum, r) => sum + tokenTotal(r), 0))],
+        ['토큰', `in ${formatTokens(totalInput)} / out ${formatTokens(totalOutput)}`],
         ...(isWorkflow ? [['단계', children.length > 0 ? `${completed}/${children.length} 완료` : '시작 대기']] : []),
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
@@ -1787,7 +1830,7 @@
           ${summaryItems.map(([label, value]) => `
             <div class="run-summary-item">
               <div class="run-summary-label">${escapeHtml(label)}</div>
-              <div class="run-summary-value" title="${escapeHtml(value)}">${escapeHtml(value || '—')}</div>
+              <div class="run-summary-value" ${label === '소요시간' ? 'id="run-summary-elapsed"' : label === '토큰' ? 'id="run-summary-tokens"' : ''} title="${escapeHtml(value)}">${escapeHtml(value || '—')}</div>
             </div>
           `).join('')}
         </div>
@@ -1804,7 +1847,7 @@
       section.style.display = '';
     }
 
-    function startWorkflowDetailPolling(runId) {
+    function startRunDetailPolling(runId) {
       if (detailWorkflowTimer) clearInterval(detailWorkflowTimer);
       detailWorkflowTimer = setInterval(async () => {
         if (selectedRunId !== runId) {
@@ -1815,12 +1858,23 @@
         try {
           const latest = await fetch(`/api/runs/${runId}`).then(r => r.json());
           if (latest.status === 'RUNNING') {
+            if (latest.agent_name === 'spec' && !latest.workflow_run_id) {
+              try {
+                const children = await fetch(`/api/runs/${runId}/children`).then(r => r.json());
+                const active = [...children].reverse().find(child => child.status === 'RUNNING');
+                if (active && active.id !== liveActivityRunId) {
+                  const history = await fetch(`/api/runs/${active.id}/events/history`).then(r => r.json());
+                  renderActivityHistory(history.events ?? [], true);
+                  startLiveStream(active.id);
+                }
+              } catch {}
+            }
             await renderRunSummary(latest);
             return;
           }
           clearInterval(detailWorkflowTimer);
           detailWorkflowTimer = null;
-          await refreshRunDetail(runId);
+          await refreshRunDetail(runId, { preserveActivity: true });
           await loadStats();
         } catch {}
       }, 2000);
@@ -1841,22 +1895,22 @@
       }
     }
 
-    async function renderRunDetail(run) {
+    async function renderRunDetail(run, options = {}) {
       const detailCancel = document.getElementById('detail-cancel-btn');
       detailCancel.dataset.runId = run.id;
       detailCancel.disabled = false;
       detailCancel.textContent = '강제 중단';
       detailCancel.style.display = run.status === 'RUNNING' ? '' : 'none';
+      const isSpecRun = run.agent_name === 'spec' && !run.workflow_run_id;
+      const specId = run.spec_session_id || (isSpecRun ? run.id : '');
       const chips = [
-        `<span class="detail-chip">${run.agent_name}</span>`,
+        `<span class="detail-chip">agent: ${run.agent_name}</span>`,
         `<span class="detail-chip">${statusBadge(run, 'font-size:0.7rem')}</span>`,
+        specId ? `<span class="detail-chip" title="${escapeHtml(specId)}">spec: ${escapeHtml(specId.slice(0,8))}</span>` : '',
         `<span class="detail-chip">elapsed <span id="run-detail-elapsed">${formatDuration(elapsedMs(run))}</span></span>`,
         run.error_type ? `<span class="detail-chip error">${run.error_type}</span>` : '',
         run.stop_reason ? `<span class="detail-chip">stop: ${run.stop_reason}</span>` : '',
         run.num_turns ? `<span class="detail-chip">${run.num_turns}턴</span>` : '',
-        run.tokens_in ? `<span class="detail-chip">in ${run.tokens_in} / out ${run.tokens_out} tok</span>` : '',
-        run.trigger_source ? `<span class="detail-chip">트리거: ${run.trigger_source}${run.trigger_detail ? ' / ' + run.trigger_detail : ''}</span>` : '',
-        run.workflow_run_id ? `<span class="detail-chip">workflow: ${run.workflow_run_id.slice(0,8)}</span>` : '',
       ].filter(Boolean).join(' ');
 
       document.getElementById('run-detail-meta').innerHTML = chips;
@@ -1889,15 +1943,28 @@
         document.getElementById('run-detail-output').textContent = '(출력 없음)';
       }
 
+      if (options.preserveActivity) {
+        renderClarification(run);
+        return;
+      }
+
+      let activityRunId = run.id;
+      if (run.agent_name === 'spec' && !run.workflow_run_id && run.status === 'RUNNING') {
+        try {
+          const children = await fetch(`/api/runs/${run.id}/children`).then(r => r.json());
+          const active = [...children].reverse().find(child => child.status === 'RUNNING');
+          if (active) activityRunId = active.id;
+        } catch {}
+      }
       let events = [];
       try {
-        const res = await fetch(`/api/runs/${run.id}/events/history`).then(r => r.json());
+        const res = await fetch(`/api/runs/${activityRunId}/events/history`).then(r => r.json());
         events = res.events ?? [];
       } catch {}
       renderActivityHistory(events, run.status === 'RUNNING');
       if (run.status === 'RUNNING') {
-        if (run.agent_name === 'spec' && !run.workflow_run_id) startWorkflowDetailPolling(run.id);
-        else startLiveStream(run.id);
+        startRunDetailPolling(run.id);
+        startLiveStream(activityRunId);
       }
 
       renderClarification(run);
@@ -2082,8 +2149,10 @@
       if (detailWorkflowTimer) { clearInterval(detailWorkflowTimer); detailWorkflowTimer = null; }
       selectedRunId = runId;
       // spec 부모 상세를 열면 하위 에이전트 기록을 자동으로 펼친다.
-      if (lastRunRows.some(r => r.workflow_run_id === runId) && !expandedRuns.has(runId)) {
-        expandedRuns.add(runId);
+      const selected = lastRunRows.find(r => r.id === runId);
+      const selectedGroupId = selected?.spec_session_id || runId;
+      if (lastRunRows.some(r => r.workflow_run_id && (r.spec_session_id || r.workflow_run_id) === selectedGroupId) && !expandedRuns.has(selectedGroupId)) {
+        expandedRuns.add(selectedGroupId);
         renderRuns(lastRunRows);
       }
       document.querySelectorAll('tr.run-row').forEach(tr => {
@@ -2222,7 +2291,9 @@
       }
     });
     setInterval(loadStats, 10000);
+    setInterval(updateLiveDurationNodes, 1000);
     setInterval(loadClaudeAuth, 30000);
   </script>
+  <script src="chat.js"></script>
 </body>
 </html>

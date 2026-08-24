@@ -2,7 +2,18 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 vi.mock('../lib/complete.js', () => ({
   complete: vi.fn(),
+  completeStream: vi.fn(),
   parseJsonLoose: vi.fn(),
+}));
+vi.mock('../lib/chat.js', () => ({
+  parseChatRequest: vi.fn((body) => body),
+  prepareChat: vi.fn(async () => ({
+    system: 'chat system',
+    message: 'chat message',
+    context: { files: ['README.md'], usedHybridSelection: false },
+  })),
+  parseChatMemoryRequest: vi.fn((body) => body),
+  summarizeChatMemory: vi.fn(async () => '## memory'),
 }));
 vi.mock('../lib/workspace.js', () => ({
   resolveProjectDir: vi.fn((project?: string) => project ?? '/tmp/proj'),
@@ -22,6 +33,7 @@ vi.mock('../agents/clarifier.js', () => ({
 vi.mock('../workflows/spec.js', () => ({
   MAX_ROUTE_LIMIT: 10,
   runSpec: vi.fn(),
+  STEP_ORDER: ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'],
 }));
 vi.mock('../workflows/spec-session.js', () => ({
   startSpecSession: vi.fn(),
@@ -33,8 +45,10 @@ vi.mock('../workflows/spec-session.js', () => ({
 }));
 vi.mock('../store/runs.js', () => ({
   getRun: vi.fn(() => ({ status: 'RUNNING' })),
+  getRunWithSessionTotals: vi.fn(),
   getRecentRunUnits: vi.fn(),
   getRunsByWorkflowId: vi.fn(),
+  getRunsBySpecSessionId: vi.fn(),
   getStats: vi.fn(() => ({})),
   updateRun: vi.fn(),
 }));
@@ -83,11 +97,68 @@ import { createRoutes } from './routes.js';
 import { resolveProjectDir } from '../lib/workspace.js';
 import { getAgent } from '../agents/index.js';
 import { runSpec } from '../workflows/spec.js';
-import { startSpecSession, resumeSpecSession } from '../workflows/spec-session.js';
+import { startSpecSession, resumeSpecSession, resumeLastSpecStep } from '../workflows/spec-session.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
-import { getRun, updateRun } from '../store/runs.js';
+import { getRun, getRunWithSessionTotals, updateRun } from '../store/runs.js';
 import { claudeAuth } from '../lib/claude-auth.js';
 import { loadModelsFromCli } from '../lib/model-config.js';
+import { completeStream } from '../lib/complete.js';
+import { summarizeChatMemory } from '../lib/chat.js';
+
+describe('dashboard chat', () => {
+  beforeEach(() => {
+    vi.mocked(completeStream).mockImplementation(async (_opts, onText) => {
+      onText('hel');
+      onText('lo');
+      return 'hello';
+    });
+  });
+
+  it('streams context, text deltas, and completion as NDJSON', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'project', project: 'demo', messages: [{ role: 'user', content: 'hi' }] }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/x-ndjson');
+    const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line));
+    expect(events).toEqual([
+      { type: 'context', files: ['README.md'], hybrid: false },
+      { type: 'delta', text: 'hel' },
+      { type: 'delta', text: 'lo' },
+      { type: 'done', text: 'hello' },
+    ]);
+  });
+
+  it('returns compressed memory without server persistence', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/chat/memory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'assistant', content: 'remember' }] }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(summarizeChatMemory).toHaveBeenCalled();
+    await expect(res.json()).resolves.toEqual({ memory: '## memory' });
+  });
+
+  it('reports memory provider failures as server errors', async () => {
+    vi.mocked(summarizeChatMemory).mockRejectedValueOnce(new Error('provider unavailable'));
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/chat/memory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'remember' }] }),
+    }));
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toEqual({ error: 'provider unavailable' });
+  });
+});
 
 describe('Claude dashboard authentication', () => {
   beforeEach(() => {
@@ -292,6 +363,37 @@ describe('routes resume-last guard', () => {
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({ error: 'Cannot resume-last while the run is still running' });
   });
+
+  it('passes a valid startStep override through to resumeLastSpecStep', async () => {
+    vi.mocked(getRun).mockReturnValueOnce({ status: 'FAILED' } as any);
+    vi.mocked(resumeLastSpecStep).mockReturnValueOnce({ runId: 'resumed-1', done: Promise.resolve() });
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/resume-last', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startStep: 'scaffold' }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(resumeLastSpecStep).toHaveBeenCalledWith('run-1', undefined, 'scaffold');
+    await expect(res.json()).resolves.toEqual({ runId: 'resumed-1', type: 'workflow' });
+  });
+
+  it('rejects an invalid startStep override', async () => {
+    vi.mocked(getRun).mockReturnValueOnce({ status: 'FAILED' } as any);
+    vi.mocked(resumeLastSpecStep).mockClear();
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/resume-last', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startStep: 'not-a-step' }),
+    }));
+
+    expect(res.status).toBe(400);
+    expect(resumeLastSpecStep).not.toHaveBeenCalled();
+  });
 });
 
 describe('run cancellation', () => {
@@ -317,6 +419,18 @@ describe('run cancellation', () => {
     }));
     const duration = vi.mocked(updateRun).mock.calls.at(-1)?.[1].durationMs;
     expect(duration).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('serves run detail with the resumed session accumulated duration', async () => {
+    vi.mocked(getRunWithSessionTotals).mockReturnValueOnce({
+      id: 'spec-2nd', status: 'RUNNING', duration_ms: 0, session_prior_duration_ms: 60_000,
+    } as any);
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/spec-2nd'));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ session_prior_duration_ms: 60_000 });
   });
 });
 

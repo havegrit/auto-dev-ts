@@ -1,14 +1,15 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { complete, parseJsonLoose } from '../lib/complete.js';
+import { complete, completeStream, parseJsonLoose } from '../lib/complete.js';
+import { parseChatMemoryRequest, parseChatRequest, prepareChat, summarizeChatMemory } from '../lib/chat.js';
 import { resolveProjectDir, listProjects, WORKSPACE_ROOT } from '../lib/workspace.js';
 import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
-import { MAX_ROUTE_LIMIT, runSpec } from '../workflows/spec.js';
+import { MAX_ROUTE_LIMIT, runSpec, STEP_ORDER, type Step } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
 import type { ClarificationRound } from '../workflows/clarification.js';
-import { getRun, getRecentRunUnits, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
+import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
@@ -94,6 +95,79 @@ export function createRoutes(): Hono {
         }
       }
       return c.json({ text });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post('/api/chat', async (c) => {
+    let prepared: Awaited<ReturnType<typeof prepareChat>>;
+    let model: string | undefined;
+    try {
+      const body = parseChatRequest(await c.req.json());
+      model = body.model;
+      prepared = await prepareChat(body, c.req.raw.signal);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
+    const encoder = new TextEncoder();
+    let closed = false;
+    const responseStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: object) => {
+          if (closed) return;
+          try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { closed = true; }
+        };
+        send({
+          type: 'context',
+          files: prepared.context?.files ?? [],
+          hybrid: prepared.context?.usedHybridSelection ?? false,
+        });
+        try {
+          const text = await completeStream({
+            system: prepared.system,
+            message: prepared.message,
+            model,
+            signal: c.req.raw.signal,
+          }, (delta) => send({ type: 'delta', text: delta }));
+          send({ type: 'done', text });
+        } catch (err) {
+          if (c.req.raw.signal.aborted) send({ type: 'aborted' });
+          else send({ type: 'error', error: err instanceof Error ? err.message : String(err) });
+        } finally {
+          if (!closed) {
+            closed = true;
+            try { controller.close(); } catch {}
+          }
+        }
+      },
+      cancel() { closed = true; },
+    });
+    return new Response(responseStream, {
+      headers: {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  });
+
+  app.post('/api/chat/memory', async (c) => {
+    let body: ReturnType<typeof parseChatMemoryRequest>;
+    try {
+      body = parseChatMemoryRequest(await c.req.json());
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    try {
+      const memory = await summarizeChatMemory({
+        existingMemory: body.existingMemory,
+        messages: body.messages,
+        model: body.model,
+        signal: c.req.raw.signal,
+      });
+      return c.json({ memory });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
@@ -305,7 +379,12 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/runs/:id/children', (c) => {
-    return c.json(getRunsByWorkflowId(c.req.param('id')));
+    const runId = c.req.param('id');
+    const run = getRun(runId);
+    if (run?.agent_name === 'spec' && !run.workflow_run_id && run.spec_session_id) {
+      return c.json(getRunsBySpecSessionId(run.spec_session_id));
+    }
+    return c.json(getRunsByWorkflowId(runId));
   });
 
   app.get('/api/runs/:id/events', (c) => {
@@ -352,7 +431,9 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/runs/:id', (c) => {
-    const run = getRun(c.req.param('id'));
+    // 재개된 spec run 은 이전 시도 누적 소요시간을 함께 실어, 목록과 상세가
+    // 같은 소요시간을 보여주게 한다.
+    const run = getRunWithSessionTotals(c.req.param('id'));
     if (!run) return c.json({ error: 'Not found' }, 404);
     return c.json(run);
   });
@@ -419,15 +500,19 @@ export function createRoutes(): Hono {
   });
 
   // 실패했거나 다시 시도할 spec run 을 마지막으로 실행된 단계부터 재개한다.
+  // startStep 을 주면 자동 판단 대신 그 단계부터 강제로 재개한다(예: clarifier 를 건너뛰고 scaffold부터).
   app.post('/api/runs/:id/resume-last', async (c) => {
-    const body: { instruction?: string } = await c.req.json<{ instruction?: string }>().catch(() => ({}));
+    const body: { instruction?: string; startStep?: string } = await c.req.json<{ instruction?: string; startStep?: string }>().catch(() => ({}));
     const run = getRun(c.req.param('id'));
     if (!run) return c.json({ error: 'Not found' }, 404);
     if (run.status === 'RUNNING') {
       return c.json({ error: 'Cannot resume-last while the run is still running' }, 409);
     }
+    if (body.startStep !== undefined && !(STEP_ORDER as readonly string[]).includes(body.startStep)) {
+      return c.json({ error: `Invalid startStep: ${body.startStep}` }, 400);
+    }
     try {
-      const { runId } = resumeLastSpecStep(c.req.param('id'), body.instruction);
+      const { runId } = resumeLastSpecStep(c.req.param('id'), body.instruction, body.startStep as Step | undefined);
       return c.json({ runId, type: 'workflow' });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
