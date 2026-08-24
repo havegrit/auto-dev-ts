@@ -145,25 +145,30 @@ clarifier → planner → scaffold → test → review → cicd
 
 `clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. 마지막 `cicd` 단계는 planner가 명시적인 CI/CD 작업을 할당할 때만 실행되며, 기본은 CI이고 배포 요청이 명시된 경우에만 CD 산출물을 만듭니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있습니다.
 
+활성 workflow 단계가 성공적으로 끝나면 내부 후처리 에이전트 두 개가 고정 순서로 백그라운드 실행됩니다. `checking-docs-before-commit`이 오래된 문서를 점검·갱신한 뒤, `atomic-commit`이 해당 spec에 속한 파일 또는 hunk만 stage하고 검증된 atomic commit을 생성합니다. 전역 스킬 지침은 `~/.codex/skills`, 이어서 `~/.claude/skills`에서 읽으며 `AUTO_DEV_SKILLS_ROOT`로 루트를 덮어쓸 수 있습니다. clarifier 응답 대기, 실패·취소, 안전 상한으로 미완료된 workflow는 커밋하지 않습니다. 후처리 실행은 spec workflow와 분리되며 spec 완료 상태를 바꾸지 않고, 실패는 별도 로그로 기록합니다.
+
 ## 대시보드
 
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
 
 - 에이전트 현황 및 일일 실행 횟수
 - Claude Code 로그아웃 감지 시 브라우저 OAuth 로그인 모달 표시, 인증 완료 시 같은 모달에서 성공 확인 표시 — 닫으면 같은 탭 세션에서는 숨기고, 새 `anthropic_auth_failed` 실행이 발생하면 다시 표시; 로그인 URL을 열고 브라우저의 `code#state`를 붙여넣어 완료 (루프백 접속 전용, 토큰은 브라우저나 DB에 저장하지 않음)
-- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — 10초마다 자동 갱신, `더 보기` 버튼으로 추가 로드
-- 실행 중인 작업은 SSE로 라이브 갱신, 실행 행 클릭 시 상세 패널로 앵커 이동
+- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — clarifier 답변·후속 실행도 최초 spec 세션 아래 하나의 요청으로 묶음; 행에는 안정적인 spec ID를 표시하고 상세에서는 spec ID와 각 시도의 run/workflow ID를 구분, `더 보기` 버튼으로 추가 로드
+- 실행 중인 작업은 SSE/polling으로 라이브 갱신 — 소요시간은 매초 증가하고 provider가 보고한 input/output 토큰 사용량은 수신 즉시 저장·표시
 - 실행 중인 행, 제출 결과 패널, 실행 상세 패널에서 강제 중단 가능; 실제 provider 프로세스를 중단하고 UI에는 `CANCELLED`로 표시
 - Claude 로그인 및 조직 구독 권한 거부 응답은 `anthropic_auth_failed`로 정규화; 다른 fallback 모델이 설정돼 있으면 1회 재시도하고, 없거나 재시도도 실패하면 해당 에이전트와 연결된 spec을 `FAILED`로 기록
 - 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
+- 우하단 AI 채팅 위젯에서 일반 채팅과 읽기 전용 프로젝트 Q&A 제공 — 독립 프로젝트 선택기, 프로젝트별 모델 선택, 실시간 Markdown 스트리밍, 중지·재시도, 모바일 반응형 지원
+- 대화와 주제별 장기 기억은 브라우저 `localStorage`에만 저장. 활성 문맥은 최대 30,000자이며, 밀려난 장기 보존 내용과 새 대화 전 결정사항을 압축; 현재 대화·기억·전체 삭제를 각각 제공
+- 프로젝트 채팅은 README, 필터된 파일 목록, 관련 텍스트 파일 최대 8개(합계 100KB)를 참조. 키워드 점수가 낮으면 AI 경로 선택으로 보완하며 `.git`, 의존성/빌드 산출물, credential·인증서, 바이너리, 프로젝트 밖 경로를 서버에서 차단
 - spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
 - 자동 구체화는 추천 답안을 자동 승인하며, 제출 폼과 중단된 run의 답변 폼에서 최대 라운드를 조절할 수 있음 (`0`은 무제한이며 기본값); 중단 후 재개해도 설정 유지
-- 새 요청 폼에서 실행 단계를 선택할 수 있으며, 구현·테스트·리뷰·CI/CD 후속 단계를 선택하면 planner는 필수로 유지
+- 새 요청 폼의 실행 단계 버튼이 에이전트 선택기 역할을 함 — 하나를 고르면 단일 agent, 여러 개를 고르면 workflow 실행
 - 새 요청 폼에서 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있으며, 질문 답변·후속 실행·마지막 단계 재개 시에도 설정 유지
-- 상세 패널은 workflow 요약, 종료 실패 단계·원인, 에이전트 간 이동, agent/model/input/output 기준 token debug breakdown 제공
+- 상세 패널은 workflow 요약, 실시간 소요시간·input/output 토큰 합계, 종료 실패 단계·원인, 에이전트 간 이동, agent/model/input/output 기준 token debug breakdown 제공
 - 이력 표는 최상위 요청을 우선 표시하고 워크플로우 하위 단계는 접기/펼치기로 확인 가능, 완료된 spec run에는 행에서 바로 **재실행** 및 **마지막 단계부터 재개** 버튼 제공
 - 완료된 spec run은 자유 텍스트 후속 지시로 다시 실행하거나 실패 단계·요청된 재작업 경로·마지막 성공 단계 다음의 활성 단계부터 재개할 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행
-- 작업 제출: 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정 + 요청 초기화
+- 작업 제출: 단계 버튼 기반 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정 + 요청 초기화
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
 
@@ -185,6 +190,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/integrations/openclaw/health` | OpenClaw 로컬 bridge 상태/계정 조회 (루프백 전용) |
 | `POST` | `/api/integrations/openclaw/specs` | OpenClaw에서 background spec 시작, 즉시 `202 + runId` 반환 |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 (외부 앱이 구독으로 호출) |
+| `POST` | `/api/chat` | NDJSON 스트리밍 채팅 — 선택 모델, 최근 대화, 관련 브라우저 기억, 선택적 읽기 전용 프로젝트 문맥 |
+| `POST` | `/api/chat/memory` | 클라이언트가 보낸 대화를 주제별 Markdown 장기 기억으로 압축; 서버 저장 없음 |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 워크플로우 또는 에이전트 프로세스 강제 중단 |
@@ -213,6 +220,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | `AUTO_DEV_PROVIDER=codex-cli`일 때 사용할 Codex CLI 명령 |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI 실행 timeout |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |
+| `AUTO_DEV_SKILLS_ROOT` | `~/.codex/skills`, 이후 `~/.claude/skills` | 성공한 spec의 커밋 후처리에 사용할 전역 스킬 루트 override |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | root로 시작 시 `scripts/serve.sh`가 권한을 낮출 비-root 유저 |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
@@ -236,7 +244,7 @@ auto-dev-ts/
 ├── deploy/systemd/   SSH와 독립된 user service 템플릿
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          운영 스크립트 (비-root 런처 + user service 설치)
-├── static/           대시보드 프론트엔드 (바닐라 HTML/JS)
+├── static/           대시보드 + 플로팅 채팅 위젯 (바닐라 HTML/CSS/JS)
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의

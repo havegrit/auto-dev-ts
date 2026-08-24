@@ -31,6 +31,7 @@
 - ✅ 인프라 layer (트리거 다양화 / 영속화 / 실행 가드)
 - ✅ Claude Code SDK 기반 에이전트 실행 (파일 I/O, 쉘 접근 내장)
 - ✅ 병렬 멀티-렌즈 리뷰 (SDK `agents` 옵션)
+- ✅ 작업별 동적 팀 DAG 실행 및 worktree 격리
 - ✅ SpecWorkflow 파이프라인 (clarifier → planner → scaffold → test → review → cicd)
 - ✅ 피드백 라우팅 (review/test 가 수정 필요 시 planner/clarifier 로 되돌려 재작업)
 - ✅ HTTP API + 웹 대시보드
@@ -163,7 +164,7 @@ Java 버전 대비 **제거된 책임**:
 ```typescript
 // src/llm/types.ts — 세 가지 능력을 분리한 인터페이스
 interface AgentRunner  { run(req, onEvent): Promise<AgentRunOutcome>; }  // 도구 쓰는 agentic 실행
-interface Completer    { complete(req): Promise<string>; }              // 도구 없는 단발성 생성
+interface Completer    { complete(req): Promise<string>; stream?(req, onText): Promise<string>; }
 interface ModelCatalog { listModels(): Promise<ModelSpec[]>; }          // 모델 디스커버리
 ```
 
@@ -177,7 +178,8 @@ export function getModelCatalog(): ModelCatalog
 | 호출부 | 사용하는 능력 | 용도 |
 |---|---|---|
 | `lib/runner.ts` | `AgentRunner` | 에이전트 1회 실행 (clarifier~cicd) |
-| `lib/complete.ts` | `Completer` | 인터뷰 프록시 등 단발성 텍스트 (`POST /api/llm/complete`) |
+| `lib/complete.ts` | `Completer` | 단발성/스트리밍 텍스트 (`POST /api/llm/complete`, `POST /api/chat`) |
+| `lib/chat.ts` / `lib/chat-context.ts` | `Completer` | 채팅 문맥 구성, 장기 기억 압축, 프로젝트 파일 필터·선택 |
 | `lib/model-config.ts` | `ModelCatalog` | 대시보드 모델 목록 동적 로딩 + UI 저장 설정 적용 |
 | `lib/app-config.ts` | JSON file | 대시보드에서 저장한 런타임 설정 (`AUTO_DEV_CONFIG_PATH`, 기본 `./data/config.json`) |
 
@@ -210,7 +212,7 @@ for await (const msg of query({ prompt, options: {
 | `allowedTools` | `string[]` | 에이전트가 사용할 수 있는 도구 (`Read`, `Write`, `Bash`, `Agent`) |
 | `permissionMode` | string | `bypassPermissions` — 모든 권한 승인 없이 자동 실행 |
 | `cwd` | string | 에이전트 작업 디렉토리 (모든 파일 I/O 기준점) |
-| `model` / `effort` | string | `modelConfig` 가 에이전트별로 주입. UI 저장값이 env보다 우선하며, 모델은 `agent override` → `fallback` → `global/current` → 실행 가능한 모델 순서로 해석 |
+| `model` / `effort` | string | `modelConfig` 가 에이전트 역할별 기본 선호(clarifier=haiku, planner/test/cicd=sonnet, scaffold/review=opus)를 적용. UI 저장값과 env override가 우선하며 이후 `role preference` → `fallback` → `global/current` 순으로 해석 |
 | `agents` | `{name, description}[]` | 서브에이전트 선언 (병렬 fan-out) |
 
 > 새 프로바이더(예: API 키 기반 직접 호출)는 `src/llm/<name>/` 에 세 인터페이스를
@@ -267,6 +269,8 @@ export const costGuard = {
 | test | `Read, Write, Bash` | ✅ (테스트 코드 한정) | 테스트 코드만. 프로덕션 소스 수정 금지 (버그는 보고만) |
 | review | `Read` | ❌ | 없음 — 읽기 전용. blocker/high 도 수정안 제시만 |
 | cicd | `Read, Write` | ✅ (설정 파일 한정) | 파이프라인/Docker/배포 설정 파일만. 앱 소스 구현 금지 |
+| checking-docs-before-commit | `Read, Write, Bash` | ✅ (문서 한정) | 성공 후 전역 스킬 지침으로 문서 stale 여부 점검·갱신. stage/commit 금지 |
+| atomic-commit | `Read, Bash` | ❌ | 성공 후 spec 관련 hunk만 atomic commit. push/history rewrite/변경 폐기 금지 |
 
 원칙:
 
@@ -276,6 +280,8 @@ export const costGuard = {
 - **cicd 는 CI/CD 설정 파일(YAML/Dockerfile 등) 작성만** 허용된다. 이는 앱 "코드 구현"이
   아닌 인프라 설정으로 간주한다. 앱 소스 변경이 필요하면 scaffold 로 넘긴다.
 - review/planner/clarifier 는 `Write` 권한 자체가 없어 물리적으로 파일을 쓸 수 없다.
+- 두 commit 후처리 에이전트는 `AGENT_ORDER` 밖의 내부 단계다. 일반 agent picker에는
+  노출하지 않으며, core workflow 전체 성공 뒤에만 순서대로 호출한다.
 
 ### 5.1 clarifier
 
@@ -397,6 +403,10 @@ while cursor < len(STEP_ORDER):
         break
 
     cursor += 1
+
+if cursor == len(STEP_ORDER) and core workflow succeeded:
+    run checking-docs-before-commit skill
+    if docs ready: run atomic-commit skill
 ```
 
 - **clarifier 게이트**: clarifier JSON 이 `ready: false` 이면 planner/scaffold 로
@@ -409,6 +419,9 @@ while cursor < len(STEP_ORDER):
   (원본 run 은 보존, 스펙 재입력 불필요). 게이트가 반복되면 라운드가 누적된다.
   `autoClarify`와 `maxClarifyRounds`도 상태에 저장해 중단 후 답변 재개 시 유지하며,
   답변 폼에서 두 값을 덮어쓸 수 있다.
+  각 실행 row는 최초 spec run ID인 `spec_session_id`를 공유한다. 최근 실행 목록과
+  `/api/runs/:id/children`은 이 값을 기준으로 최초 clarifier 실행부터 답변 후속 실행까지
+  하나의 spec 요청 이력으로 묶는다.
   planner 는 `Read`-only 를 유지하고, **세션 코드**가 `<cwd>/docs/plan/<slug>.md` 에
   원본 스펙 + 의사결정 히스토리 + planner 산출 플랜을 매 실행마다 전체 스냅샷으로 기록한다
   (`workflows/clarification.ts` 가 slug·Q&A 합성·문서 렌더링 순수 함수를 제공).
@@ -420,8 +433,19 @@ while cursor < len(STEP_ORDER):
   JSON 변환 없이 raw 출력을 보존한다. planner의 `PLAN: ... END.` 구조와 test의
   `[TESTS: ...]` 마커가 없으면 `invalid_output`으로 즉시 BLOCKED 처리하며, 유효한 이전
   `planOutput`을 오류 문자열로 덮어쓰지 않는다.
+  generic 에이전트가 완전한 `status: success` 최종 계약을 보낸 뒤 CLI 정리 중 timeout
+  종료코드 `124`가 발생한 경우는 완료로 보존해 false failure를 막는다.
 - **review 작업 경계**: review는 지정된 `cwd`만 검사한다. 대상에 `.git`이 없어도 부모나
   형제 디렉터리에서 다른 저장소를 찾지 않고 현재 프로젝트 파일을 직접 읽는다.
+- **성공 후 커밋** (`workflows/post-success-commit.ts`): core 단계가 끝까지 성공한 경우에만
+  `checking-docs-before-commit → atomic-commit`을 백그라운드에서 실행한다. 두 run은 spec
+  children에 포함하지 않으며 review 통과로 확정된 spec 상태를 바꾸지 않는다. `lib/skill-loader.ts`가
+  `AUTO_DEV_SKILLS_ROOT`, `~/.codex/skills`, `~/.claude/skills` 순으로 실제 전역
+  `SKILL.md`를 읽어 provider와 무관하게 프롬프트에 주입한다. docs 단계는 `[DOCS: READY]`,
+  commit 단계는 `[COMMIT: DONE]` 또는 `[COMMIT: NO-CHANGES]` 계약을 충족해야 한다.
+  clarifier 대기·실패·취소·안전 상한 종료에는 실행하지 않으며, 후처리 실패는 별도 로그로 남긴다.
+  commit 단계는 원본 spec·확정 범위·planner 출력과
+  docs 결과를 받아 관련 파일/hunk만 stage하고, 기존 사용자 변경·push·history rewrite를 금지한다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
   `NEEDS-WORK`/`TESTS: FAIL`인데 provider가 ROUTE 마커를 누락하면 구현 결함의 기본
@@ -461,6 +485,7 @@ CREATE TABLE agent_run (
   trigger_source TEXT,                 -- cli / api / schedule / workflow
   trigger_detail TEXT,
   workflow_run_id TEXT,                -- 워크플로우 내 자식 호출 그룹화
+  spec_session_id TEXT,                -- clarifier 답변/후속 실행을 최초 spec 요청으로 그룹화
   -- 이하 마이그레이션으로 추가 (db.ts):
   error_type TEXT, stop_reason TEXT, num_turns INTEGER DEFAULT 0,
   clarification_state TEXT             -- spec 재개용 상태 JSON (원본 스펙 + 라운드별 Q&A)
@@ -522,6 +547,8 @@ data/
 | `POST` | `/api/integrations/openclaw/specs` | background spec 시작, `202 + runId` 즉시 반환 |
 | `POST` | `/api/submit` | 대시보드 폼 제출 (multipart — 파일/프로젝트명 포함) |
 | `POST` | `/api/llm/complete` | 단발성 LLM 생성 프록시 `{ system?, message, json? }` (CORS 허용) |
+| `POST` | `/api/chat` | **NDJSON** 스트리밍 채팅. 일반/프로젝트 모드, 최근 대화, 관련 장기 기억, 모델 선택 입력 |
+| `POST` | `/api/chat/memory` | 오래된 대화를 주제별 Markdown 기억으로 압축해 반환. 서버 영속화 없음 |
 | `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 workflow/agent 취소. 부모 취소는 현재 child provider까지 전파 |
@@ -553,6 +580,15 @@ cron.schedule('0 9 * * *', async () => {
 
 ## 9. 관찰성 (Dashboard)
 
+실행 중인 row와 상세 요약은 시작 시각을 기준으로 소요시간을 매초 계산한다. 재개된 spec
+시도는 새 run 행으로 시작해 `duration_ms`에 이번 시도분만 담기므로, 서버가 같은 세션의
+이전 시도 합계를 `session_prior_duration_ms`로 함께 내려 목록·상세가 세션 전체
+소요시간(이전 누적 + 이번 시도)을 보여준다. provider의
+usage 이벤트는 `tokens_in`/`tokens_out`에 즉시 저장하고 SSE로 전달하며, 상세 화면은
+input/output을 분리해 갱신한다. spec 이력은 `spec_session_id` 단위로 접어서 표시하고,
+목록·상세에는 stable spec ID를 노출한다. 재개된 최상위 spec 상세는 별도 run ID도,
+하위 에이전트 상세는 실제 workflow ID도 함께 표시한다.
+
 실행 중인 이력 행·제출 결과·상세 패널에서 강제 중단할 수 있다. 서버는 run별
 `AbortController`를 등록하고 Anthropic query 또는 Codex subprocess에 신호를 전달한다.
 기존 SQLite status CHECK와의 호환을 위해 DB에는 `FAILED` + `error_type=user_cancelled`로
@@ -575,6 +611,13 @@ cron.schedule('0 9 * * *', async () => {
 - 실행 중(RUNNING) 행은 `/api/runs/:id/events` **SSE** 로 라이브 갱신
 - run 행 클릭 → 상세 패널 펼치기 (메타 + 출력, 실행 중이면 라이브 이벤트 스트림)
 - 작업 제출 폼: 에이전트 선택 + 프로젝트명 입력(자동완성) + 모델/effort 설정
+- 우하단 플로팅 채팅: 일반/프로젝트 모드, 독립 프로젝트·모델 선택, Markdown 스트리밍,
+  생성 중지·재시도, 새 대화·기억 삭제·전체 삭제
+- 채팅 원본 대화와 장기 기억은 프로젝트별 브라우저 `localStorage`에만 보관한다.
+  최근 30,000자를 요청에 싣고, 오래된 지속 정보는 `## 주제` Markdown 섹션으로 압축한다.
+- 프로젝트 문맥은 `chat-context.ts`가 README + 필터된 파일 목록 + 관련 텍스트 최대
+  8개/100KB로 제한한다. 낮은 키워드 점수는 모델 기반 경로 분류로 보완한다. 민감 파일,
+  바이너리, `.git`/`node_modules`/`dist`/`build`, 프로젝트 밖 symlink 대상은 읽지 않는다.
 - Claude 로그아웃 때 OAuth 모달 표시. `code#state` 교환 성공 뒤 같은 모달을
   `authenticated` 성공 상태로 유지하고 사용자가 확인하면 닫는다.
 
@@ -689,6 +732,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`/`medium`/`high`/`xhigh`/`max`). 모델이 미지원이면 무시 |
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일. 저장값이 env보다 우선 |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd (프로젝트명 해석 기준 루트) |
+| `AUTO_DEV_SKILLS_ROOT` | `~/.codex/skills`, 이후 `~/.claude/skills` | 성공한 spec commit 후처리의 전역 skill root override |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
@@ -726,7 +770,9 @@ auto-dev-ts/
 │   ├── serve.sh                       # root 감지 시 비-root로 권한 강하
 │   └── install-user-service.sh        # 현재 절대 경로로 user unit 설치
 ├── static/
-│   └── index.html                    # 대시보드 (바닐라 HTML/JS)
+│   ├── index.html                    # 대시보드
+│   ├── chat.css                      # 플로팅 채팅 반응형 스타일
+│   └── chat.js                       # localStorage 대화/기억 + NDJSON 스트림 UI
 ├── prompts/                          # 에이전트 시스템 프롬프트
 │   ├── scaffold.system.md
 │   ├── review.system.md
@@ -737,7 +783,9 @@ auto-dev-ts/
 │   ├── test.system.md
 │   ├── cicd.system.md
 │   ├── planner.system.md
-│   └── clarifier.system.md
+│   ├── clarifier.system.md
+│   ├── checking-docs-before-commit.system.md
+│   └── atomic-commit.system.md
 ├── src/
 │   ├── cli.ts                        # Commander CLI 진입점 (12 서브커맨드)
 │   ├── agents/
@@ -752,6 +800,7 @@ auto-dev-ts/
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
 │   │   ├── spec.ts                   # SpecWorkflow 파이프라인
+│   │   ├── post-success-commit.ts    # docs skill → atomic commit 성공 후처리
 │   │   ├── spec-session.ts           # clarifier 답변 재개 + plan 문서 기록
 │   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
 │   │   └── from-issue.ts             # 이슈 1건 → 워크플로우 트리거
@@ -771,6 +820,8 @@ auto-dev-ts/
 │   │   ├── runs.ts                   # insertRun / updateRun / getRun / getStats
 │   │   └── clarification.ts          # clarification_state 저장·조회 (재개용)
 │   ├── lib/
+│   │   ├── chat.ts                   # 채팅 검증·프롬프트·장기 기억 압축
+│   │   ├── chat-context.ts           # 안전한 프로젝트 파일 발견·하이브리드 선택
 │   │   ├── runner.ts                 # runAgent() — 공통 실행 파이프라인 (AgentRunner 소비)
 │   │   ├── claude-auth.ts            # Claude CLI 상태 + SDK OAuth flow 관리자
 │   │   ├── complete.ts               # 단발성 생성 래퍼 (Completer 소비)
@@ -783,7 +834,7 @@ auto-dev-ts/
 │   │   └── logger.ts                 # JSON 구조화 로그
 │   ├── server/
 │   │   ├── index.ts                  # startServer() — Hono + serve-static
-│   │   └── routes.ts                 # 27개 API 엔드포인트 (§8.2)
+│   │   └── routes.ts                 # HTTP API 엔드포인트 (§8.2)
 │   └── schedule/
 │       └── briefing.ts               # node-cron 일일 브리핑
 └── data/                             # gitignore

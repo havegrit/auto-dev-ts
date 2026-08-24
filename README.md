@@ -144,25 +144,30 @@ clarifier → planner → scaffold → test → review → cicd
 
 If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. The final `cicd` step runs only when the planner assigns explicit CI/CD work; it is CI-first, and CD artifacts are generated only when deployment is explicitly requested. Pass `--steps` to run a subset, or `--iterations` to set the review/test repair-route limit (default 4, maximum 10).
 
+After the enabled workflow stages finish successfully, two internal post-success agents run in the background in a fixed order: `checking-docs-before-commit` audits and updates stale documentation, then `atomic-commit` stages only spec-related files or hunks and creates verified atomic commits. They load the globally installed skill instructions from `~/.codex/skills` or `~/.claude/skills` (override the skill root with `AUTO_DEV_SKILLS_ROOT`). Clarification waits, failed/cancelled workflows, and incomplete safety-limit exits never commit. Post-success runs are separate from the spec workflow and do not change its completed status; failures are logged independently.
+
 ## Dashboard
 
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
 
 - Live agent status and daily run count
 - Browser OAuth login modal shown when Claude Code is logged out, with a success confirmation in the same modal after authentication — dismissal lasts for the current tab session, while a new `anthropic_auth_failed` run shows it again; open the login URL and paste the browser's `code#state` to finish (loopback access only; tokens are never stored in the browser or database)
-- Recent run history (agent, status, duration, output preview) — auto-refreshes every 10s; load more with the explicit `More` button
-- Running jobs update live over SSE; click any run row to anchor the detail panel
+- Recent run history (agent, status, duration, output preview) — clarification answers and follow-up attempts stay grouped under the original spec session; rows show the stable spec ID, while details distinguish the spec ID from each attempt's run/workflow ID; load more with the explicit `More` button
+- Running jobs update live over SSE/polling; elapsed time increments every second and provider-reported input/output token usage is persisted and shown as it arrives
 - Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
 - Claude login and organization subscription-denial responses are normalized to `anthropic_auth_failed`; when a different fallback model is configured it is tried once, otherwise the agent and linked spec workflow are recorded as `FAILED`
 - Agent output is rendered as Markdown (sanitized) with a render/raw toggle
+- A bottom-right AI chat widget provides general chat and read-only project Q&A, with an independent project picker, per-project model selection, live Markdown streaming, stop/retry controls, and responsive mobile layout
+- Chat history and topic-grouped long-term memory stay in browser `localStorage` only. The active context is capped at 30,000 characters; older durable decisions are compressed on overflow or before a new chat, while reset actions can clear the current thread, memory, or both
+- Project chat includes README, a filtered file list, and up to 8 related text files (100 KB total). Keyword scoring falls back to model-assisted path selection; `.git`, dependencies/build outputs, credentials, certificates, binary files, and paths outside the project are blocked server-side
 - When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
 - Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
-- The submit form lets you select workflow stages; planner stays enabled whenever a downstream implementation, test, review, or CI/CD stage is selected
+- The submit form uses workflow-stage buttons as the agent picker; selecting one runs that agent, while multiple stages run a workflow
 - The submit form exposes the review/test repair-route limit (default 4, maximum 10); the setting persists across clarification, continuation, and resume-last runs
-- The detail panel includes a workflow summary, terminal failure stage/reason, per-agent navigation, and token debug breakdown by agent/model/input/output
+- The detail panel includes a workflow summary, live elapsed/input/output token totals, terminal failure stage/reason, per-agent navigation, and token debug breakdown by agent/model/input/output
 - The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
 - Any completed spec run can be continued with a free-text follow-up instruction, or resumed at the failed step, requested repair route, or next enabled step after the last successful run — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
-- Submit form: agent picker + project dropdown (workspace projects) + model/effort settings + request reset
+- Submit form: stage-based agent picker + project dropdown (workspace projects) + model/effort settings + request reset
 
 If accessing from a remote machine over SSH, use local port forwarding:
 
@@ -184,6 +189,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/integrations/openclaw/health` | OpenClaw local bridge account/health (loopback only) |
 | `POST` | `/api/integrations/openclaw/specs` | Start a background OpenClaw spec; immediately return `202 + runId` |
 | `POST` | `/api/llm/complete` | One-shot LLM completion proxy (external apps via subscription) |
+| `POST` | `/api/chat` | NDJSON streaming chat; optional read-only project context, selected model, recent messages, and relevant browser memory |
+| `POST` | `/api/chat/memory` | Compress client-supplied conversation into topic-grouped Markdown memory; server does not persist it |
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
 | `POST` | `/api/runs/:id/cancel` | Force-stop a running workflow or agent process |
@@ -216,6 +223,7 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 | `AUTO_DEV_OPENAI_MODELS` | unset | Comma-separated model ids to expose, e.g. `deepseek-ai/deepseek-v4-pro` |
 | `AUTO_DEV_OPENAI_MAX_TOKENS` | unset | Optional `max_tokens` sent with each request |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | Root for project-name resolution |
+| `AUTO_DEV_SKILLS_ROOT` | `~/.codex/skills`, then `~/.claude/skills` | Optional global skill root override used by successful-spec commit processing |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | Non-root user `scripts/serve.sh` drops to when started as root |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP server bind address |
@@ -239,7 +247,7 @@ auto-dev-ts/
 ├── deploy/systemd/   User-service template independent of SSH sessions
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          Ops scripts (non-root launcher + user-service installer)
-├── static/           Dashboard frontend (vanilla HTML/JS)
+├── static/           Dashboard frontend + floating chat widget (vanilla HTML/CSS/JS)
 ├── src/
 │   ├── agents/       Agent implementations + registry
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
