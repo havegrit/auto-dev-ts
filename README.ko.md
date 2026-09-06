@@ -8,10 +8,7 @@
 
 클라우드 LLM API를 직접 호출하는 대신, Agent SDK를 통해 **Claude Code** CLI를 프로그래밍으로 제어합니다. 각 에이전트는 워크스페이스 디렉토리로 파일 I/O와 쉘 접근이 제한된 Claude Code 세션 안에서 실행됩니다. 리뷰 에이전트는 정확성 · 보안 · 성능 · 스타일 4개 서브에이전트를 동시에 병렬 실행합니다.
 
-planner가 작업을 dependency DAG로 분해해 `TEAM_PLAN`을 반환하면 독립 task는 동시에
-실행됩니다. 수정 task는 별도 git worktree에서 실행되고 결과는 자동 통합됩니다.
-충돌 시 내부 integrator가 해결을 시도합니다. 기존 `PLAN`만 반환하는 실행은 기존
-순차 workflow로 fallback하며, 팀 중첩은 최대 2단계입니다.
+planner가 dependency DAG인 `TEAM_PLAN`을 반환하면 독립 task를 별도 git worktree에서 동시에 실행하고 결과를 자동 통합합니다. 기존 `PLAN`만 반환하는 실행은 순차 workflow로 fallback하며, 팀 중첩은 최대 2단계입니다.
 
 모든 실행 기록은 로컬 SQLite 데이터베이스에 저장되며, 내장 웹 대시보드에서 확인할 수 있습니다.
 
@@ -79,7 +76,7 @@ npm run service:status
 ./run daemon
 ```
 
-### 비-root 실행
+### 운영 시 참고
 
 Claude Code SDK는 각 에이전트를 `--dangerously-skip-permissions`로 실행하는데,
 Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를 root로 실행하면
@@ -88,10 +85,10 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 
 서버는 `npm run serve:user`(→ `scripts/serve.sh`)가 root 감지 시 비-root 유저
 (`AUTO_DEV_RUN_AS_USER`, 기본 `shin`)로 권한을 낮춰 실행합니다. 해당 유저는 자체 Claude
-자격증명(`~/.claude/.credentials.json`)이 필요합니다. 샌드박스 컨테이너용 임시 우회책:
-`IS_SANDBOX=1` 설정.
+자격증명(`~/.claude/.credentials.json`)이 필요합니다. 샌드박스 컨테이너에서는
+`IS_SANDBOX=1`을 설정합니다.
 
-### SSH 종료 후에도 서버 유지
+SSH 종료 후에도 서버를 유지하려면 user service를 설치합니다.
 
 `./run serve`를 SSH 터미널의 foreground에서 실행하면 터미널 종료 시 서버와 실행 중인
 스펙도 함께 종료될 수 있습니다. `npm run service:install`은 현재 프로젝트 절대 경로로
@@ -99,10 +96,7 @@ Claude Code는 **root/sudo에서 이 플래그를 거부**합니다. auto-dev를
 `npm run service:start`로 시작하면 서버와 provider 자식 프로세스가 SSH 세션에서
 분리되고, 비정상 종료 시 자동 재시작됩니다.
 
-user service가 로그아웃 뒤에도 유지되려면 linger가 필요합니다. 설치 스크립트가 상태를
-검사하고 꺼져 있으면 `sudo loginctl enable-linger <user>` 명령을 안내합니다. 로그는
-`npm run service:logs`로 확인합니다. 같은 포트에서 `./run serve`와 service를 동시에
-실행하지 마세요.
+로그아웃 뒤에도 유지하려면 linger가 필요하며, 설치 스크립트가 필요할 때 `sudo loginctl enable-linger <user>` 명령을 안내합니다. 로그는 `npm run service:logs`로 확인합니다. 같은 포트에서 `./run serve`와 service를 동시에 실행하지 마세요.
 
 대시보드가 시작한 스펙은 HTTP 응답과 분리된 background 작업이므로 브라우저나 SSH
 포트 포워딩을 닫아도 service 안에서 계속됩니다. 단, 호스트 재부팅이나 service
@@ -152,23 +146,13 @@ clarifier → planner → scaffold → test → review → cicd
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
 
 - 에이전트 현황 및 일일 실행 횟수
-- Claude Code 로그아웃 감지 시 브라우저 OAuth 로그인 모달 표시, 인증 완료 시 같은 모달에서 성공 확인 표시 — 닫으면 같은 탭 세션에서는 숨기고, 새 `anthropic_auth_failed` 실행이 발생하면 다시 표시; 로그인 URL을 열고 브라우저의 `code#state`를 붙여넣어 완료 (루프백 접속 전용, 토큰은 브라우저나 DB에 저장하지 않음)
-- 최근 실행 목록 (에이전트, 상태, 소요시간, 출력 미리보기) — clarifier 답변·후속 실행도 최초 spec 세션 아래 하나의 요청으로 묶음; 행에는 안정적인 spec ID를 표시하고 상세에서는 spec ID와 각 시도의 run/workflow ID를 구분, `더 보기` 버튼으로 추가 로드
-- 실행 중인 작업은 SSE/polling으로 라이브 갱신 — 소요시간은 매초 증가하고 provider가 보고한 input/output 토큰 사용량은 수신 즉시 저장·표시
-- 실행 중인 행, 제출 결과 패널, 실행 상세 패널에서 강제 중단 가능; 실제 provider 프로세스를 중단하고 UI에는 `CANCELLED`로 표시
-- Claude 로그인 및 조직 구독 권한 거부 응답은 `anthropic_auth_failed`로 정규화; 다른 fallback 모델이 설정돼 있으면 1회 재시도하고, 없거나 재시도도 실패하면 해당 에이전트와 연결된 spec을 `FAILED`로 기록
-- 에이전트 출력은 마크다운으로 렌더링(살균 처리), 렌더/원본 토글 제공
-- 우하단 AI 채팅 위젯에서 일반 채팅과 읽기 전용 프로젝트 Q&A 제공 — 독립 프로젝트 선택기, 프로젝트별 모델 선택, 실시간 Markdown 스트리밍, 중지·재시도, 모바일 반응형 지원
-- 대화와 주제별 장기 기억은 브라우저 `localStorage`에만 저장. 활성 문맥은 최대 30,000자이며, 밀려난 장기 보존 내용과 새 대화 전 결정사항을 압축; 현재 대화·기억·전체 삭제를 각각 제공
-- 프로젝트 채팅은 README, 필터된 파일 목록, 관련 텍스트 파일 최대 8개(합계 100KB)를 참조. 키워드 점수가 낮으면 AI 경로 선택으로 보완하며 `.git`, 의존성/빌드 산출물, credential·인증서, 바이너리, 프로젝트 밖 경로를 서버에서 차단
-- spec run이 clarifier 질문에서 멈추면 상세 패널에 답변 입력란(추천 답안 미리 채움)이 떠 그 자리에서 재개
-- 자동 구체화는 추천 답안을 자동 승인하며, 제출 폼과 중단된 run의 답변 폼에서 최대 라운드를 조절할 수 있음 (`0`은 무제한이며 기본값); 중단 후 재개해도 설정 유지
-- 새 요청 폼의 실행 단계 버튼이 에이전트 선택기 역할을 함 — 하나를 고르면 단일 agent, 여러 개를 고르면 workflow 실행
-- 새 요청 폼에서 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있으며, 질문 답변·후속 실행·마지막 단계 재개 시에도 설정 유지
-- 상세 패널은 workflow 요약, 실시간 소요시간·input/output 토큰 합계, 종료 실패 단계·원인, 에이전트 간 이동, agent/model/input/output 기준 token debug breakdown 제공
-- 이력 표는 최상위 요청을 우선 표시하고 워크플로우 하위 단계는 접기/펼치기로 확인 가능, 완료된 spec run에는 행에서 바로 **재실행** 및 **마지막 단계부터 재개** 버튼 제공
-- 완료된 spec run은 자유 텍스트 후속 지시로 다시 실행하거나 실패 단계·요청된 재작업 경로·마지막 성공 단계 다음의 활성 단계부터 재개할 수 있음 — 원본 스펙 + 이전 Q&A + 새 지시를 합쳐 연결된 새 워크플로우로 재실행
-- 작업 제출: 단계 버튼 기반 에이전트 선택 + 프로젝트 드롭다운(워크스페이스 프로젝트) + 모델/effort 설정 + 요청 초기화
+- Claude Code 브라우저 OAuth 로그인, fallback 모델 재시도, 표준화된 실패 상태
+- 실행 목록과 상태의 실시간 갱신, 소요시간·토큰 사용량·마크다운 출력·취소
+- 스펙 재입력 없이 clarifier 답변, 후속 지시, 특정 단계부터 재개
+- 단계별 agent/workflow 제출 및 프로젝트·모델·effort·재작업 상한 설정
+- workflow 상세, agent 이동, 실패 원인, 토큰 breakdown
+- 일반 질문과 읽기 전용 프로젝트 Q&A를 지원하는 AI 채팅; 기록은 브라우저 `localStorage`에만 저장
+- 프로젝트 문맥은 README와 프로젝트 내부의 안전한 텍스트 파일로 제한
 
 원격 서버에 SSH로 접속 중이라면 로컬 포트 포워딩을 사용합니다:
 

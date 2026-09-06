@@ -8,10 +8,9 @@ Development automation agent powered by [Claude Code SDK](https://github.com/ant
 
 Instead of calling a cloud LLM API directly, auto-dev drives **Claude Code** (the CLI) programmatically via the Agent SDK. Each agent runs inside a Claude Code session with file I/O and shell access scoped to a workspace directory. The review agent fans out to four parallel sub-agents (correctness, security, performance, style) simultaneously.
 
-When the planner emits a `TEAM_PLAN` dependency DAG, independent tasks run in parallel.
-Write tasks use isolated git worktrees and are integrated automatically; conflicts are
-handed to the internal integrator agent. Legacy `PLAN` output falls back to the sequential
-workflow, and nested teams are limited to two levels.
+When the planner emits a `TEAM_PLAN` dependency DAG, independent tasks run in parallel in
+isolated git worktrees and are integrated automatically. Legacy `PLAN` output falls back to
+the sequential workflow; nested teams are limited to two levels.
 
 All runs are persisted to a local SQLite database and visible through a built-in web dashboard.
 
@@ -79,19 +78,18 @@ npm run service:status
 ./run daemon
 ```
 
-### Running as non-root
+### Operational notes
 
 The Claude Code SDK runs each agent with `--dangerously-skip-permissions`, which
 Claude Code **refuses under root/sudo**. Running auto-dev as root makes every SDK
 call fail with `Claude Code process exited with code 1` (model discovery, agent
 runs, completions). Run it as a regular user instead.
 
-For the server, `npm run serve:user` (→ `scripts/serve.sh`) auto-drops from root to
-a non-root user (`AUTO_DEV_RUN_AS_USER`, default `shin`) before starting; that user
-needs its own Claude credentials (`~/.claude/.credentials.json`). One-off workaround
-for sandboxed containers: set `IS_SANDBOX=1`.
+For the server, `npm run serve:user` (→ `scripts/serve.sh`) drops from root to a non-root
+user (`AUTO_DEV_RUN_AS_USER`, default `shin`) before starting. That user needs its own Claude
+credentials (`~/.claude/.credentials.json`). For sandboxed containers, set `IS_SANDBOX=1`.
 
-### Keeping the server alive after SSH exits
+To keep the server alive after SSH exits, install the user service:
 
 Running `./run serve` in an SSH foreground terminal can terminate the server and its
 active specs when that terminal closes. `npm run service:install` writes and enables
@@ -99,9 +97,9 @@ active specs when that terminal closes. `npm run service:install` writes and ena
 Start it with `npm run service:start`; the server and provider child processes then run
 outside the SSH session and restart after an unexpected process failure.
 
-The user service requires linger to survive logout. The installer checks it and, when
-disabled, prints the required `sudo loginctl enable-linger <user>` command. Read logs
-with `npm run service:logs`. Do not run `./run serve` and the service on the same port.
+The user service requires linger to survive logout; the installer reports the required
+`sudo loginctl enable-linger <user>` command when needed. Read logs with
+`npm run service:logs`. Do not run `./run serve` and the service on the same port.
 
 Dashboard specs already run in the service background, independently of the HTTP
 response, so closing the browser or SSH port-forward does not cancel them. Durable
@@ -151,23 +149,13 @@ After the enabled workflow stages finish successfully, two internal post-success
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
 
 - Live agent status and daily run count
-- Browser OAuth login modal shown when Claude Code is logged out, with a success confirmation in the same modal after authentication — dismissal lasts for the current tab session, while a new `anthropic_auth_failed` run shows it again; open the login URL and paste the browser's `code#state` to finish (loopback access only; tokens are never stored in the browser or database)
-- Recent run history (agent, status, duration, output preview) — clarification answers and follow-up attempts stay grouped under the original spec session; rows show the stable spec ID, while details distinguish the spec ID from each attempt's run/workflow ID; load more with the explicit `More` button
-- Running jobs update live over SSE/polling; elapsed time increments every second and provider-reported input/output token usage is persisted and shown as it arrives
-- Running rows, the submit result panel, and the run detail panel provide a force-stop action that aborts the active provider process; cancelled runs are displayed as `CANCELLED`
-- Claude login and organization subscription-denial responses are normalized to `anthropic_auth_failed`; when a different fallback model is configured it is tried once, otherwise the agent and linked spec workflow are recorded as `FAILED`
-- Agent output is rendered as Markdown (sanitized) with a render/raw toggle
-- A bottom-right AI chat widget provides general chat and read-only project Q&A, with an independent project picker, per-project model selection, live Markdown streaming, stop/retry controls, and responsive mobile layout
-- Chat history and topic-grouped long-term memory stay in browser `localStorage` only. The active context is capped at 30,000 characters; older durable decisions are compressed on overflow or before a new chat, while reset actions can clear the current thread, memory, or both
-- Project chat includes README, a filtered file list, and up to 8 related text files (100 KB total). Keyword scoring falls back to model-assisted path selection; `.git`, dependencies/build outputs, credentials, certificates, binary files, and paths outside the project are blocked server-side
-- When a spec run stops on clarifier questions, the detail panel shows answer fields (pre-filled with recommendations) to resume in place
-- Auto-clarify can accept recommended answers automatically; its maximum rounds are configurable in the submit and stopped-run answer forms (`0` means unlimited and is the default), and the setting persists when a clarification run resumes
-- The submit form uses workflow-stage buttons as the agent picker; selecting one runs that agent, while multiple stages run a workflow
-- The submit form exposes the review/test repair-route limit (default 4, maximum 10); the setting persists across clarification, continuation, and resume-last runs
-- The detail panel includes a workflow summary, live elapsed/input/output token totals, terminal failure stage/reason, per-agent navigation, and token debug breakdown by agent/model/input/output
-- The history table lists top-level requests first and keeps workflow sub-steps collapsible; completed spec runs get inline **continue** and **resume last step** buttons
-- Any completed spec run can be continued with a free-text follow-up instruction, or resumed at the failed step, requested repair route, or next enabled step after the last successful run — the original spec, prior Q&A, and the new instruction are re-run as a fresh linked workflow
-- Submit form: stage-based agent picker + project dropdown (workspace projects) + model/effort settings + request reset
+- Browser OAuth login for Claude Code, including fallback-model retry and normalized failure states
+- Live run history and status updates with elapsed time, token usage, Markdown output, and cancellation
+- Clarifier answers, follow-up instructions, and resume-from-step actions without re-entering the spec
+- Stage-based agent/workflow submission with project, model, effort, and repair-limit settings
+- Workflow details, per-agent navigation, failure reasons, and token breakdowns
+- AI chat for general questions and read-only project Q&A; chat history remains in browser `localStorage`
+- Project context is filtered server-side to README and safe text files within the project
 
 If accessing from a remote machine over SSH, use local port forwarding:
 
