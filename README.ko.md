@@ -150,6 +150,7 @@ clarifier → planner → scaffold → test → review → cicd
 - 실행 목록과 상태의 실시간 갱신, 소요시간·토큰 사용량·마크다운 출력·취소
 - 스펙 재입력 없이 clarifier 답변, 후속 지시, 특정 단계부터 재개
 - 단계별 agent/workflow 제출 및 프로젝트·모델·effort·재작업 상한 설정
+- 텍스트 요청과 참고 context 파일을 함께 제출하는 spec 입력 (모든 확장자, 파일당 2MB·전체 10MB, 여러 파일)
 - workflow 상세, agent 이동, 실패 원인, 토큰 breakdown
 - 일반 질문과 읽기 전용 프로젝트 Q&A를 지원하는 AI 채팅; 기록은 브라우저 `localStorage`에만 저장
 - 프로젝트 문맥은 README와 프로젝트 내부의 안전한 텍스트 파일로 제한

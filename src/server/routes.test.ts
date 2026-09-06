@@ -229,6 +229,62 @@ describe('Claude dashboard authentication', () => {
 });
 
 describe('dashboard auto-clarify options', () => {
+  it('accepts a supported spec attachment and preserves its filename in the input', async () => {
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'file-spec-run', done: Promise.resolve() });
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('file', new File(['# Feature\nBuild a widget'], 'feature.md', { type: 'text/markdown' }));
+    body.set('project', 'demo');
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(200);
+    expect(startSpecSession).toHaveBeenCalledWith(
+      '첨부 파일: feature.md\n\n# Feature\nBuild a widget',
+      expect.any(Object),
+    );
+  });
+
+  it('combines text input with multiple spec attachments', async () => {
+    vi.mocked(startSpecSession).mockClear();
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'combined-spec-run', done: Promise.resolve() });
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('input', '이 요구사항을 구현해줘');
+    body.set('file_0', new File(['## API context'], 'api.md'));
+    body.set('file_1', new File(['name: demo'], 'config.yaml'));
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(200);
+    const [combinedInput] = vi.mocked(startSpecSession).mock.calls[0];
+    expect(combinedInput).toContain('이 요구사항을 구현해줘');
+    expect(combinedInput).toContain('첨부 파일: api.md');
+    expect(combinedInput).toContain('## API context');
+    expect(combinedInput).toContain('첨부 파일: config.yaml');
+    expect(combinedInput).toContain('name: demo');
+  });
+
+  it('accepts any extension but rejects oversized spec attachments', async () => {
+    vi.mocked(startSpecSession).mockClear();
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'any-extension-run', done: Promise.resolve() });
+    const app = createRoutes();
+    const unsupported = new FormData();
+    unsupported.set('agent', 'spec');
+    unsupported.set('file', new File(['binary'], 'feature.exe'));
+    const unsupportedRes = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body: unsupported }));
+    expect(unsupportedRes.status).toBe(200);
+    expect(startSpecSession).toHaveBeenCalledWith('첨부 파일: feature.exe\n\nbinary', expect.any(Object));
+
+    const oversized = new FormData();
+    oversized.set('agent', 'spec');
+    oversized.set('file', new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'feature.md'));
+    const oversizedRes = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body: oversized }));
+    expect(oversizedRes.status).toBe(400);
+  });
+
   it('passes an unlimited round setting from the submit form', async () => {
     vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'spec-run', done: Promise.resolve() });
     const body = new FormData();

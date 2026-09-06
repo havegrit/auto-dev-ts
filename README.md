@@ -153,6 +153,7 @@ After the enabled workflow stages finish successfully, two internal post-success
 - Live run history and status updates with elapsed time, token usage, Markdown output, and cancellation
 - Clarifier answers, follow-up instructions, and resume-from-step actions without re-entering the spec
 - Stage-based agent/workflow submission with project, model, effort, and repair-limit settings
+- Spec submission with text and multiple reference-context files together (any extension; 2 MB per file, 10 MB total)
 - Workflow details, per-agent navigation, failure reasons, and token breakdowns
 - AI chat for general questions and read-only project Q&A; chat history remains in browser `localStorage`
 - Project context is filtered server-side to README and safe text files within the project

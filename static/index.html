@@ -380,24 +380,18 @@
       </label>
     </div>
 
-    <div class="tab-bar">
-      <button class="tab active" onclick="setTab('text')">텍스트</button>
-      <button class="tab" onclick="setTab('file')">파일</button>
-    </div>
+    <textarea id="text-input" placeholder="스펙 또는 요청 내용을 입력하세요..."></textarea>
 
-    <div id="tab-text">
-      <textarea id="text-input" placeholder="스펙 또는 요청 내용을 입력하세요..."></textarea>
-    </div>
-
-    <div id="tab-file" style="display:none">
+    <div class="attachment-panel">
+      <div style="color:#8b949e;font-size:0.78rem;margin-bottom:0.45rem">참고 context 파일 (선택)</div>
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
            ondragover="event.preventDefault();this.classList.add('drag-over')"
            ondragleave="this.classList.remove('drag-over')"
            ondrop="handleDrop(event)">
-        파일을 끌어다 놓거나 클릭해서 선택<br>
-        <small style="color:#484f58">(.md .txt .json .yaml .yml)</small>
+        파일을 끌어다 놓거나 클릭해서 추가<br>
+        <small style="color:#484f58">(모든 확장자, 파일당 최대 2 MB / 총 10 MB)</small>
       </div>
-      <input type="file" id="file-input" accept=".md,.txt,.json,.yaml,.yml" style="display:none" onchange="handleFileSelect(this)" />
+      <input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(this)" />
       <div class="file-name" id="file-name"></div>
     </div>
 
@@ -579,8 +573,7 @@
   <script src="marked.min.js"></script>
   <script src="purify.min.js"></script>
   <script>
-    let currentTab = 'text';
-    let selectedFile = null;
+    let selectedFiles = [];
     let pollTimer = null;
     let availableModels = [];
     let selectedEffort = 'high';
@@ -689,11 +682,11 @@
     }
 
     function resetRequestInput() {
-      selectedFile = null;
+      selectedFiles = [];
       document.getElementById('text-input').value = '';
       document.getElementById('file-input').value = '';
       document.getElementById('file-name').textContent = '';
-      document.getElementById('drop-zone').innerHTML = '파일을 끌어다 놓거나 클릭해서 선택<br><small style="color:#484f58">(.md .txt .json .yaml .yml)</small>';
+      document.getElementById('drop-zone').innerHTML = '파일을 끌어다 놓거나 클릭해서 추가<br><small style="color:#484f58">(모든 확장자, 파일당 최대 2 MB / 총 10 MB)</small>';
       saveRequestDraft();
     }
 
@@ -1098,32 +1091,28 @@
       renderWorkflowStepPicker();
     }
 
-    function setTab(tab) {
-      currentTab = tab;
-      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-      event.target.classList.add('active');
-      document.getElementById('tab-text').style.display = tab === 'text' ? '' : 'none';
-      document.getElementById('tab-file').style.display = tab === 'file' ? '' : 'none';
+    function handleFileSelect(input) {
+      addSelectedFiles([...input.files]);
+      input.value = '';
     }
 
-    function handleFileSelect(input) {
-      const file = input.files[0];
-      if (file) {
-        selectedFile = file;
-        document.getElementById('file-name').textContent = `선택됨: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
-        document.getElementById('drop-zone').textContent = file.name;
+    function addSelectedFiles(files) {
+      const oversized = files.find(file => file.size > 2 * 1024 * 1024);
+      if (oversized) { alert(`${oversized.name}: 파일은 2 MB 이하만 지원합니다.`); return; }
+      const merged = [...selectedFiles, ...files];
+      if (merged.reduce((total, file) => total + file.size, 0) > 10 * 1024 * 1024) {
+        alert('첨부 파일 전체 용량은 10 MB 이하만 지원합니다.');
+        return;
       }
+      selectedFiles = merged;
+      document.getElementById('file-name').textContent = selectedFiles
+        .map(file => `${file.name} (${(file.size / 1024).toFixed(1)} KB)`).join(', ');
     }
 
     function handleDrop(e) {
       e.preventDefault();
       document.getElementById('drop-zone').classList.remove('drag-over');
-      const file = e.dataTransfer.files[0];
-      if (file) {
-        selectedFile = file;
-        document.getElementById('file-name').textContent = `선택됨: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
-        document.getElementById('drop-zone').textContent = file.name;
-      }
+      addSelectedFiles([...e.dataTransfer.files]);
     }
 
     async function submitRequest() {
@@ -1131,14 +1120,10 @@
       const formData = new FormData();
       formData.append('agent', agent);
 
-      if (currentTab === 'text') {
-        const txt = document.getElementById('text-input').value.trim();
-        if (!txt) { alert('입력 내용을 작성하세요.'); return; }
-        formData.append('input', txt);
-      } else {
-        if (!selectedFile) { alert('파일을 선택하세요.'); return; }
-        formData.append('file', selectedFile);
-      }
+      const txt = document.getElementById('text-input').value.trim();
+      if (!txt && !selectedFiles.length) { alert('입력 내용 또는 참고 파일을 추가하세요.'); return; }
+      if (txt) formData.append('input', txt);
+      selectedFiles.forEach((file, index) => formData.append(`file_${index}`, file));
 
       const project = document.getElementById('project-input').value.trim();
       if (project) formData.append('project', project);

@@ -75,6 +75,9 @@ interface OpenClawSpecBody {
   deliveryIntent?: 'ci' | 'cd';
 }
 
+const SPEC_ATTACHMENT_MAX_BYTES = 2 * 1024 * 1024;
+const SPEC_ATTACHMENTS_MAX_BYTES = 10 * 1024 * 1024;
+
 export function createRoutes(): Hono {
   const app = new Hono();
 
@@ -328,9 +331,24 @@ export function createRoutes(): Hono {
     let input = String(body['input'] ?? '');
     const project = String(body['project'] ?? '').trim() || undefined;
 
-    const file = body['file'];
-    if (file instanceof File && file.size > 0) {
-      input = await file.text();
+    const files = Object.entries(body)
+      .filter(([key]) => key === 'file' || /^file_\d+$/.test(key))
+      .flatMap(([, value]) => Array.isArray(value) ? value : [value])
+      .filter((file): file is File => file instanceof File);
+    if (files.length > 0) {
+      if (agentName === 'spec') {
+        if (files.some((file) => file.size > SPEC_ATTACHMENT_MAX_BYTES)) {
+          return c.json({ error: 'spec 첨부 파일은 2 MB 이하만 지원합니다' }, 400);
+        }
+        if (files.reduce((total, file) => total + file.size, 0) > SPEC_ATTACHMENTS_MAX_BYTES) {
+          return c.json({ error: 'spec 첨부 파일 전체 용량은 10 MB 이하만 지원합니다' }, 400);
+        }
+      }
+      const attachments = (await Promise.all(files.map(async (file) => {
+        if (file.size === 0) return '';
+        return `첨부 파일: ${file.name}\n\n${await file.text()}`;
+      }))).filter(Boolean);
+      input = [input.trim(), ...attachments].filter(Boolean).join('\n\n');
     }
 
     if (!input.trim()) return c.json({ error: 'input 또는 파일이 필요합니다' }, 400);
