@@ -1,3 +1,6 @@
+import { randomUUID } from 'crypto';
+import { mkdir, writeFile } from 'fs/promises';
+import { basename, join } from 'path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { complete, completeStream, parseJsonLoose } from '../lib/complete.js';
@@ -77,6 +80,25 @@ interface OpenClawSpecBody {
 
 const SPEC_ATTACHMENT_MAX_BYTES = 2 * 1024 * 1024;
 const SPEC_ATTACHMENTS_MAX_BYTES = 10 * 1024 * 1024;
+const SPEC_INLINE_ATTACHMENT_MAX_BYTES = 512 * 1024;
+
+function decodeTextAttachment(bytes: Uint8Array): string | undefined {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return text.includes('\u0000') ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveBinaryAttachment(file: File, cwd: string): Promise<string> {
+  const dir = join(cwd, '.auto-dev-attachments');
+  await mkdir(dir, { recursive: true });
+  const name = basename(file.name).replace(/[^\p{L}\p{N}._-]+/gu, '_') || 'attachment';
+  const relativePath = join('.auto-dev-attachments', `${randomUUID()}-${name}`);
+  await writeFile(join(cwd, relativePath), Buffer.from(await file.arrayBuffer()));
+  return relativePath;
+}
 
 export function createRoutes(): Hono {
   const app = new Hono();
@@ -331,6 +353,15 @@ export function createRoutes(): Hono {
     let input = String(body['input'] ?? '');
     const project = String(body['project'] ?? '').trim() || undefined;
 
+    let cwd: string;
+    try {
+      cwd = agentName === 'spec' && !project
+        ? resolveProjectDir(undefined, input)
+        : resolveProjectDir(project);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
     const files = Object.entries(body)
       .filter(([key]) => key === 'file' || /^file_\d+$/.test(key))
       .flatMap(([, value]) => Array.isArray(value) ? value : [value])
@@ -344,23 +375,22 @@ export function createRoutes(): Hono {
           return c.json({ error: 'spec 첨부 파일 전체 용량은 10 MB 이하만 지원합니다' }, 400);
         }
       }
+      let inlineBytes = 0;
       const attachments = (await Promise.all(files.map(async (file) => {
         if (file.size === 0) return '';
-        return `첨부 파일: ${file.name}\n\n${await file.text()}`;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const text = decodeTextAttachment(bytes);
+        if (text !== undefined && inlineBytes + bytes.byteLength <= SPEC_INLINE_ATTACHMENT_MAX_BYTES) {
+          inlineBytes += bytes.byteLength;
+          return `첨부 파일: ${file.name}\n\n${text}`;
+        }
+        const path = await saveBinaryAttachment(file, cwd);
+        return `첨부 파일 경로: ${path}\n내용은 Claude Code Read 도구로 확인`;
       }))).filter(Boolean);
       input = [input.trim(), ...attachments].filter(Boolean).join('\n\n');
     }
 
     if (!input.trim()) return c.json({ error: 'input 또는 파일이 필요합니다' }, 400);
-
-    let cwd: string;
-    try {
-      cwd = agentName === 'spec' && !project
-        ? resolveProjectDir(undefined, input)
-        : resolveProjectDir(project);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
-    }
 
     if (agentName === 'spec') {
       const stepsRaw = String(body['steps'] ?? '');

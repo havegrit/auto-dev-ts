@@ -7,3 +7,4 @@ data/
 coverage/
 *.log
 .DS_Store
+**/.auto-dev-attachments/

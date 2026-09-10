@@ -285,6 +285,23 @@ describe('dashboard auto-clarify options', () => {
     expect(oversizedRes.status).toBe(400);
   });
 
+  it('does not inline binary attachments into the spec prompt', async () => {
+    vi.mocked(startSpecSession).mockClear();
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'image-spec-run', done: Promise.resolve() });
+    const body = new FormData();
+    body.set('agent', 'spec');
+    body.set('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])], 'screen.png', { type: 'image/png' }));
+
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
+
+    expect(res.status).toBe(200);
+    const [input] = vi.mocked(startSpecSession).mock.calls[0];
+    expect(input).toContain('첨부 파일 경로: .auto-dev-attachments/');
+    expect(input).toContain('screen.png');
+    expect(input).not.toContain('PNG');
+  });
+
   it('passes an unlimited round setting from the submit form', async () => {
     vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'spec-run', done: Promise.resolve() });
     const body = new FormData();

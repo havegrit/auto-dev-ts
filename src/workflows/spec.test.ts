@@ -215,6 +215,34 @@ describe('runSpec clarification gate', () => {
     expect(result.steps.scaffold).toBeUndefined();
   });
 
+  it('accepts a single-step plan for a narrowly scoped request', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 10,
+      status: 'DONE',
+    };
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. review | verify the narrowly scoped change\nEND.',
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 10,
+      status: 'DONE',
+    };
+
+    const result = await runSpec('좁은 범위의 요청', {
+      steps: new Set(['clarifier', 'planner', 'review']),
+    });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.steps.planner.status).toBe('DONE');
+    expect(result.steps.review.status).toBe('DONE');
+    expect(commitSuccessfulSpec).toHaveBeenCalledOnce();
+  });
+
   it('includes the review output when a requested planner route cannot be taken', async () => {
     clarifierResult = {
       runId: 'clarifier-run',

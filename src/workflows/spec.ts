@@ -115,14 +115,14 @@ function parseTests(output: string): 'PASS' | 'FAIL' | 'BLOCKED' | undefined {
   return 'FAIL';
 }
 
-/** planner strict contract: PLAN block containing 2-8 numbered specialist assignments. */
+/** planner strict contract: PLAN block containing 1-8 numbered specialist assignments. */
 function isValidPlanOutput(output: string): boolean {
   const lines = output.split(/\r?\n/).map((line) => line.trim());
   const start = lines.indexOf('PLAN:');
   const end = lines.indexOf('END.', start + 1);
   if (start < 0 || end < 0) return false;
   const steps = lines.slice(start + 1, end).filter(Boolean);
-  if (steps.length < 2 || steps.length > 8) return false;
+  if (steps.length < 1 || steps.length > 8) return false;
   return steps.every((line, index) =>
     new RegExp(`^${index + 1}\\.\\s*(?:scaffold|test|review|cicd)\\s+\\|\\s+\\S`, 'i').test(line),
   );
