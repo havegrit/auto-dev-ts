@@ -39,6 +39,7 @@
 - ✅ LLM 프로바이더 seam (`src/llm/` — 인증/프로바이더 교체 가능, §4.2)
 - ✅ rate-limit 회로차단기 (`circuit-breaker` — 429/reset 감지 시 실행 차단)
 - ✅ issue-tracker 연동 (`/api/issues`, `work <key>` — 이슈 조회 + 자동 처리)
+- ✅ automation job client (idempotent create, lease claim/heartbeat, review/retry API)
 - ✅ 프로젝트명 기반 워크스페이스 (경로 대신 프로젝트명 입력 → 루트 기준 해석)
 - ✅ 단발성 LLM 프록시 (`POST /api/llm/complete` — 외부 정적 앱이 구독으로 생성)
 - ✅ 플로팅 AI 채팅 (일반 채팅 + 안전한 프로젝트 Q&A + 브라우저 장기 기억 + NDJSON 스트리밍)
@@ -54,12 +55,12 @@
 
 | 영역 | 선택 | 한 줄 근거 |
 |---|---|---|
-| 언어/런타임 | **TypeScript + Node.js 22** | Claude Code SDK 가 Node.js 기반 |
+| 언어/런타임 | **TypeScript + Node.js 24** | Claude Code SDK 가 Node.js 기반 |
 | LLM 런타임 | **Claude Code SDK (`@anthropic-ai/claude-agent-sdk`)** | Claude Code CLI 를 프로그래밍으로 제어, 구독 플랜 사용 |
 | LLM 추상화 | **프로바이더 seam (`src/llm/`)** | SDK 호출을 `anthropic` 프로바이더로 격리 → 인증/프로바이더 교체 가능 (§4.2) |
 | HTTP 서버 | **Hono + `@hono/node-server`** | 경량, Spring Boot 대비 오버헤드 없음 |
 | CLI | **Commander v12** | Picocli 대응, Node.js 생태계 표준 |
-| 영속화 | **better-sqlite3 v9** | 동기 API, 단일 사용자 / 파일 1개 |
+| 영속화 | **better-sqlite3 v12** | 동기 API, 단일 사용자 / 파일 1개 |
 | 스케줄러 | **node-cron v3** | `@Scheduled` 대응 |
 | 빌드/실행 | **tsx (dev) + tsc (prod)** | TypeScript 직접 실행, Gradle 불필요 |
 
@@ -563,6 +564,7 @@ data/
 | `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
 | `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
 | `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거 |
+| 외부 연동 | `POST /automation/jobs` 등 | issue-tracker automation job 생성·claim·heartbeat·review |
 
 ### 8.3 스케줄러 (node-cron)
 
@@ -805,7 +807,7 @@ auto-dev-ts/
 │   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
 │   │   └── from-issue.ts             # 이슈 1건 → 워크플로우 트리거
 │   ├── integrations/
-│   │   └── issue-tracker/            # 이슈 조회 클라이언트 (+ Noop 폴백)
+│   │   └── issue-tracker/            # 이슈·automation job 클라이언트 (+ Noop 폴백)
 │   ├── llm/                          # LLM 프로바이더 seam (§4.2)
 │   │   ├── types.ts                  # AgentRunner / Completer / ModelCatalog 인터페이스
 │   │   ├── registry.ts               # AUTO_DEV_PROVIDER 기반 활성 프로바이더 선택
@@ -850,7 +852,7 @@ auto-dev-ts/
 
 ### 14.1 사전 조건
 
-- Node.js 22+ (`nvm install 22`)
+- Node.js 24+ (`nvm install 24`)
 - Claude Code CLI 인증 완료 (`claude` 가 PATH 에 있어야 함)
 - npm
 

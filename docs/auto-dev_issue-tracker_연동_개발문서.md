@@ -20,10 +20,11 @@
 
 | 구성 | 자바 auto-dev | TS auto-dev-ts | issue-tracker (Go) |
 |---|---|---|---|
-| 이슈 추상화 | `IssueTrackerHook` 인터페이스 | ❌ 없음 | — |
-| 구현체 | `JiraIssueTrackerHook` / `NoopIssueTrackerHook` (조건부 와이어링) | ❌ 없음 | — |
-| 자동 수집 | `WorklogBriefingTask` `@Scheduled` → fetch → review 브리핑 | ⚠️ 스케줄러는 있으나 정적 프롬프트(이슈 fetch 없음) | — |
-| 조회 API | `GET /jira/issues` | ❌ 없음 | `GET /issues` 제공 |
+| 이슈 추상화 | `IssueTrackerHook` 인터페이스 | ✅ `IssueTracker` 인터페이스 | — |
+| 구현체 | `JiraIssueTrackerHook` / `NoopIssueTrackerHook` (조건부 와이어링) | ✅ HTTP + Noop 구현 | — |
+| 자동 수집 | `WorklogBriefingTask` `@Scheduled` → fetch → review 브리핑 | ✅ briefing scheduler가 issue fetch | — |
+| 조회 API | `GET /jira/issues` | ✅ `/api/issues`, `work <key>` | `GET /issues` 제공 |
+| 자동화 job API | — | ✅ client adapter | `/automation/jobs` 제공 |
 | 데이터 소스 | Jira REST API v3 | — | 자체 REST + SQLite |
 
 > issue-tracker 스키마에 `source`, `linked_run_id` 필드가 이미 존재 → **auto-dev 실행과 연결되도록 처음부터 설계됨**. 이번 연동에서 이 필드를 활용한다.
@@ -39,6 +40,12 @@
 | `PATCH` | `/issues/{key}` | 부분 갱신 (status, linkedRunId 등) |
 | `POST` | `/issues` | 이슈 생성 |
 | `GET` | `/healthz` | 헬스체크 |
+| `POST` | `/automation/jobs` | idempotent automation job 생성 |
+| `GET` | `/automation/jobs?review=true` | 검토 대기 목록 |
+| `POST` | `/automation/jobs/:id/claim` | lease 기반 atomic claim |
+| `POST` | `/automation/jobs/:id/heartbeat` | lease 연장 |
+| `PATCH` | `/automation/jobs/:id` | claim token 기반 worker 상태 갱신 |
+| `POST` | `/automation/jobs/:id/review` | 승인·재작업·재시도·거절 |
 
 **Issue 모델 (응답 JSON)**
 ```
@@ -73,6 +80,12 @@ export interface IssueTracker {
   // 확장 단계에서 사용
   getIssue?(key: string): Promise<IssueRef | null>;
   updateIssue?(key: string, patch: { status?: string; linkedRunId?: string }): Promise<void>;
+  createAutomationJob?(input: AutomationJobCreateInput): Promise<AutomationJob>;
+  listAutomationJobs?(options?: AutomationJobListOptions): Promise<AutomationJob[]>;
+  claimAutomationJob?(id: string, instanceId: string, leaseSeconds?: number): Promise<AutomationJob>;
+  heartbeatAutomationJob?(id: string, claimToken: string, leaseSeconds?: number): Promise<AutomationJob>;
+  patchAutomationJob?(id: string, input: AutomationJobPatchInput): Promise<AutomationJob>;
+  reviewAutomationJob?(id: string, input: AutomationJobReviewInput): Promise<AutomationJob>;
 }
 ```
 > auto-dev-ts는 클래스/DI 대신 함수형 모듈을 쓰므로, 인터페이스 + 팩토리 함수로 구현한다.
@@ -83,6 +96,9 @@ export interface IssueTracker {
   - `fetchOpenIssues()` → `GET /issues?status=OPEN` 결과를 `IssueRef[]`로 매핑
   - `updateIssue()` → `PATCH /issues/{key}`
 - **`noopIssueTracker`** — 항상 빈 배열 (설정 없을 때 fallback)
+
+automation job 메서드는 issue-tracker의 idempotency key와 lease/heartbeat 계약을 그대로
+노출한다. claim token은 claim 응답에서만 사용하고 일반 조회 결과에는 포함하지 않는다.
 
 ### 4.3 설정 기반 자동 전환 (자바 `@ConditionalOnExpression` 대응)
 
@@ -128,16 +144,16 @@ await review(prompt, { triggerSource: 'schedule' });
 
 ## 5. 구현 체크리스트
 
-- [ ] `src/integrations/issue-tracker/types.ts` — `IssueRef`, `IssueTracker`
-- [ ] `src/integrations/issue-tracker/client.ts` — `httpIssueTracker()` (fetch 기반)
+- [x] `src/integrations/issue-tracker/types.ts` — `IssueRef`, `IssueTracker`, automation job types
+- [x] `src/integrations/issue-tracker/client.ts` — `httpIssueTracker()` (fetch 기반)
 - [ ] `src/integrations/issue-tracker/noop.ts` — `noopIssueTracker`
-- [ ] `src/integrations/issue-tracker/index.ts` — `getIssueTracker()` 팩토리
-- [ ] `src/schedule/briefing.ts` — 이슈 fetch 연동 (4.4)
-- [ ] `src/workflows/from-issue.ts` — 이슈 자동 처리 + 상태/역기록 (4.5, 확장)
-- [ ] `src/cli.ts` — `./run issues` (목록), `./run work <key>` (자동 처리) 커맨드 추가
-- [ ] `src/server/routes.ts` — `GET /api/issues`, `POST /api/issues/:key/run`
-- [ ] `.env.example` — `AUTO_DEV_ISSUE_TRACKER_URL` 등 추가
-- [ ] `docs/ARCHITECTURE.md` / `README` — 연동 섹션 갱신
+- [x] `src/integrations/issue-tracker/index.ts` — `getIssueTracker()` 팩토리
+- [x] `src/schedule/briefing.ts` — 이슈 fetch 연동 (4.4)
+- [x] `src/workflows/from-issue.ts` — 이슈 자동 처리 + 상태/역기록 (4.5, 확장)
+- [x] `src/cli.ts` — `./run issues` (목록), `./run work <key>` (자동 처리) 커맨드 추가
+- [x] `src/server/routes.ts` — `GET /api/issues`, `POST /api/issues/:key/run`
+- [x] `.env.example` — `AUTO_DEV_ISSUE_TRACKER_URL` 등 추가
+- [x] `docs/ARCHITECTURE.md` / `README` — 연동 섹션 갱신
 - [ ] 포트폴리오 3.5 "확장 구조" → "동작하는 기능"으로 업데이트
 
 ---

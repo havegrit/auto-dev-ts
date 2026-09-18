@@ -1,4 +1,13 @@
-export type { IssueRef, IssueTracker } from './types.js';
+export type {
+  AutomationJob,
+  AutomationJobCreateInput,
+  AutomationJobListOptions,
+  AutomationJobPatchInput,
+  AutomationJobReviewInput,
+  AutomationJobStatus,
+  IssueRef,
+  IssueTracker,
+} from './types.js';
 export { httpIssueTracker } from './client.js';
 export { noopIssueTracker } from './noop.js';
 
