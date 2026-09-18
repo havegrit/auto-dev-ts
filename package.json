@@ -23,6 +23,7 @@
     "service:restart": "systemctl --user restart auto-dev.service",
     "service:status": "systemctl --user status auto-dev.service",
     "service:logs": "journalctl --user -u auto-dev.service -f",
+    "backup:db": "node scripts/backup-db.mjs",
     "test": "vitest run"
   },
   "dependencies": {

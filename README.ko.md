@@ -26,7 +26,7 @@ planner가 dependency DAG인 `TEAM_PLAN`을 반환하면 독립 task를 별도 g
 ## 요구사항
 
 - [Claude Code](https://claude.ai/code) 설치 및 인증 완료 (`claude`가 PATH에 있어야 함), 또는 `AUTO_DEV_PROVIDER=codex-cli` 사용 시 Codex CLI 설치 및 인증 완료
-- Node.js ≥ 22
+- Node.js ≥ 24
 - npm
 
 ## 설치
@@ -39,6 +39,35 @@ cp .env.example .env
 ```
 
 `.env` 파일을 필요에 맞게 수정합니다 (워크스페이스 경로, 포트, 일일 실행 제한 등).
+
+### Docker Compose
+
+개발용 컨테이너는 소스, DB/workspace 데이터, Claude/Codex 자격증명을 분리된 volume으로
+보존합니다. 컨테이너는 non-root `app` 사용자로 실행되며, healthcheck와
+`restart: unless-stopped`가 설정되어 있습니다.
+
+```bash
+cp .env.example .env
+docker compose build
+bash docker/seed-claude.sh       # 최초 1회: 호스트 Claude OAuth 자격증명 복사
+docker compose up -d
+docker compose ps
+docker compose logs -f auto-dev
+```
+
+대시보드는 `http://127.0.0.1:8080`에서 확인합니다. 다른 인스턴스를 추가할 때는 별도
+clone 디렉터리에서 `.env`의 `AUTO_DEV_HOST_PORT`와 Compose project name을 분리합니다.
+SQLite DB 백업:
+
+```bash
+docker compose exec auto-dev npm run backup:db
+```
+
+prod 이미지는 별도 profile로 실행할 수 있습니다.
+
+```bash
+docker compose --profile prod up -d auto-dev-prod
+```
 
 ## 사용법
 

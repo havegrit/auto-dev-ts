@@ -1,7 +1,7 @@
 # auto-dev Docker 컨테이너화 설계
 
 - **날짜**: 2026-06-19
-- **상태**: 승인됨 (구현 대기)
+- **상태**: 구현됨
 - **대상 프로젝트**: `auto-dev-ts` — Claude Code SDK 기반 개발 자동화 에이전트
 
 ## 배경
@@ -28,7 +28,7 @@
 | 사용 패턴 | 상시 `serve` 서버 + `docker compose exec`로 CLI | dev 워크플로우에 자연스러움 |
 | 자격증명 마운트 권한 | **rw** | access token은 단명 → 컨테이너가 스스로 갱신해 파일에 써야 함. ro는 만료 시 인증 끊김 |
 | 자격증명 마운트 대상 | **컨테이너 전용 named volume**(`claude-config`), 호스트에서 1회 시드 | 호스트 config/history와 격리, refresh token 회전 충돌 회피 |
-| Claude 버전 | **이미지에 핀, 초기값 `2.1.183`(호스트와 동일)** | config가 격리됐으므로 독립 가능, 재현성 위해 고정. 업그레이드는 의도적 재빌드 |
+| Claude 버전 | **이미지에 핀, 초기값 `2.1.274`** | config가 격리됐으므로 독립 가능, 재현성 위해 고정. 업그레이드는 의도적 재빌드 |
 
 ### 자격증명 설계 상세
 
@@ -49,9 +49,9 @@
 ```
 base   ─ node:24-bookworm-slim
          + apt: git, build-essential, python3, ca-certificates
-         + npm i -g @anthropic-ai/claude-code@2.1.183   (SDK가 spawn할 CLI, 버전 핀)
+         + npm i -g @anthropic-ai/claude-code@2.1.274   (SDK가 spawn할 CLI, 버전 핀)
   │
-  ├─ deps ─ COPY package*.json → npm install
+  ├─ deps ─ COPY package*.json → npm ci
   │         (better-sqlite3 네이티브를 컨테이너 arch로 컴파일)
   │
   ├─ dev  ─ (target) deps 기반. 소스는 런타임 바인드마운트.
@@ -77,7 +77,7 @@ services:
     volumes:
       - ./:/app                             # 소스 바인드마운트 (dev: 무재빌드 반영)
       - auto-dev-node_modules:/app/node_modules   # 컨테이너 컴파일 node_modules 보존
-      - claude-config:/root/.claude         # 컨테이너 전용 자격증명 (rw, 시드 1회)
+      - claude-config:/home/app/.claude     # 컨테이너 전용 자격증명 (rw, 시드 1회)
     command: npm run serve
 
   # prod 서비스 — 지금은 정의만, profiles로 분리
@@ -91,13 +91,15 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ./data:/app/data                    # prod는 데이터만 영속화
-      - claude-config:/root/.claude
+      - auto-dev-data:/app/data             # prod 데이터 named volume
+      - claude-config:/home/app/.claude
     command: node dist/cli.js serve
 
 volumes:
   auto-dev-node_modules:
+  auto-dev-data:
   claude-config:
+  codex-home:
 ```
 
 ### 볼륨 설계 근거
@@ -105,8 +107,8 @@ volumes:
 - **`auto-dev-node_modules`**: `./:/app` 바인드마운트가 호스트의 node_modules(호스트 arch로 빌드된
   `better-sqlite3`)로 컨테이너 것을 덮어쓰는 것을 막는다. 빈 named volume은 이미지의
   `/app/node_modules`로 초기화돼 컨테이너 arch 네이티브 모듈이 유지된다.
-- **`./data` 영속화**: dev는 소스 바인드마운트(`./:/app`)에 포함되므로 별도 볼륨 불필요. prod는
-  `./data:/app/data`만 별도 마운트.
+- **DB/workspace 영속화**: dev는 소스 바인드마운트(`./:/app`)에 포함되고, prod는
+  `auto-dev-data:/app/data` named volume을 사용한다.
 - **`claude-config`**: 위 자격증명 설계대로 컨테이너 전용.
 
 ### .dockerignore
@@ -124,7 +126,7 @@ data
 
 | 파일 | 내용 |
 |------|------|
-| `Dockerfile` | 멀티스테이지 (base→deps→dev / build→prod), claude CLI `2.1.183` 핀 |
+| `Dockerfile` | 멀티스테이지 (base→deps→dev / build→prod), claude CLI `2.1.274` 핀 |
 | `compose.yaml` | dev 서비스 + prod 프로파일 + named volumes |
 | `.dockerignore` | 빌드 컨텍스트 제외 목록 |
 | `docker/seed-claude.sh` | 호스트 `~/.claude/.credentials.json` → `claude-config` 볼륨 1회 시드 |
@@ -139,7 +141,7 @@ docker compose up -d              # serve 대시보드 기동
 ```
 
 `seed-claude.sh`는 임시 컨테이너에 named volume을 마운트하고 호스트의
-`~/.claude/.credentials.json`(+ 필요 시 `settings.json`)을 `/root/.claude`로 복사한다.
+`~/.claude/.credentials.json`(+ 필요 시 `settings.json`)을 `/home/app/.claude`로 복사한다.
 
 ## 일상 사용
 
@@ -153,7 +155,7 @@ docker compose down                                    # 중지
 ## 검증 기준 (완료 조건)
 
 1. `docker compose up -d` 후 `http://127.0.0.1:8080` 대시보드 응답.
-2. 컨테이너 내부 `claude --version` = `2.1.183`, `node --version` ≥ 24.
+2. 컨테이너 내부 `claude --version` = `2.1.274`, `node --version` ≥ 24.
 3. `docker compose exec auto-dev ./run clarifier "..."`가 **인증을 통과해** 실제 에이전트 실행
    (Claude OAuth 동작 확인).
 4. `better-sqlite3`가 컨테이너 arch로 로드되어 DB 쓰기 성공.
@@ -164,4 +166,4 @@ docker compose down                                    # 중지
 
 - issue-tracker 연동(`AUTO_DEV_ISSUE_TRACKER_URL`) — 선택 기능, 기본 비활성.
 - 워크로그 브리핑 스케줄러 — 선택 기능.
-- prod 서비스의 실제 운영 튜닝(헬스체크·리소스 제한 등) — prod 활성화 시점에 별도 처리.
+- prod 서비스의 실제 운영 튜닝(리소스 제한·관측성 등) — prod 활성화 시점에 별도 처리.

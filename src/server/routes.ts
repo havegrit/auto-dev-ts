@@ -103,6 +103,8 @@ async function saveBinaryAttachment(file: File, cwd: string): Promise<string> {
 export function createRoutes(): Hono {
   const app = new Hono();
 
+  app.get('/healthz', (c) => c.json({ ok: true }));
+
   // 인터뷰 등 외부 정적 앱(다른 포트)에서 LLM 프록시를 호출할 수 있도록 허용 (루프백 전용)
   app.use('/api/*', cors());
 

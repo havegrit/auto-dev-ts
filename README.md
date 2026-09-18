@@ -28,7 +28,7 @@ All runs are persisted to a local SQLite database and visible through a built-in
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude` in PATH), or Codex CLI installed and authenticated when using `AUTO_DEV_PROVIDER=codex-cli`
-- Node.js ≥ 22
+- Node.js ≥ 24
 - npm
 
 ## Setup
@@ -41,6 +41,35 @@ cp .env.example .env
 ```
 
 Edit `.env` as needed (workspace root, port, daily run limit).
+
+### Docker Compose
+
+The development container persists the source, DB/workspace data, and Claude/Codex
+credentials in separate volumes. It runs as the non-root `app` user with a healthcheck
+and `restart: unless-stopped`.
+
+```bash
+cp .env.example .env
+docker compose build
+bash docker/seed-claude.sh       # once: copy host Claude OAuth credentials
+docker compose up -d
+docker compose ps
+docker compose logs -f auto-dev
+```
+
+The dashboard is available at `http://127.0.0.1:8080`. For another instance, use a
+separate clone directory and separate `AUTO_DEV_HOST_PORT`/Compose project name. Back up
+the SQLite DB with:
+
+```bash
+docker compose exec auto-dev npm run backup:db
+```
+
+The production image is available behind a separate profile:
+
+```bash
+docker compose --profile prod up -d auto-dev-prod
+```
 
 ## Usage
 

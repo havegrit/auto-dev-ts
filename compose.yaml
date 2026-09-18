@@ -1,0 +1,66 @@
+name: auto-dev
+
+services:
+  auto-dev:
+    build:
+      context: .
+      target: dev
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.274}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTO_DEV_BIND_ADDR: 0.0.0.0
+      AUTO_DEV_BIND_PORT: 8080
+      AUTO_DEV_RUN_AS_USER: app
+    ports:
+      - "127.0.0.1:${AUTO_DEV_HOST_PORT:-8080}:8080"
+    volumes:
+      - ./:/app
+      - auto-dev-node-modules:/app/node_modules
+      - claude-config:/home/app/.claude
+      - codex-home:/home/app/.codex
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+    init: true
+
+  auto-dev-prod:
+    profiles: [prod]
+    build:
+      context: .
+      target: prod
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.274}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTO_DEV_BIND_ADDR: 0.0.0.0
+      AUTO_DEV_BIND_PORT: 8080
+      AUTO_DEV_RUN_AS_USER: app
+    ports:
+      - "127.0.0.1:${AUTO_DEV_HOST_PORT:-8080}:8080"
+    volumes:
+      - auto-dev-data:/app/data
+      - claude-config:/home/app/.claude
+      - codex-home:/home/app/.codex
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+    init: true
+
+volumes:
+  auto-dev-node-modules:
+  auto-dev-data:
+  claude-config:
+  codex-home:

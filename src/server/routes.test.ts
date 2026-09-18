@@ -105,6 +105,16 @@ import { loadModelsFromCli } from '../lib/model-config.js';
 import { completeStream } from '../lib/complete.js';
 import { summarizeChatMemory } from '../lib/chat.js';
 
+describe('health', () => {
+  it('serves the container health endpoint without invoking providers', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/healthz'));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('dashboard chat', () => {
   beforeEach(() => {
     vi.mocked(completeStream).mockImplementation(async (_opts, onText) => {
