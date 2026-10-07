@@ -762,8 +762,11 @@ auto-dev-ts/
 ├── package.json / tsconfig.json
 ├── .env.example
 ├── README.md / README.ko.md
+├── CLAUDE.md                         # 이 저장소에서 일하는 에이전트용 작업 규칙
 ├── docs/
-│   └── ARCHITECTURE.md               ← 본 문서
+│   ├── ARCHITECTURE.md               ← 본 문서
+│   └── plans/
+│       └── verification-roadmap.md   # 검증 중심 개선 로드맵 (Phase 0~7)
 ├── deploy/systemd/
 │   └── auto-dev.service.in            # SSH 세션 독립 user service 템플릿
 ├── integrations/openclaw/skills/
