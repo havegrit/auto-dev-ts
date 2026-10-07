@@ -22,6 +22,14 @@ function rootAbsPath(): string {
 }
 
 /**
+ * cwd 가 지정되지 않은 실행이 사용하는 기본 작업 디렉토리.
+ * runner(에이전트 실행)와 spec(검증 게이트)이 같은 경로를 봐야 하므로 한곳에서 만든다.
+ */
+export function defaultWorkspaceDir(): string {
+  return expandHome(process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace');
+}
+
+/**
  * 프로젝트명을 워크스페이스 루트 하위의 절대경로로 변환한다.
  * 비어 있으면 루트 자체를 반환하거나, seed 가 있으면 seed 기반 새 프로젝트 경로를 만든다.
  * project 입력은 워크스페이스 루트 하위 상대 경로로만 해석한다.

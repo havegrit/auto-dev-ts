@@ -355,6 +355,10 @@ Java 버전 대비 차이점:
 - 테스트 코드 오류는 자기 실행 안에서 직접 수정한다. 프로덕션 소스 오류는 고치지 않고
   `[TESTS: FAIL]` + `[ROUTE: planner|clarifier]` 로 보고 → 오케스트레이터가 해당
   단계로 되돌려 scaffold 가 재구현 (§6.2, §10.3)
+- `[TESTS: PASS]` 는 **자기 보고일 뿐 최종 판정이 아니다.** 대상 프로젝트가
+  `.auto-dev/project.json` 에 `verify` 를 선언했으면 오케스트레이터가 그 명령을 직접
+  실행해 종료 코드로 확정한다 (§6.2.1)
+- 테스트 경로 밖의 파일을 수정했는지 실행 전후 내용 해시로 사후 검사한다 (§6.2.1)
 
 ### 5.6 cicd
 
@@ -391,10 +395,17 @@ while cursor < len(STEP_ORDER):
         if invalid PLAN contract: verdict = BLOCKED; break
         planOutput = result.output
 
+    # test 직후: 역할 경계 사후 검사 (테스트 경로 밖 변경 = 즉시 실패)
+    if step == 'test' and roleBoundary violated: verdict = FAILED; break
+
     # test: 소스 코드 오류로 판정된 FAIL 만 되돌린다 (테스트 코드 오류는 test 가 직접 수정)
     if step == 'test' and missing [TESTS: ...]: verdict = BLOCKED; break
     if step == 'test' and parseTests == FAIL and [ROUTE: planner|clarifier]:
         cursor = index(route); pendingFeedback = result; continue
+
+    # test PASS: 오케스트레이터가 verify 명령을 직접 실행해 확정한다 (§6.2.1)
+    if step == 'test' and parseTests == PASS and project has verify:
+        if verify exit != 0: cursor = index('planner'); pendingFeedback = verify tail; continue
 
     # review: NEEDS-WORK + [ROUTE: ...] 이면 되돌린다. SHIP → cicd 진행, BLOCKED → 종료
     if step == 'review':
@@ -447,6 +458,8 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
   clarifier 대기·실패·취소·안전 상한 종료에는 실행하지 않으며, 후처리 실패는 별도 로그로 남긴다.
   commit 단계는 원본 spec·확정 범위·planner 출력과
   docs 결과를 받아 관련 파일/hunk만 stage하고, 기존 사용자 변경·push·history rewrite를 금지한다.
+- **피드백 출처**(`FeedbackSource`)는 `Step` 보다 넓다. 에이전트 단계 외에 오케스트레이터가
+  직접 관찰한 `verify`, `role-boundary` 도 재작업 근거가 된다.
 - **라우팅 대상**은 review/test 가 출력 끝의 `[ROUTE: planner]` / `[ROUTE: clarifier]`
   마커로 직접 지정한다. clarifier = 요구사항 모호, planner = 구현/설계 결함.
   `NEEDS-WORK`/`TESTS: FAIL`인데 provider가 ROUTE 마커를 누락하면 구현 결함의 기본
@@ -456,6 +469,70 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
   clarifier 반복은 이 cap에서 제외되므로 모델이 계속 질문할 경우 비용과 시간이 계속 증가한다.
 - `--steps` 로 특정 단계만 실행 가능. 라우팅 대상이 필터에서 빠져 있으면 라우팅하지 않는다.
 - 모든 자식 실행은 동일한 `workflowRunId` 로 묶여 DB 에서 추적 가능 (재작업 포함).
+
+### 6.2.1 결정적 검증 게이트 (verify)
+
+통과 판정의 근거를 LLM 의 자기 보고에서 **오케스트레이터가 직접 관찰한 종료 코드**로
+옮기는 장치다. 대상 프로젝트가 `<projectDir>/.auto-dev/project.json` 에 검증 방법을
+선언했을 때만 동작하고, 선언이 없으면 workflow 는 이전과 완전히 동일하게 흐른다.
+
+```json
+{
+  "version": 1,
+  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "roleBoundary": {
+    "testGlobs": ["src/test/**", "**/*.test.ts"],
+    "ignoreGlobs": []
+  }
+}
+```
+
+- 로더는 `src/lib/project-config.ts`. 파일이 없으면 `undefined`, **스키마가 틀리면
+  설정 경로와 원인을 담은 `ProjectConfigError` 로 run 을 실패시킨다** (조용한 무시 금지).
+  모르는 최상위 필드는 무시해 후속 Phase 의 필드 추가와 전방 호환된다.
+- 실행기는 `src/lib/verify.ts`. `bash -c` + `detached: true` 로 띄워 자식이 프로세스
+  그룹 리더가 되게 하고, 타임아웃·취소 시 그룹 전체(`SIGTERM` → 유예 후 `SIGKILL`)를
+  정리한다. 출력은 stdout+stderr 합쳐 마지막 200줄 / 20KB 만 보관한다.
+- 게이트 단계는 `src/workflows/verify-gate.ts` 의 `runVerifyStep`. `agent_run` 에
+  `agent_name='verify'` 행으로 기록하므로 대시보드 워크플로 상세가 기존 자식 단계 렌더링
+  그대로 종료 코드 요약·소요 시간·출력 꼬리를 보여준다. **스키마 변경은 없다.**
+  run id 로 `registerRunCancellation` 에 등록하므로 대시보드의 run 취소로도 중단된다.
+
+**판정 표**
+
+| `[TESTS: …]` | verify 결과 | 처리 |
+|---|---|---|
+| `PASS` | exit 0 | review 로 진행 |
+| `PASS` | exit ≠ 0 / timeout / 취소 | 마커를 무시하고 출력 꼬리를 피드백으로 붙여 planner 로 라우팅 |
+| `PASS` | 설정 없음 | 기존 동작 유지 + `verify_not_configured` 경고 이벤트 |
+| `FAIL` | 실행하지 않음 | 기존 동작 유지 (라우팅) |
+| `BLOCKED` | 실행하지 않음 | 기존 동작 유지 (종료) |
+
+라우트 예산이 소진되면 `failure.cause = 'verify_failed'`, `failure.step = 'verify'` 로
+종료한다. 동적 팀(TEAM_PLAN) 경로도 통합이 끝난 뒤 같은 게이트를 통과해야 하며, DAG 안의
+review 태스크가 `SHIP` 을 선언했더라도 verify 가 실패하면 workflow 는 `FAILED` 다.
+
+**역할 경계 사후 검사** (`src/lib/role-boundary.ts`)
+
+test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 것이 물리적으로 가능하다.
+프롬프트 금지만으로는 막히지 않으므로 사후 검사한다.
+
+1. test 단계 직전에 변경·미추적 파일의 **내용 해시 스냅샷**을 만든다
+   (`git status --porcelain -z -uall` + 파일별 SHA-1). 이미 scaffold 가 소스를 바꿔 둔
+   상태이므로 파일 이름 목록 비교로는 부족하다.
+2. test 단계 직후 다시 스냅샷을 만들어 비교한다.
+3. 내용이 바뀐 경로 중 `testGlobs` 에도 `ignoreGlobs` 에도 없는 것이 있으면
+   `cause: 'role_boundary_violation'` 으로 실패시킨다.
+
+- 위반 파일을 되돌리지 않고 보고만 한다 — 워크스페이스를 임의로 수정하면 사람이 원인을
+  추적할 근거가 사라진다.
+- `.git` 이 없으면 검사를 건너뛰고 `role_boundary_skipped` 경고 이벤트를 남긴다.
+- gitignore 된 빌드 산출물은 `git status` 가 보고하지 않으므로 자동 제외된다. 그 외
+  오탐은 `ignoreGlobs` 로 처리한다.
+- `testGlobs` 가 비어 있으면 판정 기준이 없으므로 검사를 수행하지 않는다.
+
+**프롬프트 주입**: `verify` 가 선언되어 있으면 scaffold·test 입력에 `## 검증 명령` 절이
+붙는다. test 프롬프트는 "PASS 를 선언하기 전에 같은 명령을 직접 실행하라" 를 명시한다.
 
 ### 6.3 Java 버전 대비 미구현 항목
 
@@ -476,6 +553,8 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
 CREATE TABLE agent_run (
   id            TEXT PRIMARY KEY,      -- UUID
   agent_name    TEXT NOT NULL,         -- scaffold / review / test / cicd / planner / clarifier
+                                       -- + 내부 단계: verify(§6.2.1) / integrator /
+                                       --   checking-docs-before-commit / atomic-commit
   input         TEXT,                  -- 에이전트가 받은 프롬프트
   output        TEXT,                  -- 에이전트 응답
   tokens_in     INTEGER DEFAULT 0,
@@ -681,7 +760,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `[VERDICT: NEEDS-WORK]` (대상 비활성/예산 소진) | review | 원인을 `failure cause`에 기록하고 cicd 미진행, 종료 |
 | `[VERDICT: BLOCKED]` | review | 종료 (사람 개입 필요) |
 | `[TESTS: FAIL]` + `[ROUTE: planner\|clarifier]` | test | 소스 오류 → 지정 단계로 되돌려 재작업 |
-| `[TESTS: PASS]` | test | 다음 단계 진행 |
+| `[TESTS: PASS]` | test | verify 설정이 있으면 종료 코드로 확정, 없으면 다음 단계 진행 (§6.2.1) |
 | `[TESTS: FAIL]` (라우트 없음) | test | `planner`로 폴백 |
 | `[TESTS: FAIL]` (대상 비활성/예산 소진) | test | 원인을 기록하고 즉시 실패 종료 |
 | `[TESTS: BLOCKED]` | test | 차단 원인을 기록하고 즉시 실패 종료 |
@@ -690,6 +769,9 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
   루프를 막는다.
 - 테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 수정하므로 라우팅 대상이
   아니다. 라우팅되는 것은 **소스 코드 오류로 판정된 FAIL** 뿐이다.
+- 마커는 보조 신호다. 결정적 신호(verify 종료 코드)가 있으면 그쪽이 이긴다. 오케스트레이터가
+  소유한 판정은 `failure.cause` 의 `verify_failed` / `role_boundary_violation` 으로 구분된다
+  (§6.2.1).
 
 ---
 
@@ -752,6 +834,22 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 크론 표현식 |
 | `AUTO_DEV_WORKLOG_PATH` | `./data/worklog.md` | 워크로그 파일 경로 |
 
+### 12.2 대상 프로젝트 설정 파일
+
+환경변수와 달리 **대상 프로젝트 저장소 안에** 두는 설정이다. auto-dev 가 그 프로젝트를
+어떻게 검증하는지를 프로젝트 자신이 선언한다.
+
+| 경로 | 필드 | 효과 |
+|---|---|---|
+| `<projectDir>/.auto-dev/project.json` | `version` | 필수. 현재 `1` 만 유효 |
+| | `verify.command` | 결정적 검증 명령. 종료 코드 0 이 유일한 통과 신호 |
+| | `verify.timeoutMs` | 기본 `900000` (15분) |
+| | `roleBoundary.testGlobs` | test 단계가 수정해도 되는 경로. 비면 역할 경계 검사 생략 |
+| | `roleBoundary.ignoreGlobs` | 오탐 제외 경로 |
+
+파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
+스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
+
 ---
 
 ## 13. 프로젝트 레이아웃
@@ -805,6 +903,7 @@ auto-dev-ts/
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
 │   │   ├── spec.ts                   # SpecWorkflow 파이프라인
+│   │   ├── verify-gate.ts            # 결정적 검증 단계 실행 + agent_run 기록 (§6.2.1)
 │   │   ├── post-success-commit.ts    # docs skill → atomic commit 성공 후처리
 │   │   ├── spec-session.ts           # clarifier 답변 재개 + plan 문서 기록
 │   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
@@ -835,6 +934,9 @@ auto-dev-ts/
 │   │   ├── circuit-breaker.ts        # rate-limit 회로차단기 (§10.2)
 │   │   ├── run-events.ts             # SSE 이벤트 emitter (실행별)
 │   │   ├── workspace.ts              # 프로젝트명 → cwd 해석 (경로 탈출 차단)
+│   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2.1)
+│   │   ├── verify.ts                 # 검증 명령 실행 + 프로세스 그룹 정리 (§6.2.1)
+│   │   ├── role-boundary.ts          # test 단계 역할 경계 사후 검사 (§6.2.1)
 │   │   ├── prompt.ts                 # loadPrompt() — 파일 캐시
 │   │   └── logger.ts                 # JSON 구조화 로그
 │   ├── server/
@@ -847,7 +949,7 @@ auto-dev-ts/
     └── workspace/
 ```
 
-대략 **TypeScript 60 파일(테스트 제외) / HTML 1 파일 / 프롬프트 10 파일**.
+대략 **TypeScript 70 파일(테스트 제외) / HTML 1 파일 / 프롬프트 13 파일**.
 
 ---
 

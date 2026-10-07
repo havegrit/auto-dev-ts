@@ -24,7 +24,8 @@ Claude Agent SDK 기반 개발 자동화 오케스트레이터. TypeScript ESM, 
 | `src/agents/dispatch.ts` `buildOptions()` | 프롬프트 조립: `OUTPUT_STYLE_RULE + system + --- + input` |
 | `src/agents/review/lenses.ts` | review 병렬 렌즈 서브에이전트 |
 | `src/llm/` | 프로바이더 seam (`anthropic` / `codex` / `openai`), `registry.ts` |
-| `src/lib/workspace.ts` | `resolveProjectDir()`, `listProjects()` |
+| `src/lib/workspace.ts` | `resolveProjectDir()`, `listProjects()`, `defaultWorkspaceDir()` |
+| `src/lib/{project-config,verify,role-boundary}.ts`, `src/workflows/verify-gate.ts` | 결정적 검증 게이트 — `.auto-dev/project.json`이 있을 때만 동작 (ARCHITECTURE §6.2.1) |
 | `src/lib/run-cancellation.ts` | 실행 취소 |
 | `src/store/` | `schema.sql`, `runs.ts`(`agent_run`), `run-events.ts`(`agent_run_event`) |
 | `src/server/`, `static/` | HTTP API + 대시보드 |

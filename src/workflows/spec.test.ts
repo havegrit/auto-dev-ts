@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const calls: string[] = [];
 const inputs: Record<string, string[]> = {
@@ -90,6 +90,37 @@ vi.mock('../agents/cicd.js', () => ({
 
 vi.mock('./post-success-commit.js', () => ({
   commitSuccessfulSpec,
+}));
+
+
+const { loadProjectConfig, runVerifyStep, snapshotWorkspace, emitRunEvent, executeTeam } = vi.hoisted(() => ({
+  loadProjectConfig: vi.fn((): any => undefined),
+  runVerifyStep: vi.fn(async (_opts: any): Promise<any> => ({ runId: 'verify-run', passed: true, outcome: { exitCode: 0, timedOut: false, cancelled: false, durationMs: 5, outputTail: '' } })),
+  snapshotWorkspace: vi.fn(async (_dir: string): Promise<any> => new Map()),
+  emitRunEvent: vi.fn((_runId: string, _event: any) => {}),
+  executeTeam: vi.fn(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false })),
+}));
+
+vi.mock('../lib/run-events.js', () => ({ emitRunEvent, closeEmitter: vi.fn(), getOrCreateEmitter: vi.fn() }));
+
+vi.mock('../lib/project-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/project-config.js')>()),
+  loadProjectConfig,
+}));
+
+vi.mock('../lib/role-boundary.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/role-boundary.js')>()),
+  snapshotWorkspace,
+}));
+
+vi.mock('./verify-gate.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./verify-gate.js')>()),
+  runVerifyStep,
+}));
+
+vi.mock('./team.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./team.js')>()),
+  executeTeam,
 }));
 
 import { runSpec, workflowOutput, workflowRunStatus } from './spec.js';
@@ -617,5 +648,231 @@ describe('runSpec auto-clarify (skip mode)', () => {
     expect(result.verdict).toBe('NEEDS-CLARIFICATION');
     expect(result.autoClarifyRounds).toBeUndefined();
     expect(calls).toEqual(['clarifier']);
+  });
+});
+
+// ── Phase 1: 결정적 검증 게이트 ────────────────────────────────────
+const READY_CLARIFIER = {
+  runId: 'clarifier-run',
+  output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+  tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+};
+const PLAN_WITH_TEST = {
+  runId: 'planner-run',
+  output: 'PLAN:\n1. scaffold | build\n2. test | verify\n3. review | check\nEND.',
+  tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+};
+
+function verifyOutcome(overrides: Record<string, unknown> = {}) {
+  return { exitCode: 0, timedOut: false, cancelled: false, durationMs: 5, outputTail: '', ...overrides };
+}
+
+function failingVerify(outputTail = 'FooTest > bar FAILED') {
+  return { runId: 'verify-run', passed: false, outcome: verifyOutcome({ exitCode: 1, outputTail }) };
+}
+
+describe('runSpec verification gate', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) inputs[key].length = 0;
+    clarifierResult = READY_CLARIFIER;
+    clarifierQueue = [];
+    plannerResult = PLAN_WITH_TEST;
+    commitSuccessfulSpec.mockClear();
+    loadProjectConfig.mockReturnValue({ version: 1, verify: { command: './gradlew check', timeoutMs: 1000 } });
+    runVerifyStep.mockClear();
+    runVerifyStep.mockResolvedValue({ runId: 'verify-run', passed: true, outcome: verifyOutcome() });
+    emitRunEvent.mockClear();
+    snapshotWorkspace.mockClear();
+  });
+
+  afterEach(() => {
+    loadProjectConfig.mockReturnValue(undefined);
+  });
+
+  it('proceeds to review when the verify command exits 0', async () => {
+    const result = await runSpec('명확한 요청');
+
+    expect(runVerifyStep).toHaveBeenCalledOnce();
+    expect(runVerifyStep.mock.calls[0][0]).toMatchObject({ verify: { command: './gradlew check' } });
+    expect(calls).toContain('review');
+    expect(result.verdict).toBe('SHIP');
+    expect(result.steps.verify).toEqual({ runId: 'verify-run', durationMs: 5, status: 'DONE' });
+  });
+
+  it('ignores a PASS marker and routes to planner when the verify command fails', async () => {
+    runVerifyStep.mockResolvedValueOnce(failingVerify());
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 1 });
+
+    expect(result.routeCount).toBe(1);
+    expect(calls.filter((step) => step === 'planner')).toHaveLength(2);
+    expect(inputs.planner[1]).toContain('FooTest > bar FAILED');
+    expect(inputs.planner[1]).toContain('./gradlew check');
+    expect(result.verdict).toBe('SHIP');
+    // 재라우팅하면 이전 시도의 verify 결과는 결과 맵에 남지 않는다.
+    expect(result.steps.verify.status).toBe('DONE');
+  });
+
+  it('fails with verify_failed once the route budget is exhausted', async () => {
+    runVerifyStep.mockResolvedValue(failingVerify('exit code 1'));
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 0 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'verify_failed', route: 'planner', routeAvailable: false });
+    expect(calls).not.toContain('review');
+    expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+  });
+
+  it('does not run verify when the test agent reports FAIL', async () => {
+    const { test } = await import('../agents/test.js');
+    (test as any).mockResolvedValueOnce({
+      runId: 'test-run-fail', output: 'Production bug\n[TESTS: FAIL]',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    await runSpec('명확한 요청', { maxRoutes: 0 });
+
+    expect(runVerifyStep).not.toHaveBeenCalled();
+  });
+
+  it('does not run verify when the test agent is BLOCKED', async () => {
+    const { test } = await import('../agents/test.js');
+    (test as any).mockResolvedValueOnce({
+      runId: 'test-run-blocked', output: 'runner missing\n[TESTS: BLOCKED]',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    });
+
+    const result = await runSpec('명확한 요청');
+
+    expect(runVerifyStep).not.toHaveBeenCalled();
+    expect(result.verdict).toBe('BLOCKED');
+  });
+
+  it('keeps the legacy flow and warns when the project declares no verify command', async () => {
+    loadProjectConfig.mockReturnValue(undefined);
+
+    const result = await runSpec('명확한 요청');
+
+    expect(runVerifyStep).not.toHaveBeenCalled();
+    expect(emitRunEvent).toHaveBeenCalledWith('test-run', expect.objectContaining({ type: 'warn', data: 'verify_not_configured' }));
+    expect(result.verdict).toBe('SHIP');
+  });
+
+  it('stops as CANCELLED instead of spending a repair route when verify is cancelled', async () => {
+    runVerifyStep.mockResolvedValue({
+      runId: 'verify-run',
+      passed: false,
+      outcome: verifyOutcome({ exitCode: null, cancelled: true }),
+    });
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 4 });
+
+    expect(result.verdict).toBe('CANCELLED');
+    expect(result.routeCount).toBe(0);
+    expect(result.failure).toBeUndefined();
+    expect(calls).not.toContain('review');
+  });
+
+  it('tells scaffold and test which command decides the verdict', async () => {
+    await runSpec('명확한 요청');
+
+    expect(inputs.scaffold[0]).toContain('./gradlew check');
+    expect(inputs.test[0]).toContain('./gradlew check');
+    expect(inputs.planner[0]).not.toContain('## 검증 명령');
+  });
+
+  it('gates the dynamic team path after integration', async () => {
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | build\n2. review | check\nEND.\nTEAM_PLAN:\n' +
+        JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] }) +
+        '\nEND_TEAM_PLAN.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [{ taskId: 'rev', agent: 'review', status: 'DONE', output: '[VERDICT: SHIP]' }],
+      failed: false,
+    });
+    runVerifyStep.mockResolvedValueOnce(failingVerify('integration broke the build'));
+
+    const result = await runSpec('명확한 요청');
+
+    expect(runVerifyStep).toHaveBeenCalledOnce();
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'verify_failed' });
+    expect(result.failure?.reason).toContain('integration broke the build');
+    expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+  });
+});
+
+describe('runSpec role boundary check', () => {
+  const BOUNDARY_CONFIG = {
+    version: 1 as const,
+    roleBoundary: { testGlobs: ['**/*.test.ts'], ignoreGlobs: [] },
+  };
+
+  beforeEach(() => {
+    calls.length = 0;
+    for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) inputs[key].length = 0;
+    clarifierResult = READY_CLARIFIER;
+    clarifierQueue = [];
+    plannerResult = PLAN_WITH_TEST;
+    commitSuccessfulSpec.mockClear();
+    loadProjectConfig.mockReturnValue(BOUNDARY_CONFIG);
+    runVerifyStep.mockClear();
+    emitRunEvent.mockClear();
+    snapshotWorkspace.mockClear();
+    snapshotWorkspace.mockResolvedValue(new Map());
+  });
+
+  afterEach(() => {
+    loadProjectConfig.mockReturnValue(undefined);
+    snapshotWorkspace.mockResolvedValue(new Map());
+  });
+
+  it('fails the workflow when the test step edits a production file', async () => {
+    snapshotWorkspace
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-2']]));
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ step: 'test', cause: 'role_boundary_violation' });
+    expect(result.failure?.reason).toContain('src/lib/a.ts');
+    expect(result.steps.test.status).toBe('FAILED');
+    expect(calls).not.toContain('review');
+    expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+  });
+
+  it('allows the test step to create and edit test files', async () => {
+    snapshotWorkspace
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1'], ['src/lib/a.test.ts', 'hash-new']]));
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.failure).toBeUndefined();
+    expect(result.verdict).toBe('SHIP');
+  });
+
+  it('skips the check with a warning when the workspace is not a git repository', async () => {
+    snapshotWorkspace.mockResolvedValueOnce(undefined);
+
+    const result = await runSpec('명확한 요청');
+
+    expect(emitRunEvent).toHaveBeenCalledWith('test-run', expect.objectContaining({ type: 'warn' }));
+    expect(emitRunEvent.mock.calls.some((call) => String(call[1].data).startsWith('role_boundary_skipped'))).toBe(true);
+    expect(result.verdict).toBe('SHIP');
+  });
+
+  it('does not snapshot the workspace when no test globs are declared', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1 });
+
+    await runSpec('명확한 요청');
+
+    expect(snapshotWorkspace).not.toHaveBeenCalled();
   });
 });

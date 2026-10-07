@@ -173,6 +173,26 @@ If `clarifier` determines the requirements are not ready, the pipeline stops bef
 
 After the enabled workflow stages finish successfully, two internal post-success agents run in the background in a fixed order: `checking-docs-before-commit` audits and updates stale documentation, then `atomic-commit` stages only spec-related files or hunks and creates verified atomic commits. They load the globally installed skill instructions from `~/.codex/skills` or `~/.claude/skills` (override the skill root with `AUTO_DEV_SKILLS_ROOT`). Clarification waits, failed/cancelled workflows, and incomplete safety-limit exits never commit. Post-success runs are separate from the spec workflow and do not change its completed status; failures are logged independently.
 
+### Deterministic verification gate
+
+When the target project declares how to verify itself in `<project>/.auto-dev/project.json`, a `[TESTS: PASS]` marker is no longer taken at face value: **the orchestrator runs that command itself and the exit code decides**.
+
+```json
+{
+  "version": 1,
+  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "roleBoundary": {
+    "testGlobs": ["src/test/**", "**/*.test.ts"],
+    "ignoreGlobs": []
+  }
+}
+```
+
+- If `verify.command` exits non-zero or times out, the PASS marker is ignored and the output tail is routed back to the planner as feedback. Once the repair-route budget is exhausted the workflow fails with `verify_failed`.
+- Each run is recorded as an `agent_name='verify'` row, so the dashboard workflow detail shows the exit-code summary, duration, and output tail. Cancelling from the dashboard tears down the whole process group.
+- Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
+- Without this file every gate is inactive and the workflow behaves exactly as before. If the file exists but its schema is wrong, the run fails immediately.
+
 ## Dashboard
 
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:
@@ -269,11 +289,12 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       Agent implementations + registry
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
-│   ├── workflows/    SpecWorkflow + issue-driven workflow
+│   ├── workflows/    SpecWorkflow + verification gate + issue-driven workflow
 │   ├── llm/          LLM provider seam (registry + anthropic/codex impls)
 │   ├── integrations/ issue-tracker client + OpenClaw Telegram notifications
 │   ├── store/        SQLite schema + CRUD
-│   ├── lib/          Runner, guards, circuit breaker, SSE, workspace resolver
+│   ├── lib/          Runner, guards, circuit breaker, SSE, workspace resolver,
+│   │                 project config, verify executor, role-boundary check
 │   ├── server/       Hono HTTP server + routes
 │   ├── schedule/     node-cron daily briefing
 │   └── cli.ts        Commander CLI entry point

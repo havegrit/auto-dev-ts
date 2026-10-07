@@ -12,6 +12,11 @@ import { insertRun, updateRun } from '../store/runs.js';
 import { commitSuccessfulSpec } from './post-success-commit.js';
 import { log } from '../lib/logger.js';
 import { executeTeam, parseTeamPlan, type TeamExecutionResult } from './team.js';
+import { defaultWorkspaceDir } from '../lib/workspace.js';
+import { loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
+import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
+import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
+import { emitRunEvent } from '../lib/run-events.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
@@ -71,7 +76,8 @@ export interface SpecResult {
     step: string;
     status: string;
     reason: string;
-    cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable';
+    cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable'
+      | 'verify_failed' | 'role_boundary_violation';
     route?: string;
     routeAvailable: boolean;
   };
@@ -86,6 +92,11 @@ export const DEFAULT_MAX_ROUTES = 4;
 export const MAX_ROUTE_LIMIT = 10;
 export type Step = typeof STEP_ORDER[number];
 type RouteTarget = 'planner' | 'clarifier';
+/**
+ * 피드백 출처. 에이전트 단계뿐 아니라 오케스트레이터가 직접 관찰한 결과도
+ * 재작업 근거가 되므로 Step 보다 넓다.
+ */
+type FeedbackSource = Step | 'verify' | 'role-boundary';
 
 /** 출력에서 마지막에 등장한 `[KEY: value]` 마커 값을 소문자로 반환 */
 function lastMarker(output: string, re: RegExp): string | undefined {
@@ -161,7 +172,7 @@ function parseClarifierOutput(output: string): { ready: boolean; summary: string
   }
 }
 
-function feedbackBlock(fromStep: Step, output: string): string {
+function feedbackBlock(fromStep: FeedbackSource, output: string): string {
   return `---\n\n## 직전 ${fromStep} 단계 피드백 — 수정 필요\n\n` +
     `아래는 ${fromStep} 단계가 발견한 문제다. 원인을 해소하도록 작업을 갱신하라.\n\n${output.trim()}`;
 }
@@ -186,6 +197,13 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     : Math.max(0, Math.floor(configuredClarifyRounds));
   const start = Date.now();
   const results: Record<string, StepResult> = {};
+
+  // 대상 프로젝트가 선언한 검증 방법. 설정 파일이 없으면 undefined 이고,
+  // 그때 workflow 는 Phase 1 이전과 완전히 동일하게 동작한다 (경고 이벤트만 추가).
+  // 설정이 깨져 있으면 loadProjectConfig 가 던져서 run 을 실패시킨다.
+  const projectDir = opts.cwd ?? defaultWorkspaceDir();
+  const projectConfig = loadProjectConfig(projectDir);
+  const boundaryConfig = roleBoundaryEnabled(projectConfig) ? projectConfig.roleBoundary : undefined;
 
   // skip 모드에서 추천 답안으로 자동 답변한 라운드와, 다음 clarifier 입력에 실을 Q&A 라인.
   const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> = [];
@@ -214,6 +232,13 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   let routeCount = 0;
   let failure: SpecResult['failure'];
 
+  // 구현/테스트 단계는 최종 판정 기준이 되는 명령을 미리 알아야 한다.
+  const verifyNotice = projectConfig?.verify
+    ? `\n\n## 검증 명령 (오케스트레이터가 직접 실행한다)\n` +
+      `- \`${projectConfig.verify.command}\`\n` +
+      `- 이 명령의 종료 코드가 최종 판정이다. PASS 를 선언하기 전에 같은 명령을 직접 실행해 0 을 확인하라.`
+    : '';
+
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
   // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
   const inputFor = (step: Step): string => {
@@ -227,6 +252,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       baseline = `${baseline}\n\n## 이전 Q&A (사용자 의사결정)\n${autoQaLines.join('\n')}`;
     }
     const body = pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
+    if (step === 'scaffold' || step === 'test') return `${body}${verifyNotice}`;
     if (step !== 'cicd') return body;
     // cicd receives only its own planner assignment. Passing the entire PLAN
     // makes it see scaffold/test/review work and causes it to reject the run
@@ -238,12 +264,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     return decorateCicdInput(focused, runOpts.deliveryIntent);
   };
 
-  const routeTo = (target: RouteTarget, fromStep: Step, output: string): boolean => {
+  const routeTo = (target: RouteTarget, fromStep: FeedbackSource, output: string): boolean => {
     if (!stepsFilter.has(target) || routeCount >= maxRoutes) return false;
     routeCount++;
     pendingFeedback = feedbackBlock(fromStep, output);
     const targetIndex = STEP_ORDER.indexOf(target);
     for (const staleStep of STEP_ORDER.slice(targetIndex)) delete results[staleStep];
+    // verify 는 STEP_ORDER 밖의 내부 단계라 위 루프가 지우지 못한다.
+    delete results[VERIFY_AGENT_NAME];
     cursor = targetIndex;
     return true;
   };
@@ -292,6 +320,12 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     }
     if (++executed > safetyCap) break;
 
+    // test 에이전트도 Bash 를 가지므로 프로덕션 소스를 바꿀 수 있다. 프롬프트 금지만으로는
+    // 막히지 않으니 실행 전후 내용 해시를 비교해 사후 검사한다.
+    const boundaryBefore = step === 'test' && boundaryConfig
+      ? await snapshotWorkspace(projectDir)
+      : undefined;
+
     const r = await agents[step](inputFor(step), runOpts);
     pendingFeedback = undefined;
     results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
@@ -306,6 +340,34 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
         routeAvailable: false,
       };
       break;
+    }
+
+    if (step === 'test' && boundaryConfig) {
+      if (!boundaryBefore) {
+        emitRunEvent(r.runId, {
+          type: 'warn',
+          ts: new Date().toISOString(),
+          data: 'role_boundary_skipped: not a git repository',
+        });
+      } else {
+        const boundaryAfter = await snapshotWorkspace(projectDir);
+        const violations = boundaryAfter
+          ? findRoleBoundaryViolations(boundaryBefore, boundaryAfter, boundaryConfig)
+          : [];
+        if (violations.length > 0) {
+          verdict = 'FAILED';
+          results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'FAILED' };
+          failure = {
+            step,
+            status: 'FAILED',
+            cause: 'role_boundary_violation',
+            reason: 'test 단계가 테스트 경로 밖의 파일을 수정했다. 구현 권한은 scaffold 전용이다.\n\n' +
+              violations.map((path) => `- ${path}`).join('\n'),
+            routeAvailable: false,
+          };
+          break;
+        }
+      }
     }
 
     if (step === 'clarifier') {
@@ -374,6 +436,42 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             status: task.status,
           };
         }
+        // 통합이 끝난 뒤 결정적 검증을 통과해야 한다. DAG 안의 review 태스크가 SHIP 을
+        // 선언했더라도 verify 가 실패하면 workflow 를 통과시키지 않는다.
+        if (!team.failed && projectConfig?.verify && !opts.signal?.aborted) {
+          const gate = await runVerifyStep({
+            projectDir,
+            verify: projectConfig.verify,
+            workflowRunId,
+            specSessionId: opts.specSessionId,
+            triggerSource: runOpts.triggerSource,
+            signal: opts.signal,
+          });
+          results[VERIFY_AGENT_NAME] = {
+            runId: gate.runId,
+            durationMs: gate.outcome.durationMs,
+            status: gate.passed ? 'DONE' : 'FAILED',
+          };
+          if (!gate.passed) {
+            return {
+              workflowRunId,
+              steps: results,
+              totalDurationMs: Date.now() - start,
+              verdict: gate.outcome.cancelled ? 'CANCELLED' : 'FAILED',
+              planOutput,
+              routeCount,
+              team,
+              failure: gate.outcome.cancelled ? undefined : {
+                step: VERIFY_AGENT_NAME,
+                status: 'FAILED',
+                cause: 'verify_failed',
+                reason: verifyFeedbackBody(projectConfig.verify, gate.outcome),
+                routeAvailable: false,
+              },
+            };
+          }
+        }
+
         const reviewTask = team.tasks.find(task => task.agent === 'review');
         const verdict = team.failed
           ? 'FAILED'
@@ -447,6 +545,49 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           routeAvailable: false,
         };
         break;
+      }
+
+      // 여기부터는 tests === 'PASS'. 하지만 PASS 는 에이전트의 자기 보고다.
+      // 설정이 있으면 오케스트레이터가 검증 명령을 직접 실행해 종료 코드로 확정한다.
+      if (projectConfig?.verify) {
+        const gate = await runVerifyStep({
+          projectDir,
+          verify: projectConfig.verify,
+          workflowRunId,
+          specSessionId: opts.specSessionId,
+          triggerSource: runOpts.triggerSource,
+          signal: opts.signal,
+        });
+        results[VERIFY_AGENT_NAME] = {
+          runId: gate.runId,
+          durationMs: gate.outcome.durationMs,
+          status: gate.passed ? 'DONE' : 'FAILED',
+        };
+        if (gate.outcome.cancelled) {
+          // 사용자 취소는 검증 실패가 아니다. 재작업 예산을 쓰지 않고 그대로 멈춘다.
+          verdict = 'CANCELLED';
+          break;
+        }
+        if (!gate.passed) {
+          const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
+          if (routeTo('planner', 'verify', feedback)) continue;
+          verdict = 'FAILED';
+          failure = {
+            step: VERIFY_AGENT_NAME,
+            status: 'FAILED',
+            cause: 'verify_failed',
+            reason: feedback,
+            route: 'planner',
+            routeAvailable: false,
+          };
+          break;
+        }
+      } else {
+        emitRunEvent(r.runId, {
+          type: 'warn',
+          ts: new Date().toISOString(),
+          data: 'verify_not_configured',
+        });
       }
     }
 

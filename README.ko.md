@@ -170,6 +170,26 @@ clarifier → planner → scaffold → test → review → cicd
 
 활성 workflow 단계가 성공적으로 끝나면 내부 후처리 에이전트 두 개가 고정 순서로 백그라운드 실행됩니다. `checking-docs-before-commit`이 오래된 문서를 점검·갱신한 뒤, `atomic-commit`이 해당 spec에 속한 파일 또는 hunk만 stage하고 검증된 atomic commit을 생성합니다. 전역 스킬 지침은 `~/.codex/skills`, 이어서 `~/.claude/skills`에서 읽으며 `AUTO_DEV_SKILLS_ROOT`로 루트를 덮어쓸 수 있습니다. clarifier 응답 대기, 실패·취소, 안전 상한으로 미완료된 workflow는 커밋하지 않습니다. 후처리 실행은 spec workflow와 분리되며 spec 완료 상태를 바꾸지 않고, 실패는 별도 로그로 기록합니다.
 
+### 결정적 검증 게이트
+
+대상 프로젝트가 `<project>/.auto-dev/project.json`에 검증 방법을 선언하면, test 단계의 `[TESTS: PASS]`를 그대로 믿지 않고 **오케스트레이터가 그 명령을 직접 실행해 종료 코드로 통과를 확정**합니다.
+
+```json
+{
+  "version": 1,
+  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "roleBoundary": {
+    "testGlobs": ["src/test/**", "**/*.test.ts"],
+    "ignoreGlobs": []
+  }
+}
+```
+
+- `verify.command`가 0이 아닌 코드로 끝나거나 타임아웃되면 PASS 마커를 무시하고, 출력 꼬리를 피드백으로 붙여 planner로 되돌립니다. 재작업 예산이 소진되면 `verify_failed`로 실패합니다.
+- 결과는 `agent_name='verify'` 실행 기록으로 남아 대시보드의 워크플로 상세에서 종료 코드 요약·소요 시간·출력 꼬리를 볼 수 있습니다. 대시보드에서 취소하면 프로세스 그룹 전체가 정리됩니다.
+- `roleBoundary.testGlobs`를 선언하면 test 단계 전후의 파일 내용 해시를 비교해, 테스트 경로 밖의 파일을 수정한 경우 `role_boundary_violation`으로 실패시킵니다 (되돌리지 않고 보고만 합니다).
+- 이 파일이 없으면 모든 게이트가 비활성이고 workflow는 이전과 완전히 동일하게 동작합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
+
 ## 대시보드
 
 `./run serve`로 HTTP 서버를 시작합니다 (기본값: `http://127.0.0.1:8080`).
@@ -262,11 +282,12 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
-│   ├── workflows/    SpecWorkflow + 이슈 기반 워크플로우
+│   ├── workflows/    SpecWorkflow + 검증 게이트 + 이슈 기반 워크플로우
 │   ├── llm/          LLM 프로바이더 seam (registry + anthropic/codex 구현)
 │   ├── integrations/ issue-tracker 클라이언트 + OpenClaw Telegram 알림
 │   ├── store/        SQLite 스키마 + CRUD
-│   ├── lib/          러너, 가드, 회로차단기, SSE, 워크스페이스 해석 등
+│   ├── lib/          러너, 가드, 회로차단기, SSE, 워크스페이스 해석,
+│   │                 프로젝트 설정·검증 실행·역할 경계 검사 등
 │   ├── server/       Hono HTTP 서버 + 라우트
 │   ├── schedule/     node-cron 일일 브리핑
 │   └── cli.ts        Commander CLI 진입점

@@ -7,7 +7,7 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { modelConfig } from './model-config.js';
 import { log } from './logger.js';
 import { emitRunEvent, closeEmitter } from './run-events.js';
-import { expandHome } from './workspace.js';
+import { defaultWorkspaceDir } from './workspace.js';
 import { randomUUID } from 'crypto';
 import { mkdirSync } from 'fs';
 import type { AgentRunOutcome } from '../llm/types.js';
@@ -36,8 +36,6 @@ export interface RunResult {
   status: 'DONE' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
 }
 
-const DEFAULT_WORKSPACE = expandHome(process.env.AUTO_DEV_WORKSPACE_ROOT ?? './data/workspace');
-
 function clarifierOutput(outcome: AgentRunOutcome): string {
   const raw = outcome.rawOutput ?? outcome.output;
   const start = raw.indexOf('{');
@@ -62,7 +60,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
   const start = Date.now();
-  const cwd = opts.cwd ?? DEFAULT_WORKSPACE;
+  const cwd = opts.cwd ?? defaultWorkspaceDir();
   let output = '';
   let tokensIn = 0;
   let tokensOut = 0;
@@ -242,7 +240,7 @@ type BlockReason = 'cost_guard' | 'circuit_breaker';
 function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId: string; blocked: true; reason: BlockReason; blockedOutput: string } {
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
-  const cwd = opts.cwd ?? DEFAULT_WORKSPACE;
+  const cwd = opts.cwd ?? defaultWorkspaceDir();
   mkdirSync(cwd, { recursive: true });
 
   const common = {
