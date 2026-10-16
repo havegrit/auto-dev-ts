@@ -603,6 +603,24 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - `AGENT_ORDER`와 planner의 `PLAN:` 계약은 바꾸지 않는다. verifier는
   `AGENT_SPECS`에 내부 agent로 등록하고 일반 단계 선택 목록에는 노출하지 않는다.
 
+### 6.2.3 버그 이슈 재현 우선 흐름
+
+- `src/workflows/from-issue.ts`는 타입이 정확히 `BUG`인 이슈(대소문자·앞뒤 공백 무시)에
+  한해 일반 SpecWorkflow 전에 test 에이전트를 호출한다. 이슈 트래커 문서가 열거한 타입은
+  `TASK | BUG | IDEA | FOLLOWUP`이며, 런타임 타입 값은 별도 enum으로 강제하지 않는다.
+- 첫 test 실행은 테스트 파일만 작성하도록 지시하고 `[REPRO: <command>]`를 파싱한다.
+  실행 전후 workspace 해시를 비교해 설정된 `testGlobs` 또는 기본 테스트 경로 밖 변경을
+  `role_boundary_violation`으로 막는다. git이 없으면 기존 역할 경계 검사와 같이 경고 후 생략한다.
+- Phase 1 verify 실행기를 재사용해 명령을 프로젝트 디렉터리에서 실행한다. 수정 전 종료 코드가
+  0이면 `BLOCKED`, `not_reproduced`로 보고하고 이슈 상태를 바꾸지 않는다. 비정상 종료를
+  관찰한 경우에만 이슈를 `IN_PROGRESS`로 바꿔 planner부터 시작한다.
+- 버그 모드는 재현 명령을 매 test 단계 직후 다시 실행한다. 종료 코드 0이 아니면 재작업
+  피드백으로 planner에 되돌리고, route 예산이 끝나면 `reproduction_failed`로 실패한다.
+  통과해야 Phase 1 verify, Phase 3 runtime gate, review로 넘어간다. 내부 REPRO 마커의
+  파서·test 프롬프트·테스트는 같은 변경 단위로 관리한다.
+- 버그 이슈에는 `agent_name='spec'` 부모 run을 만들어 사전 재현 테스트와 명령 결과를
+  대시보드 상세의 자식 실행으로 연결한다. 일반 이슈 경로는 기존 흐름을 유지한다.
+
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |

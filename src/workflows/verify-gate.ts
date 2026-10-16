@@ -21,6 +21,9 @@ export interface VerifyStepOptions {
   workflowRunId: string;
   specSessionId?: string;
   triggerSource?: string;
+  triggerDetail?: string;
+  /** `fail`이면 비영 종료 코드를 재현 성공으로 기록한다. */
+  expectedOutcome?: 'pass' | 'fail';
   signal?: AbortSignal;
 }
 
@@ -38,8 +41,15 @@ export function verifyFeedbackBody(config: VerifyConfig, outcome: VerifyOutcome)
   ].join('\n');
 }
 
-function verifyRunOutput(config: VerifyConfig, outcome: VerifyOutcome): string {
-  const verdict = verifyPassed(outcome) ? 'PASS' : `FAIL (${verifyFailureReason(outcome)})`;
+function verifyRunOutput(config: VerifyConfig, outcome: VerifyOutcome, expectedOutcome: 'pass' | 'fail'): string {
+  const expectedFailureObserved = expectedOutcome === 'fail' && outcome.exitCode !== null &&
+    outcome.exitCode !== 0 && outcome.exitCode !== 126 && outcome.exitCode !== 127 && !outcome.timedOut && !outcome.cancelled;
+  const notReproduced = expectedOutcome === 'fail' && verifyPassed(outcome);
+  const verdict = expectedFailureObserved
+    ? `EXPECTED FAILURE OBSERVED (exit code ${outcome.exitCode})`
+    : notReproduced
+      ? 'NOT REPRODUCED (exit code 0)'
+      : verifyPassed(outcome) ? 'PASS' : `FAIL (${verifyFailureReason(outcome)})`;
   return `$ ${config.command}\n→ ${verdict} in ${outcome.durationMs}ms\n\n${outcome.outputTail || '(no output)'}`;
 }
 
@@ -60,7 +70,7 @@ export async function runVerifyStep(opts: VerifyStepOptions): Promise<VerifyStep
     status: 'RUNNING',
     startedAt,
     triggerSource: opts.triggerSource ?? 'cli',
-    triggerDetail: 'verification-gate',
+    triggerDetail: opts.triggerDetail ?? 'verification-gate',
     workflowRunId: opts.workflowRunId,
     specSessionId: opts.specSessionId,
   });
@@ -74,24 +84,31 @@ export async function runVerifyStep(opts: VerifyStepOptions): Promise<VerifyStep
 
   try {
     const outcome = await runVerify(opts.projectDir, opts.verify, { signal: controller.signal });
-    const passed = verifyPassed(outcome);
+    const expectedOutcome = opts.expectedOutcome ?? 'pass';
+    const expectedFailureObserved = expectedOutcome === 'fail' && outcome.exitCode !== null &&
+      outcome.exitCode !== 0 && outcome.exitCode !== 126 && outcome.exitCode !== 127 && !outcome.timedOut && !outcome.cancelled;
+    const notReproduced = expectedOutcome === 'fail' && verifyPassed(outcome);
+    const passed = expectedOutcome === 'fail' ? expectedFailureObserved : verifyPassed(outcome);
+    const status = passed ? 'DONE' : notReproduced || (expectedOutcome === 'fail' && (outcome.timedOut || outcome.cancelled)) ? 'BLOCKED' : 'FAILED';
     const errorType = outcome.cancelled
       ? 'user_cancelled'
-      : outcome.timedOut ? 'verify_timeout' : passed ? undefined : 'verify_failed';
+      : outcome.timedOut ? 'verify_timeout' : notReproduced ? 'not_reproduced' : passed ? undefined : 'verify_failed';
     updateRun(runId, {
-      output: verifyRunOutput(opts.verify, outcome),
-      status: passed ? 'DONE' : 'FAILED',
+      output: verifyRunOutput(opts.verify, outcome, expectedOutcome),
+      status,
       durationMs: outcome.durationMs,
       ...(errorType ? { errorType, stopReason: errorType } : {}),
     });
     emitRunEvent(runId, {
       type: 'status',
       ts: new Date().toISOString(),
-      data: passed ? 'DONE' : `FAILED:${errorType}`,
+      data: passed ? 'DONE' : `${status}:${errorType}`,
     });
     log[passed ? 'info' : 'warn'](
       { runId, command: opts.verify.command, exitCode: outcome.exitCode, timedOut: outcome.timedOut, durationMs: outcome.durationMs },
-      passed ? 'Verification command passed' : 'Verification command failed',
+      expectedOutcome === 'fail'
+        ? passed ? 'Bug reproduction observed' : 'Bug reproduction check did not match expectation'
+        : passed ? 'Verification command passed' : 'Verification command failed',
     );
     return { runId, passed, outcome };
   } finally {

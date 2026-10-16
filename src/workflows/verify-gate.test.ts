@@ -66,6 +66,55 @@ describe('runVerifyStep', () => {
     expect(emitRunEvent).toHaveBeenCalledWith(result.runId, expect.objectContaining({ data: 'FAILED:verify_failed' }));
   });
 
+  it('records a non-zero exit as an observed bug reproduction when failure is expected', async () => {
+    const result = await runVerifyStep({
+      projectDir: dir,
+      verify: { command: 'echo reproduced >&2; exit 4', timeoutMs: 5000 },
+      workflowRunId: 'wf-repro-observed',
+      expectedOutcome: 'fail',
+      triggerDetail: 'bug-reproduction-baseline',
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.outcome.exitCode).toBe(4);
+    expect(insertRun).toHaveBeenCalledWith(expect.objectContaining({ triggerDetail: 'bug-reproduction-baseline' }));
+    expect(updateRun).toHaveBeenCalledWith(result.runId, expect.objectContaining({
+      status: 'DONE',
+      output: expect.stringContaining('EXPECTED FAILURE OBSERVED'),
+    }));
+  });
+
+  it('blocks an expected failure check when the repro command passes', async () => {
+    const result = await runVerifyStep({
+      projectDir: dir,
+      verify: { command: 'echo no-failure', timeoutMs: 5000 },
+      workflowRunId: 'wf-repro-missing',
+      expectedOutcome: 'fail',
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.outcome.exitCode).toBe(0);
+    expect(updateRun).toHaveBeenCalledWith(result.runId, expect.objectContaining({
+      status: 'BLOCKED',
+      errorType: 'not_reproduced',
+      output: expect.stringContaining('NOT REPRODUCED'),
+    }));
+  });
+
+  it('does not treat a missing command as an observed bug reproduction', async () => {
+    const result = await runVerifyStep({
+      projectDir: dir,
+      verify: { command: '__autodev_missing_repro_command__', timeoutMs: 5000 },
+      workflowRunId: 'wf-repro-command-missing',
+      expectedOutcome: 'fail',
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.outcome.exitCode).toBe(127);
+    expect(updateRun).toHaveBeenCalledWith(result.runId, expect.objectContaining({ status: 'FAILED', errorType: 'verify_failed' }));
+    expect(updateRun.mock.calls[0][1].output).not.toContain('EXPECTED FAILURE OBSERVED');
+  });
+
   it('marks a timeout with its own error type', async () => {
     const result = await runVerifyStep({
       projectDir: dir,

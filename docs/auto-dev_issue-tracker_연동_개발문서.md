@@ -50,7 +50,7 @@
 **Issue 모델 (응답 JSON)**
 ```
 key, projectId, number, title, description,
-type      ∈ TASK | BUG | IDEA | FOLLOWUP
+type      ∈ TASK | BUG | IDEA | FOLLOWUP (버그 모드는 대소문자 무시 후 정확히 BUG만 선택)
 priority  ∈ HIGH | MED | LOW
 status    ∈ OPEN | IN_PROGRESS | DONE | DROPPED
 source    (MANUAL 등), linkedRunId?, reporterId, assigneeId?,
@@ -69,7 +69,7 @@ export interface IssueRef {
   key: string;            // "AD-42"
   title: string;
   description: string;
-  type: string;           // TASK | BUG | IDEA | FOLLOWUP
+  type: string;           // TASK | BUG | IDEA | FOLLOWUP; 버그 모드는 정확히 BUG만 선택
   priority: string;       // HIGH | MED | LOW
   status: string;         // OPEN | IN_PROGRESS | DONE | DROPPED
   updatedAt: string;
@@ -186,7 +186,7 @@ await review(prompt, { triggerSource: 'schedule' });
 - `httpIssueTracker`: issue-tracker 로컬 부팅(`make run`) 후 `fetchOpenIssues` 통합 테스트
 - `noopIssueTracker`: 환경변수 미설정 시 빈 배열 fallback 확인
 - `briefing`: 이슈 목록이 프롬프트에 반영되는지
-- `from-issue`: 상태 전이(OPEN→IN_PROGRESS→DONE) + `linkedRunId` 기록 검증
+- `from-issue`: 일반 이슈 상태 전이 + 버그 이슈의 재현 선행, `not_reproduced` 상태 유지 검증
 
 ---
 

@@ -197,13 +197,19 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 - If `verify.command` exits non-zero or times out, the PASS marker is ignored and the output tail is routed back to the planner as feedback. Once the repair-route budget is exhausted the workflow fails with `verify_failed`.
 - Each run is recorded as an `agent_name='verify'` row, so the dashboard workflow detail shows the exit-code summary, duration, and output tail. Cancelling from the dashboard tears down the whole process group.
 - Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
-- Without this file every gate is inactive and the workflow behaves exactly as before. If the file exists but its schema is wrong, the run fails immediately.
+- Without this file the project-configured verify/runtime gates are inactive and ordinary workflows behave as before. Bug issues still use the repro-first path below, with built-in test-file globs when no role-boundary globs are configured. If the file exists but its schema is wrong, the run fails immediately.
 
 When `runtime` is configured, a `[TESTS: PASS]` run continues through the `verify` command, runtime startup, HTTP healthcheck, deterministic scripts, and a fresh `verifier` session before review. Any startup, healthcheck, check, or behavior-verification failure is recorded with evidence and routed back to the planner. Runtime `down` runs from `finally`, including on cancellation. The orchestrator sets `COMPOSE_PROJECT_NAME=autodev-<workflow id prefix>` for runtime commands and verifier tools.
 
 Runtime observations are stored in `data/evidence/<workflowRunId>/evidence.json`. The workflow detail view and `GET /api/runs/:id/evidence` expose request/response summaries, command output tails, and the verifier report. Compose project names isolate container resources; published host ports still need a project-specific variable, for example `ports: ["${WEB_PORT:-8080}:8080"]`.
 
 The internal `verifier` gets `Read` and `Bash` in a new run, plus the feature map. It checks the running behavior and reports `[VERIFY: PASS]`, `[VERIFY: FAIL]`, or `[VERIFY: BLOCKED]`. A workspace snapshot detects verifier edits and fails the gate without reverting them.
+
+### Bug issues: reproduce before fixing
+
+An issue whose type is exactly `BUG` (case-insensitive) starts in repro mode. The test agent may write test files only and must return `[REPRO: <command>]`. The orchestrator runs that command from the project workspace before changing the issue status. If it passes, the issue stays in its original state and the workflow returns `BLOCKED` with cause `not_reproduced`.
+
+After a failing repro is observed, the issue moves to `IN_PROGRESS` and the planner/scaffold fix loop starts. The same command must pass after the fix, before the configured verify/runtime gates and review. Other issue types keep the existing spec workflow.
 
 ### Project context
 

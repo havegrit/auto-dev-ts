@@ -194,13 +194,19 @@ clarifier → planner → scaffold → test → review → cicd
 - `verify.command`가 0이 아닌 코드로 끝나거나 타임아웃되면 PASS 마커를 무시하고, 출력 꼬리를 피드백으로 붙여 planner로 되돌립니다. 재작업 예산이 소진되면 `verify_failed`로 실패합니다.
 - 결과는 `agent_name='verify'` 실행 기록으로 남아 대시보드의 워크플로 상세에서 종료 코드 요약·소요 시간·출력 꼬리를 볼 수 있습니다. 대시보드에서 취소하면 프로세스 그룹 전체가 정리됩니다.
 - `roleBoundary.testGlobs`를 선언하면 test 단계 전후의 파일 내용 해시를 비교해, 테스트 경로 밖의 파일을 수정한 경우 `role_boundary_violation`으로 실패시킵니다 (되돌리지 않고 보고만 합니다).
-- 이 파일이 없으면 모든 게이트가 비활성이고 workflow는 이전과 완전히 동일하게 동작합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
+- 이 파일이 없으면 프로젝트 설정 verify/runtime 게이트는 비활성이고 일반 workflow는 이전처럼 동작합니다. 버그 이슈는 아래 재현 우선 흐름을 사용하며, 역할 경계 설정이 없으면 기본 테스트 파일 glob을 적용합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
 
 `runtime`을 설정하면 `[TESTS: PASS]` 뒤에 `verify` 명령, 런타임 기동, HTTP healthcheck, 결정적 스크립트, 새 verifier 세션 순서로 실행한 뒤 review로 진행합니다. 기동·healthcheck·check·동작 검증이 실패하면 증거를 붙여 planner로 되돌립니다. 취소를 포함한 모든 경로에서 `finally`가 runtime `down`을 실행합니다. 오케스트레이터는 런타임 명령과 verifier 도구에 `COMPOSE_PROJECT_NAME=autodev-<workflow ID 앞부분>`을 전달합니다.
 
 런타임 관찰 결과는 `data/evidence/<workflowRunId>/evidence.json`에 저장합니다. workflow 상세 화면과 `GET /api/runs/:id/evidence`에서 요청·응답 요약, 명령 출력 꼬리, verifier 보고서를 볼 수 있습니다. Compose 프로젝트 이름은 컨테이너 자원을 분리하지만 호스트 포트는 공유되므로 프로젝트별 변수로 지정해야 합니다. 예: `ports: ["${WEB_PORT:-8080}:8080"]`.
 
 내부 `verifier`는 새 실행에서 `Read`, `Bash`를 받고 feature map을 참고합니다. 실제 동작을 확인한 뒤 `[VERIFY: PASS]`, `[VERIFY: FAIL]`, `[VERIFY: BLOCKED]` 중 하나를 보고합니다. verifier의 Bash가 workspace를 수정하면 실행 전후 스냅샷으로 감지해 되돌리지 않고 실패 처리합니다.
+
+### 버그 이슈: 수정 전에 재현
+
+이슈 타입이 정확히 `BUG`이면 대소문자와 앞뒤 공백을 무시하고 재현 모드로 실행합니다. test 에이전트는 테스트 파일만 작성하고 `[REPRO: <command>]`를 반환합니다. 오케스트레이터는 이 명령을 프로젝트 디렉터리에서 실행한 뒤에만 이슈를 `IN_PROGRESS`로 바꿉니다. 명령이 통과하면 이미 해결됐거나 정보가 부족한 것으로 보고 `BLOCKED`, `cause: not_reproduced`로 종료하며 이슈 상태는 유지합니다.
+
+재현 실패를 관찰한 뒤 planner/scaffold 수정 루프를 시작합니다. 수정 후 같은 명령이 통과해야 하며, 이후 설정된 verify/runtime 게이트와 review를 진행합니다. 그 외 이슈 타입은 기존 SpecWorkflow를 따릅니다.
 
 ### 대상 프로젝트 컨텍스트
 

@@ -815,6 +815,50 @@ describe('runSpec verification gate', () => {
     expect(inputs.planner[0]).not.toContain('## 검증 명령');
   });
 
+  it('reruns the fixed REPRO command before the configured verify command and review', async () => {
+    const reproCommand = 'npm test -- --run src/widget.test.ts';
+
+    const result = await runSpec('버그 수정', { reproCommand });
+
+    expect(runVerifyStep).toHaveBeenCalledTimes(2);
+    expect(runVerifyStep.mock.calls[0][0]).toMatchObject({
+      verify: { command: reproCommand },
+      expectedOutcome: 'pass',
+      triggerDetail: 'bug-reproduction-confirmation',
+    });
+    expect(runVerifyStep.mock.calls[1][0]).toMatchObject({ verify: { command: './gradlew check' } });
+    expect(inputs.scaffold[0]).toContain(reproCommand);
+    expect(inputs.test[0]).toContain(reproCommand);
+    expect(result.steps.repro).toMatchObject({ status: 'DONE' });
+    expect(calls.indexOf('test')).toBeLessThan(calls.indexOf('review'));
+    expect(result.verdict).toBe('SHIP');
+  });
+
+  it('fails with reproduction_failed when the fixed REPRO command still fails and no routes remain', async () => {
+    runVerifyStep.mockResolvedValueOnce(failingVerify('repro still fails'));
+
+    const result = await runSpec('버그 수정', { reproCommand: './repro.sh', maxRoutes: 0 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ step: 'repro', cause: 'reproduction_failed' });
+    expect(result.failure?.reason).toContain('repro still fails');
+    expect(calls).not.toContain('review');
+    expect(runVerifyStep).toHaveBeenCalledOnce();
+  });
+
+  it('uses the sequential gates instead of the dynamic team plan in bug mode', async () => {
+    plannerResult = {
+      ...plannerResult!,
+      output: 'PLAN:\n1. scaffold | fix\n2. test | rerun repro\n3. review | inspect\nEND.\nTEAM_PLAN:\n' +
+        JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'fix', writes: true }] }) + '\nEND_TEAM_PLAN.',
+    };
+
+    await runSpec('버그 수정', { reproCommand: './repro.sh' });
+
+    expect(executeTeam).not.toHaveBeenCalled();
+    expect(runVerifyStep.mock.calls[0][0]).toMatchObject({ verify: { command: './repro.sh' } });
+  });
+
   it('gates the dynamic team path after integration', async () => {
     plannerResult = {
       runId: 'planner-run',

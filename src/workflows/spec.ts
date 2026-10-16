@@ -13,7 +13,7 @@ import { commitSuccessfulSpec } from './post-success-commit.js';
 import { log } from '../lib/logger.js';
 import { executeTeam, parseTeamPlan, type TeamExecutionResult } from './team.js';
 import { defaultWorkspaceDir } from '../lib/workspace.js';
-import { loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
+import { DEFAULT_VERIFY_TIMEOUT_MS, loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
 import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
 import { runRuntimeVerification } from './runtime-gate.js';
@@ -40,6 +40,8 @@ export interface SpecOptions {
   initialPlanOutput?: string;
   /** resume-last 로 재시작할 때 첫 실행 입력에 한 번만 덧붙일 후속 지시. */
   initialFeedback?: string;
+  /** 버그 모드에서 수정 전후에 동일하게 실행할 재현 명령. */
+  reproCommand?: string;
   /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
   deliveryIntent?: 'ci' | 'cd';
   /** 부모 workflow 취소를 현재 실행 중인 child agent에 전달한다. */
@@ -78,7 +80,7 @@ export interface SpecResult {
     status: string;
     reason: string;
     cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable'
-      | 'verify_failed' | 'role_boundary_violation';
+      | 'verify_failed' | 'role_boundary_violation' | 'reproduction_failed';
     route?: string;
     routeAvailable: boolean;
   };
@@ -97,7 +99,7 @@ type RouteTarget = 'planner' | 'clarifier';
  * 피드백 출처. 에이전트 단계뿐 아니라 오케스트레이터가 직접 관찰한 결과도
  * 재작업 근거가 되므로 Step 보다 넓다.
  */
-type FeedbackSource = Step | 'verify' | 'role-boundary';
+type FeedbackSource = Step | 'verify' | 'role-boundary' | 'repro';
 
 /** 출력에서 마지막에 등장한 `[KEY: value]` 마커 값을 소문자로 반환 */
 function lastMarker(output: string, re: RegExp): string | undefined {
@@ -247,6 +249,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       `- 결정적 확인: ${projectConfig.runtime.checks.map((check) => `\`${check}\``).join(', ') || '(없음)'}\n` +
       `- 오케스트레이터가 런타임을 기동해 결정적 확인과 독립 verifier를 실행한다.`
     : '';
+  const reproNotice = opts.reproCommand
+    ? `\n\n## 버그 재현 확인\n- 같은 명령을 수정하지 말고 그대로 실행한다: \`${opts.reproCommand}\`\n` +
+      '- 구현 수정 뒤 이 명령은 통과해야 한다. 실패하면 원인과 출력을 보고하고 planner에 수정 요청을 남긴다.'
+    : '';
 
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
   // 라우팅으로 누적된 피드백이 있으면 뒤에 덧붙인다.
@@ -264,7 +270,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     if (step === 'review' && runtimeEvidenceSummary) {
       body += `\n\n## 검증 증거 요약\n${runtimeEvidenceSummary}`;
     }
-    if (step === 'scaffold' || step === 'test') return `${body}${verifyNotice}${runtimeNotice}`;
+    if (step === 'scaffold' || step === 'test') return `${body}${verifyNotice}${runtimeNotice}${reproNotice}`;
     if (step !== 'cicd') return body;
     // cicd receives only its own planner assignment. Passing the entire PLAN
     // makes it see scaffold/test/review work and causes it to reject the run
@@ -439,7 +445,8 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 
       // 구조화된 팀 계획이 있으면 남은 고정 단계를 동적 DAG로 실행한다.
       // 기존 PLAN만 반환하는 planner는 아래의 legacy 순차 workflow로 fallback한다.
-      const teamPlan = parseTeamPlan(r.output);
+      // 버그 모드는 재현 명령을 test 단계 직후 끼워 넣어야 하므로 고정 순차 루프를 쓴다.
+      const teamPlan = opts.reproCommand ? undefined : parseTeamPlan(r.output);
       if (teamPlan) {
         const team = await executeTeam(teamPlan, {
           cwd: projectDir,
@@ -621,15 +628,6 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
         };
         break;
       }
-      if (tests === 'FAIL') {
-        // LLM이 필수 ROUTE 마커를 빠뜨려도 명확한 구현 결함은 planner가 기본 소유한다.
-        // 마커 누락만으로 이미 끝난 테스트/리뷰 비용을 버리고 workflow를 중단하지 않는다.
-        const route = parseRoute(r.output) ?? 'planner';
-        if (routeTo(route, 'test', r.output)) continue;
-        verdict = 'FAILED';
-        failure = routeFailure(route, 'test', r.output);
-        break;
-      }
       if (tests === 'BLOCKED') {
         verdict = 'BLOCKED';
         failure = {
@@ -639,6 +637,64 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           reason: r.output.trim() || 'The test agent was blocked without providing a reason.',
           routeAvailable: false,
         };
+        break;
+      }
+
+      // 버그 모드는 test 마커와 관계없이 매 시도에서 같은 재현 명령을 직접 실행한다.
+      if (opts.reproCommand) {
+        const repro = await runVerifyStep({
+          projectDir,
+          verify: { command: opts.reproCommand, timeoutMs: DEFAULT_VERIFY_TIMEOUT_MS },
+          workflowRunId,
+          specSessionId: opts.specSessionId,
+          triggerSource: runOpts.triggerSource,
+          triggerDetail: 'bug-reproduction-confirmation',
+          expectedOutcome: 'pass',
+          signal: opts.signal,
+        });
+        results.repro = {
+          runId: repro.runId,
+          durationMs: repro.outcome.durationMs,
+          status: repro.passed ? 'DONE' : 'FAILED',
+        };
+        if (repro.outcome.cancelled) {
+          verdict = 'CANCELLED';
+          break;
+        }
+        if (!repro.passed) {
+          const feedback = [
+            '수정 후에도 동일한 버그 재현 명령이 통과하지 못했다. 출력과 종료 코드를 근거로 구현을 수정하라.',
+            '',
+            `[REPRO: ${opts.reproCommand}]`,
+            `- result: ${repro.outcome.timedOut ? 'timed out' : `exit code ${repro.outcome.exitCode ?? 'signal'}`}`,
+            `- duration: ${repro.outcome.durationMs}ms`,
+            '',
+            '```',
+            repro.outcome.outputTail || '(출력 없음)',
+            '```',
+            ...(tests === 'FAIL' ? ['', '## 테스트 에이전트 보고', r.output.trim()] : []),
+          ].join('\n');
+          if (routeTo('planner', 'repro', feedback)) continue;
+          verdict = 'FAILED';
+          failure = {
+            step: 'repro',
+            status: 'FAIL',
+            cause: 'reproduction_failed',
+            reason: feedback,
+            route: 'planner',
+            routeAvailable: false,
+          };
+          break;
+        }
+      }
+
+      if (tests === 'FAIL') {
+        // LLM이 필수 ROUTE 마커를 빠뜨려도 명확한 구현 결함은 planner가 기본 소유한다.
+        // 마커 누락만으로 이미 끝난 테스트/리뷰 비용을 버리고 workflow를 중단하지 않는다.
+        const route = parseRoute(r.output) ?? 'planner';
+        if (routeTo(route, 'test', r.output)) continue;
+        verdict = 'FAILED';
+        failure = routeFailure(route, 'test', r.output);
         break;
       }
 
