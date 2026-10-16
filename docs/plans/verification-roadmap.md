@@ -364,7 +364,7 @@ evals/
 
 ## Phase 7 — 자율성 확장
 
-진행 상황: 자율성 확장 설계는 승인되어 7A(체크포인트), 7B(PR 전달), 7C(자격 dry-run)까지 구현됐다. 세부 기록은 `docs/superpowers/specs/`에 둔다. 7D의 실제 자동 머지 파일럿은 별도 승인과 대상 저장소 지정이 필요하다.
+진행 상황: 7A(체크포인트), 7B(PR 전달), 7C(자격 dry-run), 7D(보호된 GitHub 자동 머지 요청)가 구현됐다. 운영 파일럿을 켜려면 환경 capability, 저장소 allowlist, 대시보드 kill switch, 프로젝트 opt-in을 모두 명시해야 한다. 세부 기록은 `docs/superpowers/specs/`에 둔다.
 
 - **재시작 내성**: 워크플로 상태(`cursor`, `routeCount`, `pendingFeedback`, `planOutput`)를 DB에 체크포인트하고, 서비스가 기동할 때 재개한다. 현재의 `server_restart` 실패 처리를 대체한다.
 - **PR 출력**: 로컬 atomic commit 대신 브랜치를 push하고 `gh pr create`로 PR을 만든다. 본문에 verify 결과와 증거 링크를 넣는다.

@@ -74,8 +74,26 @@ vi.mock('../lib/circuit-breaker.js', () => ({
   circuitBreaker: { stats: vi.fn(() => ({ state: 'CLOSED' })) },
 }));
 vi.mock('../lib/model-config.js', () => ({
-  modelConfig: { stats: vi.fn(() => ({})), set: vi.fn() },
+  modelConfig: {
+    stats: vi.fn(() => ({})),
+    set: vi.fn(),
+    getModel: vi.fn(() => 'model-a'),
+    getEffort: vi.fn(() => 'high'),
+  },
   loadModelsFromCli: vi.fn(async () => {}),
+}));
+const runtimeConfigMocks = vi.hoisted(() => ({
+  value: { autoMergeEnabled: false } as { autoMergeEnabled?: boolean },
+  save: vi.fn((next: { autoMergeEnabled?: boolean }) => next),
+}));
+vi.mock('../lib/app-config.js', () => ({
+  appConfig: {
+    get: () => ({ ...runtimeConfigMocks.value }),
+    save: (next: { autoMergeEnabled?: boolean }) => {
+      runtimeConfigMocks.value = next;
+      return runtimeConfigMocks.save(next);
+    },
+  },
 }));
 const { loadProjectConfig } = vi.hoisted(() => ({ loadProjectConfig: vi.fn(() => undefined as any) }));
 vi.mock('../lib/project-config.js', () => ({ loadProjectConfig }));
@@ -129,6 +147,44 @@ describe('health', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('global auto-merge switch', () => {
+  it('exposes the runtime switch and accepts an immediate switch update', async () => {
+    const previousCapability = process.env.AUTO_DEV_AUTO_MERGE_ENABLED;
+    process.env.AUTO_DEV_AUTO_MERGE_ENABLED = 'true';
+    runtimeConfigMocks.value = { autoMergeEnabled: false };
+    runtimeConfigMocks.save.mockClear();
+    try {
+      const app = createRoutes();
+      const getResponse = await app.fetch(new Request('http://localhost/api/config'));
+      expect(await getResponse.json()).toMatchObject({ autoMergeEnabled: false, autoMergeCapabilityEnabled: true });
+
+      const postResponse = await app.fetch(new Request('http://localhost/api/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ autoMergeEnabled: true }),
+      }));
+      expect(postResponse.status).toBe(200);
+      expect(runtimeConfigMocks.save).toHaveBeenCalledWith({ autoMergeEnabled: true });
+      expect(await postResponse.json()).toMatchObject({ autoMergeEnabled: true });
+    } finally {
+      if (previousCapability === undefined) delete process.env.AUTO_DEV_AUTO_MERGE_ENABLED;
+      else process.env.AUTO_DEV_AUTO_MERGE_ENABLED = previousCapability;
+      runtimeConfigMocks.value = { autoMergeEnabled: false };
+    }
+  });
+
+  it('rejects non-boolean switch values', async () => {
+    const app = createRoutes();
+    const response = await app.fetch(new Request('http://localhost/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ autoMergeEnabled: 'yes' }),
+    }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: 'autoMergeEnabled must be a boolean' });
   });
 });
 

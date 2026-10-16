@@ -91,13 +91,19 @@ describe('loadProjectConfig', () => {
 
   it('keeps automatic merge disabled unless explicitly enabled for dry-run evaluation', () => {
     writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: true } } }));
-    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: true });
+    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: true, requestMerge: false });
     writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: {} } }));
-    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: false });
+    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: false, requestMerge: false });
     writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: 'yes' } } }));
     expect(() => loadProjectConfig(dir)).toThrow(/delivery\.autoMerge\.enabled must be a boolean/);
     writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'local', autoMerge: { enabled: true } } }));
     expect(() => loadProjectConfig(dir)).toThrow(/requires delivery\.mode=pull-request/);
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: true, requestMerge: 'yes' } } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/delivery\.autoMerge\.requestMerge must be a boolean/);
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { requestMerge: true } } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/requestMerge requires delivery\.autoMerge\.enabled=true/);
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: true, requestMerge: true } } }));
+    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: true, requestMerge: true });
   });
 
   it('defaults an omitted delivery mode to local and rejects unsupported modes', () => {

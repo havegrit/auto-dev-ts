@@ -166,12 +166,15 @@ PR 전달에는 `AUTO_DEV_PUBLIC_BASE_URL`과
 체크포인트 세션을 사용합니다. 이슈 트래커에서 시작한 워크플로우는 PR 모드에서 에이전트를
 시작하기 전에 중단됩니다. 대시보드나 CLI에서 실행하세요.
 
-### 자동 머지 자격 평가 (dry-run 전용)
+### 자동 머지 자격 평가와 요청
 
 PR workflow는 `"delivery": { "autoMerge": { "enabled": true } }`로 자동 머지 자격을
-읽기 전용으로 평가할 수 있습니다. 이 설정은 PR을 **실제로 병합하지 않습니다**. 대시보드에
-분류, 신뢰 기록 수, 거부 이유를 표시하고 결과는 체크포인트와 SQLite 감사 테이블에 보존합니다.
-기본값은 비활성이고 `delivery.mode: "pull-request"`에서만 설정할 수 있습니다.
+읽기 전용으로 평가할 수 있습니다. 평가 통과 뒤 GitHub 자동 머지 요청까지 허용하려면 대상
+프로젝트에 `"requestMerge": true`를 별도로 설정해야 합니다. 대시보드의 전역 비상 스위치도
+기본 비활성입니다. 실제 요청에는 `AUTO_DEV_AUTO_MERGE_ENABLED=true`와 정확한
+`AUTO_DEV_AUTO_MERGE_REPOSITORIES=owner/repo` allowlist 항목이 필요합니다. 각 게이트는
+독립적이며 프로젝트 설정은 workflow 시작 시 기준 checkout에서 읽어야 합니다. 두 설정 모두
+`delivery.mode: "pull-request"`에서만 유효합니다.
 
 자격에는 정확한 저위험 diff, 변경되지 않은 정책 fingerprint, 저장된 결정적 검증 증거,
 성공한 review, 현재 head에 대한 사람의 승인, 보호 규칙과 필수 체크 통과, 서로 다른 케이스
@@ -180,7 +183,12 @@ PR workflow는 `"delivery": { "autoMerge": { "enabled": true } }`로 자동 머�
 matching eval 기록이 쌓이기 전까지 자격이 없습니다. 실사용 기록은 14일이 지난 뒤 사람이
 `auto-dev/merge-stable` 라벨을 붙여 확인합니다. `auto-dev/merge-reverted`,
 `auto-dev/merge-hotfix`, `auto-dev/merge-rework` 라벨은 streak를 초기화합니다. GitHub 이력이
-불완전하거나 확인할 수 없으면 자격을 거부합니다.
+불완전하거나 확인할 수 없으면 자격을 거부합니다. 요청 직전에 평가 전체와 PR head를 다시
+확인하고 `--match-head-commit`에 평가된 SHA를 전달합니다. `gh pr merge --auto`는 GitHub에
+해당 head를 조건 충족 시 병합해 달라고 요청하며 branch protection을 우회하거나 즉시 직접
+merge하지 않습니다. append-only action 로그와 PR head별
+요청 claim으로 재시작·재시도 중복을 막습니다. 대시보드 스위치는 새 요청을 즉시 차단하고,
+환경 변수는 서버 기능의 상한을 제어합니다.
 
 ### OpenClaw + Telegram
 
@@ -334,7 +342,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id/events/history` | 실행 이력에 저장된 이벤트 기록 |
 | `GET` | `/api/review-findings/candidates` | 최근 14일 리뷰·검증 규칙화 후보를 프로젝트별로 조회 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
-| `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |
+| `GET`/`POST` | `/api/config` | 모델·에이전트 설정, 전역 자동 머지 스위치, 프로젝트 목록 조회·변경 |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |
 
 ## 설정
@@ -349,6 +357,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택한 전역/에이전트별 모델을 사용할 수 없을 때 쓸 폴백 모델 |
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`~`max`; Codex는 현재 `low`/`medium`/`high` 노출) |
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일 |
+| `AUTO_DEV_AUTO_MERGE_ENABLED` | `false` | Phase 7D 자동 머지 요청의 서버 기능 상한 |
+| `AUTO_DEV_AUTO_MERGE_REPOSITORIES` | 비어 있음 | 요청을 허용할 정확한 `owner/repo` 목록 (쉼표 구분) |
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | `AUTO_DEV_PROVIDER=codex-cli`일 때 사용할 Codex CLI 명령 |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI 실행 timeout |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |

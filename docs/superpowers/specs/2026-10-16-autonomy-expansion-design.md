@@ -1,7 +1,7 @@
 # 자율성 확장 설계
 
 - 날짜: 2026-10-16
-- 상태: Phase 7A/7B/7C 구현 완료, Phase 7D 미구현
+- 상태: Phase 7A/7B/7C/7D 구현 완료; 실제 운영 파일럿은 미설정
 - 범위: 재시작 내성, PR 전달, 제한적 자동 머지
 
 ## 요약
@@ -13,7 +13,7 @@ Phase 7에서는 성공 판정을 더 자율적으로 만들기 전에, 중단�
 | 실행 복구 | 재개를 opt-in한 프로젝트에서 SQLite 체크포인트와 만료 가능한 실행 lease로 안전한 지점부터 재개한다. |
 | PR 전달 | 기본 동작은 유지한다. 프로젝트가 PR 모드를 명시한 경우에만 run 전용 브랜치를 push하고 PR을 만든다. |
 | 자동 머지 | 기본 비활성. 사람이 보호된 기본 브랜치에 설정한 opt-in, 저위험 변경 분류, 측정 기준, 저장소 보호 규칙이 모두 필요하다. |
-| 범위 | A/B/C는 별도 구현 작업으로 완료했다. C는 read-only dry-run이며, D의 실제 merge 실행은 별도 승인 대상이다. |
+| 범위 | A/B/C/D의 코드와 mock 테스트를 완료했다. D의 실제 운영은 명시적 환경·저장소·프로젝트 opt-in으로만 활성화한다. |
 
 ## 배경과 현재 동작
 
@@ -35,8 +35,10 @@ Phase 7에서는 성공 판정을 더 자율적으로 만들기 전에, 중단�
 
 ### 제외 범위
 
-- Phase 7C는 자동 머지 자격을 읽기 전용으로 계산하며, 실제 `gh pr merge`를 호출하지 않는다.
-- 이 문서는 실저장소 자동 머지 실행이나 배포 승인을 대신하지 않는다.
+- Phase 7C는 자동 머지 자격을 읽기 전용으로 계산한다. Phase 7D의 `gh pr merge --auto`는
+  환경 capability, 정확한 저장소 allowlist, 대시보드 kill switch, 프로젝트 opt-in 모두가
+  명시된 경우에만 요청한다.
+- 이 문서는 실저장소 운영 파일럿을 켜거나 배포하도록 승인하지 않는다.
 - 체크포인트가 없는 과거 run을 추측해 재생하지 않는다.
 - .auto-dev/ 설정이 없는 프로젝트의 실행 경로와 재시작 실패 처리는 그대로 둔다.
 - 일반 기능 변경, 버그 수정, 리팩터링을 자동 머지 대상으로 확대하지 않는다.
@@ -246,11 +248,28 @@ verify/runtime, 성공 후 전달 작업 중단이나 상태 불일치는 `RECOV
 - 현재 기본 eval 세트는 `autoMergeCategory`를 선언하지 않아 자격 기준선이 없다. 추가 eval 케이스와
   실제 GitHub 이력 없이는 dry-run이 거부되는 상태가 정상이다.
 
+### Phase 7D 구현 범위 조정 (2026-10-16)
+
+- 프로젝트 설정에 `delivery.autoMerge.requestMerge: true`를 별도 추가해야 실제 요청을 시도한다.
+  `enabled`는 dry-run 평가, `requestMerge`는 GitHub 요청 opt-in이다.
+- 서버의 `AUTO_DEV_AUTO_MERGE_ENABLED=true`, 정확한
+  `AUTO_DEV_AUTO_MERGE_REPOSITORIES=owner/repo` allowlist, `data/config.json`의
+  `autoMergeEnabled: true`, 기준 checkout의 프로젝트 두 opt-in을 모두 요구한다. 기본값은 모두 off다.
+- 요청 직전에 자격 평가를 다시 실행하고 PR head/state를 확인한다. 요청 intent를 감사 로그에
+  먼저 기록하고 PR head claim을 원자적으로 확보한 뒤에만 `gh pr merge --match-head-commit
+  <qualified SHA> --auto`를 호출한다.
+  GitHub branch protection과 필수 승인·checks는 계속 적용된다.
+- `auto_merge_action`은 pending/requested/blocked/failed 상태를 append-only로 보관한다.
+  claim이 남았지만 결과를 확인할 수 없으면 같은 head에 재요청하지 않고 수동 확인을 요구한다.
+- 테스트는 모든 gh 요청을 mock한다. 이 Phase 구현 과정에서는 실제 GitHub 저장소에 요청하거나
+  merge하지 않았다. 현재 eval 세트에도 분류된 저위험 baseline이 없어 새 PR은 기본적으로 거부된다.
+
 ## 구현 승인 전에 확정할 사항
 
 1. 실제 merge 파일럿에 사용할 대상 저장소/조직과 branch protection 최소 설정.
 2. AUTO_DEV_PUBLIC_BASE_URL이 가리킬 대시보드의 배포 방식과 접근 제어.
 3. 자동 머지 운영 중 live 성공·revert·hotfix를 수집할 GitHub 조회 주기와 재인증 절차.
 
-Phase 7C의 자격 집계와 dry-run은 구현됐다. Phase 7D의 실제 merge 파일럿은 대상 저장소,
-전역 kill switch, 감사/롤백 절차를 확정한 별도 승인 뒤에만 구현한다.
+Phase 7D의 gated auto-merge 요청 코드도 구현됐다. 실제 운영 파일럿은 대상 저장소와 branch
+protection을 확인한 뒤 환경 capability, allowlist, dashboard kill switch, 프로젝트 설정을
+명시적으로 켜야 시작된다. 이 구현 작업에서는 실 GitHub 요청을 실행하지 않았다.

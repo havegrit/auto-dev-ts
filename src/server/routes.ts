@@ -20,6 +20,7 @@ import { readWorkflowEvidence } from '../lib/evidence.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
+import { appConfig } from '../lib/app-config.js';
 import { loadProjectConfig } from '../lib/project-config.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
@@ -627,17 +628,28 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/config', (c) => {
-    return c.json({ ...modelConfig.stats(), agents: listAgents(), workspaceRoot: WORKSPACE_ROOT, projects: listProjects() });
+    return c.json({
+      ...modelConfig.stats(),
+      autoMergeEnabled: appConfig.get().autoMergeEnabled === true,
+      autoMergeCapabilityEnabled: process.env.AUTO_DEV_AUTO_MERGE_ENABLED === 'true',
+      agents: listAgents(), workspaceRoot: WORKSPACE_ROOT, projects: listProjects(),
+    });
   });
 
   app.post('/api/config', async (c) => {
-    const body = await c.req.json<{ model?: string; fallbackModel?: string; agentModels?: Record<string, string>; effort?: string }>();
+    const body = await c.req.json<{ model?: string; fallbackModel?: string; agentModels?: Record<string, string>; effort?: string; autoMergeEnabled?: boolean }>();
     try {
+      if (body.autoMergeEnabled !== undefined && typeof body.autoMergeEnabled !== 'boolean') {
+        throw new Error('autoMergeEnabled must be a boolean');
+      }
       const options: { fallbackModel?: string; agentModels?: Record<string, string>; persist: boolean } = { persist: true };
       if (Object.prototype.hasOwnProperty.call(body, 'fallbackModel')) options.fallbackModel = body.fallbackModel || undefined;
       if (Object.prototype.hasOwnProperty.call(body, 'agentModels')) options.agentModels = body.agentModels;
       modelConfig.set(body.model ?? modelConfig.getModel(), body.effort ?? modelConfig.getEffort(), options);
-      return c.json(modelConfig.stats());
+      if (body.autoMergeEnabled !== undefined) {
+        appConfig.save({ ...appConfig.get(), autoMergeEnabled: body.autoMergeEnabled });
+      }
+      return c.json({ ...modelConfig.stats(), autoMergeEnabled: appConfig.get().autoMergeEnabled === true });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }

@@ -218,6 +218,7 @@ export const modelConfig = {
         fallbackModel,
         effort: currentEffort,
         agentModels,
+        autoMergeEnabled: appConfig.get().autoMergeEnabled ?? false,
       } satisfies RuntimeConfig);
     }
   },

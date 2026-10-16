@@ -16,7 +16,7 @@ import type { ProjectConfig } from './project-config.js';
 const projectConfig: ProjectConfig = {
   version: 1,
   verify: { command: 'npm test', timeoutMs: 60_000 },
-  delivery: { mode: 'pull-request', autoMerge: { enabled: true } },
+  delivery: { mode: 'pull-request', autoMerge: { enabled: true, requestMerge: false } },
 };
 const models = { scaffold: 'model-a', review: 'model-b' };
 const expectedFingerprint = autoMergePolicyFingerprint(projectConfig, models);
@@ -243,7 +243,7 @@ describe('evaluateAutoMergeDryRun', () => {
 
   it('does not call GitHub when project opt-in is disabled', () => {
     const { deps, gh } = dependencies();
-    const disabled = { ...projectConfig, delivery: { mode: 'pull-request' as const, autoMerge: { enabled: false } } };
+    const disabled = { ...projectConfig, delivery: { mode: 'pull-request' as const, autoMerge: { enabled: false, requestMerge: false } } };
     const result = evaluateAutoMergeDryRun({
       context: context(), projectConfig: disabled, startingPolicyFingerprint: expectedFingerprint, models, evidence,
       autoMergeEnabledAtStart: false, projectConfigUnchanged: true,

@@ -15,6 +15,7 @@ import { AGENT_SPECS } from '../agents/specs.js';
 import { loadProjectConfig } from '../lib/project-config.js';
 import { autoMergePolicyFingerprint } from '../lib/auto-merge-policy.js';
 import { deniedAutoMergeDryRun, evaluateAutoMergeDryRun, type AutoMergeDryRunResult, type AutoMergeWorkflowEvidence } from '../lib/auto-merge.js';
+import { requestQualifiedAutoMerge, type AutoMergeActionResult } from '../lib/auto-merge-execution.js';
 import { modelConfig } from '../lib/model-config.js';
 import { readWorkflowEvidence } from '../lib/evidence.js';
 import { recordAutoMergeDryRun } from '../store/auto-merge.js';
@@ -80,14 +81,17 @@ interface SpecCheckpointSnapshot extends WorkflowCheckpointSnapshot {
   workflowState: PersistedSpecCheckpointState;
   autoMergePolicyFingerprint?: string;
   autoMergeEnabledAtStart?: boolean;
+  autoMergeRequestEnabledAtStart?: boolean;
   autoMergeEvidence?: AutoMergeWorkflowEvidence;
   autoMergeDryRun?: AutoMergeDryRunResult;
+  autoMergeAction?: AutoMergeActionResult;
   finalResult?: {
     verdict?: string;
     failure?: SpecResult['failure'];
     delivery?: PullRequestDeliveryState;
     autoMergeEvidence?: AutoMergeWorkflowEvidence;
     autoMergeDryRun?: AutoMergeDryRunResult;
+    autoMergeAction?: AutoMergeActionResult;
   };
 }
 
@@ -543,6 +547,7 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
       configFingerprint: createHash('sha256').update(JSON.stringify(projectConfig)).digest('hex'),
       ...(autoMergeFingerprint ? { autoMergePolicyFingerprint: autoMergeFingerprint } : {}),
       ...(prMode ? { autoMergeEnabledAtStart: projectConfig?.delivery?.autoMerge?.enabled === true } : {}),
+      ...(prMode ? { autoMergeRequestEnabledAtStart: projectConfig?.delivery?.autoMerge?.requestMerge === true } : {}),
       sessionState,
       ...(sessionState.deliveryContext ? { deliveryContext: sessionState.deliveryContext, deliveryState: sessionState.deliveryContext.state } : {}),
       specInput: input,
@@ -851,12 +856,15 @@ async function finalize(
     const status = workflowRunStatus(result);
     let autoMergeEvidence: AutoMergeWorkflowEvidence | undefined;
     let autoMergeDryRun: AutoMergeDryRunResult | undefined;
+    let autoMergeAction: AutoMergeActionResult | undefined;
     if (checkpointRuntime && state.deliveryContext && result.verdict === 'SHIP' && !result.failure) {
       let projectConfig: ReturnType<typeof loadProjectConfig>;
       try { projectConfig = loadProjectConfig(state.sourceCwd ?? state.cwd); } catch { projectConfig = undefined; }
       autoMergeEvidence = await autoMergeEvidenceForResult(runId, result, projectConfig);
       if (result.delivery?.status === 'DELIVERED') {
-        autoMergeDryRun = await runAutoMergeDryRun(runId, checkpointRuntime.snapshot, result.delivery, autoMergeEvidence);
+        const assessment = await runAutoMergeDryRun(runId, checkpointRuntime.snapshot, result.delivery, autoMergeEvidence);
+        autoMergeDryRun = assessment.dryRun;
+        autoMergeAction = assessment.action;
       }
     }
     const deliveryOutput = result.delivery?.status === 'DELIVERED'
@@ -884,12 +892,14 @@ async function finalize(
         sessionState: { ...merged, planOutput },
         ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
         ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+        ...(autoMergeAction ? { autoMergeAction } : {}),
         finalResult: {
           verdict: result.verdict,
           failure: result.failure,
           delivery: result.delivery,
           ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
           ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+          ...(autoMergeAction ? { autoMergeAction } : {}),
         },
       });
     } else {
@@ -981,12 +991,17 @@ async function autoMergeEvidenceForResult(
   return { deterministicConfigured, deterministicPassed, reviewPassed, evidenceStored };
 }
 
+interface AutoMergeAssessment {
+  dryRun: AutoMergeDryRunResult;
+  action?: AutoMergeActionResult;
+}
+
 async function runAutoMergeDryRun(
   runId: string,
   snapshot: SpecCheckpointSnapshot,
   delivery: PullRequestDeliveryState,
   evidence: AutoMergeWorkflowEvidence,
-): Promise<AutoMergeDryRunResult> {
+): Promise<AutoMergeAssessment> {
   const context = snapshot.sessionState.deliveryContext;
   if (!context) throw new Error('Auto-merge dry-run requires a saved PR delivery context.');
   context.state = delivery;
@@ -998,21 +1013,24 @@ async function runAutoMergeDryRun(
     projectConfig = undefined;
   }
   const projectConfigFingerprint = createHash('sha256').update(JSON.stringify(projectConfig ?? null)).digest('hex');
+  const projectConfigUnchanged = projectConfigFingerprint === snapshot.configFingerprint;
+  const evaluationInput = {
+    context,
+    projectConfig,
+    configFingerprintAtStart: snapshot.configFingerprint,
+    startingPolicyFingerprint: snapshot.autoMergePolicyFingerprint ?? '',
+    models: modelConfig.getAgentModels(),
+    runtimeModelSettings: {
+      effort: modelConfig.getEffort(),
+      fallbackModel: modelConfig.getFallbackModel(),
+    },
+    evidence,
+    autoMergeEnabledAtStart: snapshot.autoMergeEnabledAtStart === true,
+    projectConfigUnchanged,
+  };
   let result: AutoMergeDryRunResult;
   try {
-    result = evaluateAutoMergeDryRun({
-      context,
-      projectConfig,
-      startingPolicyFingerprint: snapshot.autoMergePolicyFingerprint ?? '',
-      models: modelConfig.getAgentModels(),
-      runtimeModelSettings: {
-        effort: modelConfig.getEffort(),
-        fallbackModel: modelConfig.getFallbackModel(),
-      },
-      evidence,
-      autoMergeEnabledAtStart: snapshot.autoMergeEnabledAtStart === true,
-      projectConfigUnchanged: projectConfigFingerprint === snapshot.configFingerprint,
-    });
+    result = evaluateAutoMergeDryRun(evaluationInput);
   } catch (err) {
     result = deniedAutoMergeDryRun(
       `Auto-merge dry-run failed closed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1020,6 +1038,7 @@ async function runAutoMergeDryRun(
     );
   }
 
+  let dryRunAuditStored = false;
   if (delivery.prNumber && delivery.commitSha) {
     try {
       recordAutoMergeDryRun({
@@ -1038,16 +1057,44 @@ async function runAutoMergeDryRun(
         reasons: result.reasons,
         checkedAt: result.checkedAt,
       });
+      dryRunAuditStored = true;
     } catch {
       // 자동 머지 dry-run 기록 실패는 이미 전달된 PR의 상태를 바꾸지 않는다.
     }
+  }
+  let action: AutoMergeActionResult | undefined;
+  if (snapshot.autoMergeRequestEnabledAtStart) {
+    if (!dryRunAuditStored) {
+      action = {
+        status: 'blocked',
+        reason: 'Eligibility audit was not persisted; no GitHub merge request was sent.',
+        recordedAt: new Date().toISOString(),
+      };
+    } else try {
+      action = requestQualifiedAutoMerge({
+        ...evaluationInput,
+        autoMergeRequestEnabledAtStart: snapshot.autoMergeRequestEnabledAtStart === true,
+        dryRun: result,
+      });
+    } catch (err) {
+      action = {
+        status: 'failed',
+        reason: `Auto-merge action failed closed: ${err instanceof Error ? err.message : String(err)}`,
+        recordedAt: new Date().toISOString(),
+      };
+    }
+    emitRunEvent(runId, {
+      type: 'tool_result',
+      ts: action.recordedAt,
+      data: `auto_merge_action:${action.status} ${action.reason}`.slice(0, 2000),
+    });
   }
   emitRunEvent(runId, {
     type: 'tool_result',
     ts: result.checkedAt,
     data: `auto_merge_dry_run:${result.eligible ? 'eligible' : 'denied'} category=${result.category}; ${result.reasons.join(' ')}`.slice(0, 2000),
   });
-  return result;
+  return { dryRun: result, ...(action ? { action } : {}) };
 }
 
 function deliveryOutput(base: string, state: PullRequestDeliveryState): string {
@@ -1110,9 +1157,11 @@ async function finishPullRequestDelivery(
 
   context.state = state;
   const autoMergeEvidence = runtime.snapshot.autoMergeEvidence ?? runtime.snapshot.finalResult?.autoMergeEvidence;
-  const autoMergeDryRun = state.status === 'DELIVERED' && autoMergeEvidence
+  const assessment = state.status === 'DELIVERED' && autoMergeEvidence
     ? await runAutoMergeDryRun(runId, runtime.snapshot, state, autoMergeEvidence)
-    : runtime.snapshot.autoMergeDryRun;
+    : undefined;
+  const autoMergeDryRun = assessment?.dryRun ?? runtime.snapshot.autoMergeDryRun;
+  const autoMergeAction = assessment?.action ?? runtime.snapshot.autoMergeAction;
   runtime.snapshot = {
     ...runtimeSnapshot(runtime),
     sessionState: { ...runtime.snapshot.sessionState, deliveryContext: context },
@@ -1120,6 +1169,7 @@ async function finishPullRequestDelivery(
     deliveryState: state,
     ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
     ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+    ...(autoMergeAction ? { autoMergeAction } : {}),
     activeAction: undefined,
     activeStep: undefined,
     activeRunId: undefined,
@@ -1146,12 +1196,14 @@ async function finishPullRequestDelivery(
     deliveryState: state,
     ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
     ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+    ...(autoMergeAction ? { autoMergeAction } : {}),
     finalResult: {
       ...(runtime.snapshot.finalResult ?? {}),
       verdict: 'SHIP',
       delivery: state,
       ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
       ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+      ...(autoMergeAction ? { autoMergeAction } : {}),
     },
   });
   finishRunEvents(runId, 'DONE');

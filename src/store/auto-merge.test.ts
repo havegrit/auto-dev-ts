@@ -1,8 +1,13 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  claimAutoMergeRequest,
+  finishAutoMergeRequestClaim,
+  getAutoMergeRequestClaim,
+  getAutoMergeRequestHistory,
   getAutoMergeDryRuns,
   getAutoMergeLiveTrustStreak,
+  recordAutoMergeAction,
   recordAutoMergeDryRun,
   recordAutoMergeLiveObservation,
 } from './auto-merge.js';
@@ -28,6 +33,16 @@ beforeEach(() => {
       outcome TEXT NOT NULL, merged_by TEXT NOT NULL, approved_by TEXT NOT NULL, evidence_source TEXT NOT NULL,
       merged_at TEXT NOT NULL, stability_verified_at TEXT, recorded_at TEXT NOT NULL,
       UNIQUE(repository, base_branch, pr_number, head_sha)
+    );
+    CREATE TABLE auto_merge_action (
+      id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+      head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, category TEXT NOT NULL, policy_fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE auto_merge_request_claim (
+      repository TEXT NOT NULL, pr_number INTEGER NOT NULL, head_sha TEXT NOT NULL, workflow_run_id TEXT NOT NULL,
+      state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY(repository, pr_number, head_sha)
     );
   `);
 });
@@ -81,6 +96,27 @@ describe('auto-merge records', () => {
       category: 'docs',
       eligible: false,
       reasons: ['live trust is insufficient'],
+    });
+  });
+
+  it('stores append-only action events and claims each PR head once', () => {
+    const action = {
+      workflowRunId: 'workflow-1', repository: 'org/project', prNumber: 42,
+      headSha: sha(2), baseSha: sha(1), category: 'docs' as const,
+      policyFingerprint: 'policy-a', status: 'pending' as const, actor: 'auto-dev',
+      reason: 'Submitting GitHub auto-merge request.',
+    };
+    recordAutoMergeAction(action, database, now);
+    recordAutoMergeAction({ ...action, status: 'requested', reason: 'GitHub accepted.', createdAt: '2026-10-16T00:00:01.000Z' }, database, now);
+    expect(getAutoMergeRequestHistory('org/project', 42, sha(2), database).map(row => row.status)).toEqual(['requested', 'pending']);
+
+    const claim = { repository: 'org/project', prNumber: 42, headSha: sha(2), workflowRunId: 'workflow-1' };
+    expect(claimAutoMergeRequest(claim, database, now)).toBe(true);
+    expect(claimAutoMergeRequest({ ...claim, workflowRunId: 'workflow-2' }, database, now)).toBe(false);
+    expect(getAutoMergeRequestClaim('org/project', 42, sha(2), database)?.state).toBe('claimed');
+    finishAutoMergeRequestClaim('org/project', 42, sha(2), 'requested', database, now);
+    expect(getAutoMergeRequestClaim('org/project', 42, sha(2), database)).toMatchObject({
+      workflowRunId: 'workflow-1', state: 'requested',
     });
   });
 

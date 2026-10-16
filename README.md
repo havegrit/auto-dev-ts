@@ -170,13 +170,16 @@ access control is enforced. The server keeps its default `127.0.0.1` bind addres
 Issue-tracker-triggered workflows currently stop before starting agents in PR mode; launch
 those specs from the dashboard or CLI.
 
-### Auto-merge qualification (dry-run only)
+### Auto-merge qualification and requests
 
 PR workflows can record a read-only auto-merge eligibility assessment with
-`"delivery": { "autoMerge": { "enabled": true } }`. This setting does **not** merge PRs.
-The dashboard shows the candidate category, trust counts, and denial reasons; each result is
-also retained in the workflow checkpoint and SQLite audit table. The setting defaults to off
-and is valid only with `delivery.mode: "pull-request"`.
+`"delivery": { "autoMerge": { "enabled": true } }`. To request GitHub auto-merge after a
+successful assessment, the target project must separately set
+`"requestMerge": true`. The dashboard also has a global kill switch, off by default. Runtime
+requests require `AUTO_DEV_AUTO_MERGE_ENABLED=true` and an exact
+`AUTO_DEV_AUTO_MERGE_REPOSITORIES=owner/repo` allowlist entry. These gates are all independent;
+the project config must come from the base checkout at workflow start. Both fields require
+`delivery.mode: "pull-request"`.
 
 Eligibility requires an exact low-risk diff, unchanged policy fingerprint, stored deterministic
 verification evidence, successful review, current human approval, a clean PR with successful
@@ -186,7 +189,13 @@ The current eval suite does not yet supply that baseline, so candidates remain i
 matching eval history exists. For live history, a human must add `auto-dev/merge-stable` after
 the 14-day window. Applying `auto-dev/merge-reverted`, `auto-dev/merge-hotfix`, or
 `auto-dev/merge-rework` invalidates the streak. Missing or incomplete GitHub history fails
-closed.
+closed. Before requesting, auto-dev repeats the full assessment and checks the PR head again.
+It passes the qualified SHA with `--match-head-commit` to `gh pr merge --auto`, which asks GitHub
+to merge that head when its protections are satisfied; it does not bypass branch protection or
+merge the PR directly. An append-only action log and a
+per-head request claim prevent duplicate requests after retries or restarts. The dashboard
+switch stops new requests immediately; the environment flag is a separate server capability
+ceiling.
 
 ### OpenClaw + Telegram
 
@@ -342,7 +351,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id/events/history` | Persisted event history for a run |
 | `GET` | `/api/review-findings/candidates` | Project-grouped review and verification rule candidates from the last 14 days |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
-| `GET`/`POST` | `/api/config` | Get/set model, fallback, per-agent models & effort + project list |
+| `GET`/`POST` | `/api/config` | Get/set model, per-agent settings, global auto-merge switch, and project list |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
 
 ## Configuration
@@ -357,6 +366,8 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 | `AUTO_DEV_FALLBACK_MODEL` | unset | Model to use when the selected global or per-agent model is unavailable |
 | `AUTO_DEV_EFFORT` | `high` | Effort level (`low`–`max`; Codex currently exposes `low`/`medium`/`high`) |
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | Dashboard-persisted runtime config file |
+| `AUTO_DEV_AUTO_MERGE_ENABLED` | `false` | Server capability ceiling for Phase 7D auto-merge requests |
+| `AUTO_DEV_AUTO_MERGE_REPOSITORIES` | empty | Exact comma-separated `owner/repo` allowlist for auto-merge requests |
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | Codex CLI command when `AUTO_DEV_PROVIDER=codex-cli` |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI execution timeout |
 | `AUTO_DEV_OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint (NVIDIA NIM / DeepSeek / OpenRouter / vLLM). Text completion only — not tool-using agent steps |

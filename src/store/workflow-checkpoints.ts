@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { db as appDb } from './db.js';
 import type { AutoMergeDryRunResult } from '../lib/auto-merge.js';
+import type { AutoMergeActionResult } from '../lib/auto-merge-execution.js';
 
 export const WORKFLOW_CHECKPOINT_SCHEMA_VERSION = 1;
 export const WORKFLOW_CHECKPOINT_LEASE_MS = 60_000;
@@ -63,6 +64,7 @@ export interface WorkflowCheckpointSummary {
     reason?: string;
   };
   autoMergeDryRun?: AutoMergeDryRunResult;
+  autoMergeAction?: AutoMergeActionResult;
   updatedAt: string;
 }
 
@@ -288,6 +290,9 @@ export function checkpointSummary(checkpoint: WorkflowCheckpoint): WorkflowCheck
   const autoMergeDryRun = snapshot['autoMergeDryRun'] && typeof snapshot['autoMergeDryRun'] === 'object'
     ? snapshot['autoMergeDryRun'] as AutoMergeDryRunResult
     : undefined;
+  const autoMergeAction = snapshot['autoMergeAction'] && typeof snapshot['autoMergeAction'] === 'object'
+    ? snapshot['autoMergeAction'] as AutoMergeActionResult
+    : undefined;
   return {
     state: checkpoint.state,
     revision: checkpoint.revision,
@@ -308,6 +313,7 @@ export function checkpointSummary(checkpoint: WorkflowCheckpoint): WorkflowCheck
       },
     } : {}),
     ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+    ...(autoMergeAction ? { autoMergeAction } : {}),
     updatedAt: checkpoint.updatedAt,
   };
 }

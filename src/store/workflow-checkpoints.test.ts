@@ -106,12 +106,18 @@ describe('workflow checkpoints', () => {
         live: { passedCount: 0, requiredCount: 10, qualifies: false },
         reasons: ['trust streak is too short'], checkedAt: '2026-10-16T00:00:00.000Z',
       },
+      autoMergeAction: {
+        status: 'requested', reason: 'GitHub accepted the request.', recordedAt: '2026-10-16T00:00:01.000Z',
+      },
     }, 'owner-a', database);
 
     expect(checkpointSummary(checkpoint).autoMergeDryRun).toMatchObject({
       mode: 'dry-run', eligible: false, category: 'docs',
       eval: { passedCount: 3, distinctCaseCount: 2 },
       reasons: ['trust streak is too short'],
+    });
+    expect(checkpointSummary(checkpoint).autoMergeAction).toMatchObject({
+      status: 'requested', reason: 'GitHub accepted the request.',
     });
   });
 });

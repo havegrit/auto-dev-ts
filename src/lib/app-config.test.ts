@@ -37,4 +37,19 @@ describe('appConfig', () => {
       agentModels: { scaffold: 'agent-model' },
     });
   });
+
+  it('persists the global auto-merge kill switch and defaults malformed values off', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-dev-config-'));
+    dirs.push(dir);
+    const path = join(dir, 'runtime-config.json');
+    const { appConfig } = await freshStore(path);
+    expect(appConfig.get().autoMergeEnabled).toBeUndefined();
+    appConfig.save({ autoMergeEnabled: true });
+    expect(appConfig.get().autoMergeEnabled).toBe(true);
+
+    const reloaded = await freshStore(path);
+    expect(reloaded.appConfig.get().autoMergeEnabled).toBe(true);
+    reloaded.appConfig.save({ autoMergeEnabled: false });
+    expect(reloaded.appConfig.get().autoMergeEnabled).toBe(false);
+  });
 });

@@ -93,6 +93,10 @@ vi.mock('../lib/auto-merge.js', () => ({
 }));
 const autoMergeStore = vi.hoisted(() => ({ recordAutoMergeDryRun: vi.fn() }));
 vi.mock('../store/auto-merge.js', () => autoMergeStore);
+const autoMergeExecution = vi.hoisted(() => ({
+  request: vi.fn((_input: any) => ({ status: 'requested', reason: 'GitHub accepted request.', recordedAt: '2026-10-16T00:00:00.000Z' })),
+}));
+vi.mock('../lib/auto-merge-execution.js', () => ({ requestQualifiedAutoMerge: (input: any) => autoMergeExecution.request(input) }));
 const deliveryMocks = vi.hoisted(() => ({
   preparePullRequestWorktree: vi.fn((_sourceDir: string, workflowRunId: string) => ({
     workflowRunId, sourceDir: '/tmp/proj', worktreeDir: '/tmp/worktrees/pr-run', remote: 'origin',
@@ -153,6 +157,7 @@ beforeEach(() => {
   notifyOpenClawSpec.mockClear();
   autoMergeMocks.evaluate.mockClear();
   autoMergeStore.recordAutoMergeDryRun.mockClear();
+  autoMergeExecution.request.mockClear();
   loadProjectConfig.mockReturnValue(undefined);
   deliveryMocks.preparePullRequestWorktree.mockClear();
   deliveryMocks.validatePullRequestDeliveryContext.mockClear();
@@ -378,6 +383,51 @@ describe('startSpecSession (round 0)', () => {
       autoMergeDryRun: { mode: 'dry-run', eligible: false, reasons: ['insufficient trust'] },
       finalResult: { autoMergeDryRun: { eligible: false } },
     });
+    expect(autoMergeExecution.request).not.toHaveBeenCalled();
+  });
+
+  it('requests auto-merge only when the project requested execution at workflow start', async () => {
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      verify: { command: 'npm test', timeoutMs: 60_000 },
+      delivery: { mode: 'pull-request', autoMerge: { enabled: true, requestMerge: true } },
+    });
+    childRuns = [
+      { agent_name: 'verify', status: 'DONE', output: '$ npm test\nPASS' },
+      { agent_name: 'review', status: 'DONE', output: '[VERDICT: SHIP]' },
+    ];
+    specResult = {
+      workflowRunId: 'x',
+      steps: {
+        verify: { runId: 'v', durationMs: 10, status: 'DONE' },
+        review: { runId: 'r', durationMs: 10, status: 'DONE' },
+      },
+      totalDurationMs: 25,
+      verdict: 'SHIP',
+      delivery: { status: 'DELIVERED', prNumber: 42, prUrl: 'https://github.com/org/project/pull/42', commitSha: 'commit-sha' },
+    };
+    autoMergeMocks.evaluate.mockImplementationOnce((input: any) => ({
+      mode: 'dry-run', eligible: true, category: 'docs', policyFingerprint: input.startingPolicyFingerprint,
+      headSha: 'commit-sha', baseSha: 'base-sha',
+      eval: { passedCount: 20, distinctCaseCount: 10, requiredCount: 20, requiredDistinctCases: 10, qualifies: true },
+      live: { passedCount: 10, requiredCount: 10, qualifies: true },
+      reasons: [], checkedAt: '2026-10-16T00:00:00.000Z',
+    }));
+
+    const { runId, done } = startSpecSession('보호된 자동 머지 요청', { cwd: '/tmp/proj', triggerSource: 'dashboard' });
+    await done;
+
+    expect(autoMergeExecution.request).toHaveBeenCalledWith(expect.objectContaining({
+      autoMergeEnabledAtStart: true,
+      autoMergeRequestEnabledAtStart: true,
+      dryRun: expect.objectContaining({ eligible: true }),
+    }));
+    const finishCall = (checkpointMocks.finishWorkflowCheckpoint.mock.calls as unknown as any[][]).at(-1);
+    expect(finishCall?.[1]).toMatchObject({
+      autoMergeAction: { status: 'requested', reason: 'GitHub accepted request.' },
+      finalResult: { autoMergeAction: { status: 'requested' } },
+    });
+    expect(runId).toBeDefined();
   });
 
   it('keeps code success as DONE while exposing a failed external PR delivery as DELIVERY_PENDING', async () => {

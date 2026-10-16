@@ -45,6 +45,34 @@ export interface AutoMergeLiveObservation {
   recordedAt?: string;
 }
 
+export type AutoMergeActionStatus = 'pending' | 'blocked' | 'requested' | 'already-requested' | 'failed';
+
+export interface AutoMergeActionRecord {
+  workflowRunId: string;
+  repository: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  category: AutoMergeDryRunRecord['category'];
+  policyFingerprint: string;
+  status: AutoMergeActionStatus;
+  actor: string;
+  reason: string;
+  createdAt?: string;
+}
+
+export interface AutoMergeActionRow extends AutoMergeActionRecord {
+  id: string;
+  createdAt: string;
+}
+
+export interface AutoMergeRequestClaim {
+  workflowRunId: string;
+  state: 'claimed' | 'requested' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AutoMergeLiveTrustStreak {
   passedCount: number;
   requiredCount: number;
@@ -140,6 +168,114 @@ export function getAutoMergeDryRuns(
     reasons: JSON.parse(row.reasons_json) as string[],
     checkedAt: row.checked_at,
   }));
+}
+
+/** 자동 머지 요청/거부 이벤트를 append-only 감사 이력으로 저장한다. */
+export function recordAutoMergeAction(
+  record: AutoMergeActionRecord,
+  database: DatabaseType = appDb,
+  now = new Date(),
+): AutoMergeActionRow {
+  const createdAt = record.createdAt ?? now.toISOString();
+  const id = randomUUID();
+  database.prepare(`
+    INSERT INTO auto_merge_action (
+      id, workflow_run_id, repository, pr_number, head_sha, base_sha, category,
+      policy_fingerprint, status, actor, reason, created_at
+    ) VALUES (
+      @id, @workflowRunId, @repository, @prNumber, @headSha, @baseSha, @category,
+      @policyFingerprint, @status, @actor, @reason, @createdAt
+    )
+  `).run({ ...record, id, createdAt });
+  return { ...record, id, createdAt };
+}
+
+export function getAutoMergeRequestHistory(
+  repository: string,
+  prNumber: number,
+  headSha: string,
+  database: DatabaseType = appDb,
+): AutoMergeActionRow[] {
+  const rows = database.prepare(`
+    SELECT * FROM auto_merge_action
+    WHERE repository = ? AND pr_number = ? AND head_sha = ?
+    ORDER BY created_at DESC, id DESC
+  `).all(repository, prNumber, headSha) as Array<{
+    id: string;
+    workflow_run_id: string;
+    repository: string;
+    pr_number: number;
+    head_sha: string;
+    base_sha: string;
+    category: AutoMergeDryRunRecord['category'];
+    policy_fingerprint: string;
+    status: AutoMergeActionStatus;
+    actor: string;
+    reason: string;
+    created_at: string;
+  }>;
+  return rows.map(row => ({
+    id: row.id,
+    workflowRunId: row.workflow_run_id,
+    repository: row.repository,
+    prNumber: row.pr_number,
+    headSha: row.head_sha,
+    baseSha: row.base_sha,
+    category: row.category,
+    policyFingerprint: row.policy_fingerprint,
+    status: row.status,
+    actor: row.actor,
+    reason: row.reason,
+    createdAt: row.created_at,
+  }));
+}
+
+/** 외부 merge 요청 전 head별 claim을 원자적으로 잡아 재시작·동시 실행 중복을 막는다. */
+export function claimAutoMergeRequest(
+  record: Pick<AutoMergeActionRecord, 'repository' | 'prNumber' | 'headSha' | 'workflowRunId'>,
+  database: DatabaseType = appDb,
+  now = new Date(),
+): boolean {
+  const result = database.prepare(`
+    INSERT OR IGNORE INTO auto_merge_request_claim (
+      repository, pr_number, head_sha, workflow_run_id, state, created_at, updated_at
+    ) VALUES (@repository, @prNumber, @headSha, @workflowRunId, 'claimed', @now, @now)
+  `).run({ ...record, now: now.toISOString() });
+  return result.changes === 1;
+}
+
+export function getAutoMergeRequestClaim(
+  repository: string,
+  prNumber: number,
+  headSha: string,
+  database: DatabaseType = appDb,
+): AutoMergeRequestClaim | undefined {
+  const row = database.prepare(`
+    SELECT workflow_run_id, state, created_at, updated_at FROM auto_merge_request_claim
+    WHERE repository = ? AND pr_number = ? AND head_sha = ?
+  `).get(repository, prNumber, headSha) as {
+    workflow_run_id: string; state: AutoMergeRequestClaim['state']; created_at: string; updated_at: string;
+  } | undefined;
+  return row ? {
+    workflowRunId: row.workflow_run_id,
+    state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  } : undefined;
+}
+
+export function finishAutoMergeRequestClaim(
+  repository: string,
+  prNumber: number,
+  headSha: string,
+  state: Exclude<AutoMergeRequestClaim['state'], 'claimed'>,
+  database: DatabaseType = appDb,
+  now = new Date(),
+): void {
+  database.prepare(`
+    UPDATE auto_merge_request_claim SET state = ?, updated_at = ?
+    WHERE repository = ? AND pr_number = ? AND head_sha = ? AND state = 'claimed'
+  `).run(state, now.toISOString(), repository, prNumber, headSha);
 }
 
 export function getAutoMergeKnownPullRequests(

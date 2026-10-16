@@ -6,6 +6,7 @@ export interface RuntimeConfig {
   fallbackModel?: string;
   effort?: string;
   agentModels?: Record<string, string>;
+  autoMergeEnabled?: boolean;
 }
 
 const CONFIG_PATH = process.env.AUTO_DEV_CONFIG_PATH ?? './data/config.json';
@@ -24,6 +25,7 @@ function sanitizeConfig(input: unknown): RuntimeConfig {
     ...(typeof raw.fallbackModel === 'string' && raw.fallbackModel.trim() ? { fallbackModel: raw.fallbackModel.trim() } : {}),
     ...(typeof raw.effort === 'string' && raw.effort.trim() ? { effort: raw.effort.trim() } : {}),
     ...(Object.keys(agentModels).length > 0 ? { agentModels } : {}),
+    ...(typeof raw.autoMergeEnabled === 'boolean' ? { autoMergeEnabled: raw.autoMergeEnabled } : {}),
   };
 }
 

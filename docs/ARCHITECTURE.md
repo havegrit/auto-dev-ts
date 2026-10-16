@@ -698,11 +698,12 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - issue tracker의 `processIssue`는 현재 PR 모드를 지원하지 않으며, bug 재현 agent가
   시작되기 전에 명확히 거부한다. dashboard, CLI, `POST /api/specs` 진입은 지원한다.
 
-### 6.2.8 자동 머지 자격 dry-run
+### 6.2.8 자동 머지 자격 평가와 요청
 
 - PR 모드에서만 `delivery.autoMerge.enabled: true`를 설정할 수 있다. 기본값은 false이며,
-  Phase 7C 구현은 GitHub 상태를 읽어 자격을 계산하고 SQLite와 체크포인트에 결과를 남긴다.
-  실제 `gh pr merge` 호출은 없다.
+  Phase 7C는 GitHub 상태를 읽어 자격을 계산하고 SQLite와 체크포인트에 결과를 남긴다.
+  Phase 7D의 외부 요청은 프로젝트가 `delivery.autoMerge.requestMerge: true`를 별도로
+  설정하고 전역 허용 게이트를 통과할 때만 가능하다.
 - 분류는 실제 PR 파일 목록으로 계산한다. 문서는 보호된 문서 경로만, 의존성 패치는
   지원되는 root manifest/lockfile만 허용한다. 혼합·미분류·경로 이탈 diff는 거부한다.
 - 자격 계산은 workflow 시작 시점과 현재의 모델·프롬프트·verify/runtime 설정 fingerprint가
@@ -718,7 +719,19 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   라벨/이벤트 이력 누락, 100개 초과 페이지, 변경된 head, bot 병합은 확인 불가로 처리한다.
 - eval 20회/10 case와 안정된 실사용 PR 10개의 기준은 프로젝트 설정으로 낮출 수 없다.
   현재 기본 eval 세트는 자동 머지 분류를 제공하지 않으므로 기준선이 아직 없고, 대시보드는
-  거부 이유와 streak 수를 표시한다. 실제 자동 머지는 후속 Phase 7D의 별도 승인 범위다.
+  거부 이유와 streak 수를 표시한다.
+- 실행 게이트는 서버 환경 capability `AUTO_DEV_AUTO_MERGE_ENABLED=true`, 정확한
+  `AUTO_DEV_AUTO_MERGE_REPOSITORIES=owner/repo` 항목, 대시보드 런타임 kill switch,
+  workflow 시작 시 읽은 프로젝트의 `enabled` 및 `requestMerge` opt-in을 모두 요구한다.
+  서버 capability는 기본 false이고, 대시보드 kill switch도 기본 false다.
+- 요청 직전에 정책·eval/live streak·보호 규칙·checks를 다시 평가하고 PR state/head SHA를
+  재확인한다. `gh pr merge --match-head-commit <검증된 SHA> --auto`만 호출해 GitHub에 요청하며,
+  branch protection을 우회하지 않는다. 이 명령은 PR을 직접 merge하지 않고 GitHub의 보호
+  조건이 만족될 때까지 대기시킨다.
+- `auto_merge_action`은 요청 intent, 요청/거부/오류, workflow ID, actor, PR head/base SHA,
+  policy fingerprint, 시각을 append-only로 보관한다. PR head별 claim은 재시작과 동시 실행에서
+  중복 호출을 막고, 결과를 확인할 수 없는 claim은 수동 확인 전까지 재시도하지 않는다.
+  대시보드 runtime switch는 새 요청을 즉시 막고, dry-run 및 action 상태와 이유를 표시한다.
 
 ### 6.3 Java 버전 대비 미구현 항목
 
@@ -1045,6 +1058,8 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
 | `AUTO_DEV_PUBLIC_BASE_URL` | 미설정 | PR 본문에 쓸 HTTPS 대시보드 URL |
 | `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | 미설정 | 외부 proxy 접근 제어 운영자 확인값 (`authenticated` / `network-restricted`) |
+| `AUTO_DEV_AUTO_MERGE_ENABLED` | `false` | Phase 7D auto-merge 요청을 위한 서버 capability ceiling |
+| `AUTO_DEV_AUTO_MERGE_REPOSITORIES` | 비어 있음 | 허용할 정확한 GitHub `owner/repo` 목록 (쉼표 구분, wildcard 불가) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 에이전트 실행 횟수 한도 (비우면 무제한) |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 종료 상태 알림 활성 |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림 전송 Telegram 계정 |
@@ -1078,12 +1093,18 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
 | | `delivery.mode` | `local` (기본) 또는 `pull-request`; PR은 자동 checkpoint/worktree 사용 |
 | | `delivery.baseBranch` | PR base branch. 생략하면 GitHub 저장소 기본 브랜치 |
-| | `delivery.autoMerge.enabled` | PR 자격 dry-run 기록 opt-in. 기본 false; Phase 7C에서는 실제 병합하지 않음 |
+| | `delivery.autoMerge.enabled` | PR 자격 평가 opt-in. `requestMerge`가 없으면 GitHub 요청을 보내지 않음 |
+| | `delivery.autoMerge.requestMerge` | GitHub `--auto` 요청에 대한 별도 프로젝트 opt-in. `enabled`도 true여야 함 |
+| `data/config.json` | `autoMergeEnabled` | 대시보드의 서버 전역 kill switch. 기본 false |
 
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
 `runtime` 이 있으면 실제 동작 검증 게이트도 활성화된다 (§6.2.2).
 `delivery.mode: "pull-request"`는 GitHub 인증 및 외부 접근 제어 확인을 요구한다 (§6.2.7).
+
+Phase 7D merge request는 환경의 `AUTO_DEV_AUTO_MERGE_ENABLED` capability와
+`AUTO_DEV_AUTO_MERGE_REPOSITORIES` allowlist도 필요하다 (§6.2.8). 두 변수만으로는 실행되지 않고,
+대시보드 global switch와 프로젝트 `delivery.autoMerge.requestMerge`도 켜져야 한다.
 
 프로젝트 지식은 별도 `<projectDir>/.auto-dev/feature-map.md` 에 둔다. 에이전트별 주입
 범위와 크기 제한은 §5.0.1 을 따른다.

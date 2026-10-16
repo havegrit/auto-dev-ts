@@ -101,3 +101,33 @@ CREATE TABLE IF NOT EXISTS auto_merge_live_observation (
 );
 CREATE INDEX IF NOT EXISTS idx_auto_merge_live_streak
   ON auto_merge_live_observation(repository, base_branch, category, merged_at DESC);
+
+CREATE TABLE IF NOT EXISTS auto_merge_action (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL,
+  repository TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  category TEXT NOT NULL CHECK(category IN ('docs','dependency-patch','ineligible')),
+  policy_fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','blocked','requested','already-requested','failed')),
+  actor TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_auto_merge_action_pr
+  ON auto_merge_action(repository, pr_number, head_sha, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS auto_merge_request_claim (
+  repository TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('claimed','requested','failed')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(repository, pr_number, head_sha),
+  FOREIGN KEY(workflow_run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+);
