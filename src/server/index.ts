@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { createRoutes } from './routes.js';
 import { loadModelsFromCli } from '../lib/model-config.js';
 import { keepRunningAfterSessionDisconnect } from '../lib/session-lifecycle.js';
+import { startWorkflowCheckpointRecovery } from '../workflows/spec-session.js';
 
 const ADDR = process.env.AUTO_DEV_BIND_ADDR ?? '127.0.0.1';
 const PORT = Number(process.env.AUTO_DEV_BIND_PORT ?? '8080');
@@ -20,5 +21,6 @@ export async function startServer(): Promise<void> {
   app.use('/*', serveStatic({ root: './static' }));
   serve({ fetch: app.fetch, hostname: ADDR, port: PORT }, (info) => {
     console.log(`auto-dev listening on http://${info.address}:${info.port}`);
+    startWorkflowCheckpointRecovery();
   });
 }

@@ -2,7 +2,7 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { repairAnthropicAuthFailures, repairCodexCompletedTimeouts } from './run-repairs.js';
+import { repairAnthropicAuthFailures, repairCodexCompletedTimeouts, repairServerRestartRuns } from './run-repairs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,12 +77,8 @@ db.exec(`
     AND spec_session_id IS NULL
 `);
 
-// 서버 시작 시 RUNNING 상태로 남은 고아 레코드를 FAILED로 정리
-db.prepare(`
-  UPDATE agent_run
-  SET status = 'FAILED', output = '[server_restart] 서버 재시작으로 중단됨', error_type = 'server_restart'
-  WHERE status = 'RUNNING'
-`).run();
+// 복구 opt-in 된 부모 spec 은 시작 시 그대로 두고, 나머지 고아 실행은 실패로 정리한다.
+repairServerRestartRuns(db);
 
 // 일부 Claude SDK 버전이 result success로 반환한 과거 비로그인 실행을 교정한다.
 repairAnthropicAuthFailures(db);

@@ -1,13 +1,32 @@
 import { randomUUID } from 'crypto';
 import { writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { runSpec, workflowOutput, workflowRunStatus, STEP_ORDER, type SpecResult, type Step } from './spec.js';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
+import { runSpec, workflowOutput, workflowRunStatus, STEP_ORDER, type PersistedSpecCheckpointState, type SpecResult, type Step } from './spec.js';
 import { composeClarifierInput, renderPlanDoc, planSlug, type ClarificationRound } from './clarification.js';
-import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
+import { getRun, getRunsByWorkflowId, insertRun, updateRun, type RunRow } from '../store/runs.js';
 import { saveClarificationState, getClarificationState, type ClarificationState } from '../store/clarification.js';
 import { closeEmitter, emitRunEvent } from '../lib/run-events.js';
 import { registerRunCancellation } from '../lib/run-cancellation.js';
 import { notifyOpenClawSpec } from '../integrations/openclaw/notify.js';
+import { AGENT_SPECS } from '../agents/specs.js';
+import { loadProjectConfig } from '../lib/project-config.js';
+import { snapshotWorkspace, workspaceHeadSha } from '../lib/role-boundary.js';
+import type { RunResult } from '../lib/runner.js';
+import {
+  claimExpiredWorkflowCheckpoint,
+  createCheckpointLeaseOwner,
+  createWorkflowCheckpoint,
+  finishWorkflowCheckpoint,
+  heartbeatWorkflowCheckpoint,
+  listExpiredWorkflowCheckpoints,
+  updateWorkflowCheckpoint,
+  type WorkflowCheckpoint,
+  type WorkflowCheckpointSnapshot,
+  type WorkflowCheckpointState,
+} from '../store/workflow-checkpoints.js';
 
 export interface SpecSessionOptions {
   project?: string;
@@ -35,6 +54,155 @@ export interface SpecSessionHandle {
 export interface ResumeSpecSessionOptions {
   autoClarify?: boolean;
   maxClarifyRounds?: number;
+}
+
+interface SpecCheckpointSnapshot extends WorkflowCheckpointSnapshot {
+  kind: 'dashboard-spec-session';
+  workflowRunId: string;
+  configFingerprint: string;
+  sessionState: ClarificationState;
+  specInput: string;
+  options: Omit<SpecSessionOptions, 'steps'> & { steps?: string[] };
+  workflowState: PersistedSpecCheckpointState;
+  finalResult?: { verdict?: string; failure?: SpecResult['failure'] };
+}
+
+interface CheckpointRuntime {
+  workflowRunId: string;
+  leaseOwner: string;
+  revision: number;
+  snapshot: SpecCheckpointSnapshot;
+  workflowState: PersistedSpecCheckpointState;
+}
+
+function requireCleanGitWorkspace(cwd: string): string {
+  try {
+    const head = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const status = execFileSync('git', ['-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (!head) throw new Error('HEAD를 확인할 수 없습니다.');
+    if (status) throw new Error('미커밋 변경이 있습니다. 작업 트리를 정리한 뒤 다시 시작하세요.');
+    return head;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('미커밋')) throw err;
+    throw new Error(`workflow.resumeOnRestart에는 깨끗한 Git 저장소가 필요합니다: ${cwd}`);
+  }
+}
+
+function runtimeSnapshot(runtime: CheckpointRuntime): SpecCheckpointSnapshot {
+  return { ...runtime.snapshot, ...runtime.workflowState, workflowState: runtime.workflowState };
+}
+
+function persistCheckpointState(runtime: CheckpointRuntime, state: PersistedSpecCheckpointState): void {
+  runtime.workflowState = state;
+  runtime.snapshot = runtimeSnapshot(runtime);
+  runtime.revision = updateWorkflowCheckpoint(
+    runtime.workflowRunId, runtime.snapshot, 'RUNNING', runtime.leaseOwner, runtime.revision,
+  );
+}
+
+function finishCheckpoint(
+  workflowRunId: string,
+  runtime: CheckpointRuntime,
+  state: WorkflowCheckpointState,
+  runPatch: Parameters<typeof finishWorkflowCheckpoint>[5],
+  extra: Partial<SpecCheckpointSnapshot> = {},
+): void {
+  const retainAction = state === 'RECOVERY_REQUIRED';
+  runtime.snapshot = {
+    ...runtimeSnapshot(runtime),
+    ...extra,
+    activeAction: retainAction ? runtime.workflowState.activeAction : undefined,
+    activeStep: retainAction ? runtime.workflowState.activeStep : undefined,
+    activeRunId: retainAction ? runtime.workflowState.activeRunId : undefined,
+    activeInput: retainAction ? runtime.workflowState.activeInput : undefined,
+    recoveryReason: extra.recoveryReason,
+    finalResult: extra.finalResult,
+  };
+  runtime.revision = finishWorkflowCheckpoint(
+    workflowRunId, runtime.snapshot, state, runtime.leaseOwner, runtime.revision, runPatch,
+  );
+}
+
+function parseLeaseOwner(value?: string): { host: string; pid: number } | undefined {
+  try {
+    const owner = JSON.parse(value ?? '') as { host?: unknown; pid?: unknown };
+    if (typeof owner.host !== 'string' || typeof owner.pid !== 'number' || !Number.isInteger(owner.pid)) return undefined;
+    return { host: owner.host, pid: owner.pid };
+  } catch {
+    return undefined;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function sameSnapshot(current: Map<string, string> | undefined, expected?: Record<string, string>): boolean {
+  if (!current || !expected) return false;
+  const actual = Object.fromEntries(current);
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return actualKeys.length === expectedKeys.length && actualKeys.every((key, index) =>
+    key === expectedKeys[index] && actual[key] === expected[key],
+  );
+}
+
+function toRunResult(run: RunRow): RunResult {
+  const status: RunResult['status'] = run.status === 'DONE'
+    ? 'DONE'
+    : run.status === 'BLOCKED'
+      ? 'BLOCKED'
+      : run.error_type === 'user_cancelled'
+        ? 'CANCELLED'
+        : 'FAILED';
+  return {
+    runId: run.id,
+    output: run.output ?? '',
+    tokensIn: run.tokens_in ?? 0,
+    tokensOut: run.tokens_out ?? 0,
+    durationMs: run.duration_ms ?? 0,
+    status,
+  };
+}
+
+function currentChildForCheckpoint(checkpoint: WorkflowCheckpoint, snapshot: SpecCheckpointSnapshot): RunRow | undefined {
+  const runId = typeof snapshot['activeRunId'] === 'string' ? snapshot['activeRunId'] : undefined;
+  if (runId) return getRun(runId);
+  const step = typeof snapshot['activeStep'] === 'string' ? snapshot['activeStep'] : undefined;
+  const startedAt = typeof snapshot['actionStartedAt'] === 'string' ? Date.parse(snapshot['actionStartedAt']) : NaN;
+  if (!step || !Number.isFinite(startedAt)) return undefined;
+  return getRunsByWorkflowId(checkpoint.workflowRunId)
+    .filter((run) => run.agent_name === step && Date.parse(run.started_at) >= startedAt)
+    .at(-1);
+}
+
+function createCheckpointRuntime(
+  checkpoint: WorkflowCheckpoint,
+  leaseOwner: string,
+  snapshot: SpecCheckpointSnapshot,
+): CheckpointRuntime {
+  const workflowState = (snapshot['workflowState'] && typeof snapshot['workflowState'] === 'object')
+    ? snapshot['workflowState'] as PersistedSpecCheckpointState
+    : {
+      cursor: 0, executed: 0, routeCount: 0,
+      clarifiedSpec: typeof (snapshot['sessionState'] as ClarificationState | undefined)?.spec === 'string'
+        ? (snapshot['sessionState'] as ClarificationState).spec : '',
+      results: {}, runtimeEvidenceSummary: '', autoClarifyRounds: [], autoQaLines: [], initialFeedbackApplied: false,
+    };
+  return { workflowRunId: checkpoint.workflowRunId, leaseOwner, revision: checkpoint.revision, snapshot, workflowState };
+}
+
+function rootRunDuration(runId: string): number {
+  const run = getRun(runId);
+  const start = run ? Date.parse(run.started_at) : Date.now();
+  return Math.max(0, Date.now() - (Number.isFinite(start) ? start : Date.now()));
 }
 
 /** 새 spec 워크플로우 세션을 시작한다 (clarifier 라운드 0). */
@@ -244,6 +412,48 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
   const runId = randomUUID();
   const sessionState: ClarificationState = { ...state, sessionId: state.sessionId ?? runId };
   const input = composeClarifierInput(sessionState.spec, sessionState.rounds);
+  const sessionOpts = { ...opts, triggerSource: opts.triggerSource ?? 'dashboard' };
+  let projectConfig: ReturnType<typeof loadProjectConfig>;
+  try {
+    projectConfig = loadProjectConfig(sessionState.cwd);
+  } catch {
+    // 설정 오류는 runSpec 내부에서 기존처럼 부모 run 실패로 기록한다.
+  }
+  const checkpointEnabled = sessionOpts.triggerSource === 'dashboard' && projectConfig?.workflow?.resumeOnRestart === true;
+  let checkpointRuntime: CheckpointRuntime | undefined;
+  let pendingCheckpoint: { leaseOwner: string; snapshot: SpecCheckpointSnapshot } | undefined;
+  if (checkpointEnabled) {
+    const baseHeadSha = requireCleanGitWorkspace(sessionState.cwd);
+    const leaseOwner = createCheckpointLeaseOwner();
+    const initialState: PersistedSpecCheckpointState = {
+      cursor: Math.max(0, resume ? STEP_ORDER.indexOf(resume.startStep) : 0),
+      executed: 0,
+      routeCount: 0,
+      clarifiedSpec: input,
+      planOutput: sessionState.planOutput,
+      results: {},
+      runtimeEvidenceSummary: '',
+      autoClarifyRounds: [],
+      autoQaLines: [],
+      initialFeedbackApplied: false,
+    };
+    const checkpointSnapshot: SpecCheckpointSnapshot = {
+      kind: 'dashboard-spec-session',
+      workflowRunId: runId,
+      configFingerprint: createHash('sha256').update(JSON.stringify(projectConfig)).digest('hex'),
+      sessionState,
+      specInput: input,
+      options: {
+        ...sessionOpts,
+        steps: serializeSteps(sessionOpts.steps),
+      },
+      workflowState: initialState,
+      ...initialState,
+      baseHeadSha,
+      baseSnapshot: {},
+    };
+    pendingCheckpoint = { leaseOwner, snapshot: checkpointSnapshot };
+  }
   mkdirSync(sessionState.cwd, { recursive: true });
   insertRun({
     id: runId,
@@ -251,22 +461,203 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
     input: input.slice(0, 4000),
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
-    triggerSource: opts.triggerSource ?? 'dashboard',
-    triggerDetail: opts.triggerDetail,
+    triggerSource: sessionOpts.triggerSource,
+    triggerDetail: sessionOpts.triggerDetail,
     specSessionId: sessionState.sessionId,
   });
   // 모든 spec run 의 상태를 영속화해 나중에 후속 수정 지시로 이어갈 수 있게 한다.
   // (게이트에서 멈추면 finalize 가 질문 라운드를 더해 다시 저장한다.)
   saveClarificationState(runId, sessionState);
+  if (pendingCheckpoint) {
+    try {
+      const created = createWorkflowCheckpoint(runId, pendingCheckpoint.snapshot, pendingCheckpoint.leaseOwner);
+      checkpointRuntime = createCheckpointRuntime(created, pendingCheckpoint.leaseOwner, pendingCheckpoint.snapshot);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      updateRun(runId, { status: 'FAILED', output: `[checkpoint_init_failed] ${message}`, errorType: 'workflow_checkpoint_failed' });
+      throw err;
+    }
+  }
 
   const abortController = new AbortController();
   const unregisterCancellation = registerRunCancellation(runId, abortController);
-  const done = finalize(runId, sessionState, opts, input, resume, abortController.signal)
-    .finally(unregisterCancellation);
+  const heartbeat = checkpointRuntime
+    ? setInterval(() => {
+      if (!heartbeatWorkflowCheckpoint(runId, checkpointRuntime!.leaseOwner, checkpointRuntime!.revision)) {
+        abortController.abort(new Error('workflow checkpoint lease lost'));
+      }
+    }, 20_000)
+    : undefined;
+  heartbeat?.unref();
+  const done = finalize(runId, sessionState, sessionOpts, input, resume, abortController.signal, checkpointRuntime)
+    .finally(() => {
+      if (heartbeat) clearInterval(heartbeat);
+      unregisterCancellation();
+    });
   return { runId, done };
 }
 
-async function finalize(runId: string, state: ClarificationState, opts: SpecSessionOptions, input: string, resume: { startStep: Step } | undefined, signal: AbortSignal): Promise<void> {
+let checkpointRecoveryTimer: NodeJS.Timeout | undefined;
+let checkpointRecoveryRunning = false;
+
+/** lease가 만료된 체크포인트를 한 번씩 검사한다. 서버 기동 때 호출한다. */
+export function startWorkflowCheckpointRecovery(): void {
+  if (checkpointRecoveryTimer) return;
+  void recoverExpiredWorkflowCheckpoints();
+  checkpointRecoveryTimer = setInterval(() => { void recoverExpiredWorkflowCheckpoints(); }, 10_000);
+  checkpointRecoveryTimer.unref();
+}
+
+export async function recoverExpiredWorkflowCheckpoints(): Promise<number> {
+  if (checkpointRecoveryRunning) return 0;
+  checkpointRecoveryRunning = true;
+  let recovered = 0;
+  try {
+    for (const candidate of listExpiredWorkflowCheckpoints()) {
+      try {
+        if (await recoverExpiredCheckpoint(candidate)) recovered++;
+      } catch (err) {
+        console.error(`workflow checkpoint recovery failed for ${candidate.workflowRunId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } finally {
+    checkpointRecoveryRunning = false;
+  }
+  return recovered;
+}
+
+async function recoverExpiredCheckpoint(candidate: WorkflowCheckpoint): Promise<boolean> {
+  const priorOwner = parseLeaseOwner(candidate.leaseOwner);
+  // lease 만료만으로 소유 프로세스가 멈췄다고 단정할 수 없다. 살아 있는 로컬 owner와
+  // 경합하지 않도록 claim을 미루고, 다음 recovery pass에서 다시 확인한다.
+  if (priorOwner?.host === hostname() && processIsAlive(priorOwner.pid)) return false;
+  const leaseOwner = createCheckpointLeaseOwner();
+  const claimed = claimExpiredWorkflowCheckpoint(candidate.workflowRunId, leaseOwner, candidate.revision);
+  if (!claimed) return false;
+
+  const snapshot = claimed.snapshot as SpecCheckpointSnapshot;
+  const runtime = createCheckpointRuntime(claimed, leaseOwner, snapshot);
+  let recoveryReason: string | undefined;
+  let recoveredResult: RunResult | undefined;
+
+  if (claimed.schemaVersion !== 1 || snapshot.kind !== 'dashboard-spec-session') {
+    recoveryReason = `지원하지 않는 체크포인트 형식입니다 (schema ${claimed.schemaVersion}).`;
+  } else if (!priorOwner || priorOwner.host !== hostname()) {
+    recoveryReason = '이전 실행의 호스트 소유권을 확인할 수 없어 자동 재개하지 않았습니다.';
+  }
+
+  if (!recoveryReason) {
+    try {
+      const config = loadProjectConfig(snapshot.sessionState.cwd);
+      const fingerprint = createHash('sha256').update(JSON.stringify(config ?? null)).digest('hex');
+      if (config?.workflow?.resumeOnRestart !== true) {
+        recoveryReason = '프로젝트 설정에서 workflow.resumeOnRestart가 더 이상 활성화되어 있지 않습니다.';
+      } else if (fingerprint !== snapshot.configFingerprint) {
+        recoveryReason = '실행 중 프로젝트 설정이 바뀌어 저장된 워크플로우를 재현할 수 없습니다.';
+      }
+    } catch (err) {
+      recoveryReason = `프로젝트 설정을 읽을 수 없습니다: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  const workflowState = runtime.workflowState;
+  if (!recoveryReason && workflowState.activeAction === 'agent') {
+    if (!workflowState.activeStep || !STEP_ORDER.includes(workflowState.activeStep as Step)) {
+      recoveryReason = '진행 중이던 에이전트 단계를 확인할 수 없습니다.';
+    } else {
+      const child = currentChildForCheckpoint(claimed, snapshot);
+      if (child && (child.status === 'DONE' || child.status === 'BLOCKED' || (child.status === 'FAILED' && child.error_type !== 'server_restart'))) {
+        recoveredResult = toRunResult(child);
+      } else if (child?.status === 'RUNNING') {
+        recoveryReason = '중단된 에이전트 child run의 종료를 확인할 수 없습니다.';
+      } else if (AGENT_SPECS[workflowState.activeStep].tools.some((tool) => tool === 'Write' || tool === 'Bash')) {
+        recoveryReason = `중단된 ${workflowState.activeStep} 단계는 파일 쓰기 권한이 있어 자동 재실행하지 않았습니다.`;
+      } else {
+        const [currentSnapshot, currentHead] = await Promise.all([
+          snapshotWorkspace(snapshot.sessionState.cwd),
+          workspaceHeadSha(snapshot.sessionState.cwd),
+        ]);
+        const sameHead = Boolean(currentHead && currentHead === workflowState.beforeHeadSha);
+        if (!sameHead || !sameSnapshot(currentSnapshot, workflowState.beforeSnapshot)) {
+          recoveryReason = '에이전트 실행 중 워크스페이스가 바뀌어 재실행하면 결과가 중복될 수 있습니다.';
+        }
+      }
+    }
+  } else if (!recoveryReason && workflowState.activeAction) {
+    recoveryReason = `중단된 내부 작업(${workflowState.activeAction})은 안전한 재생을 지원하지 않습니다.`;
+  } else if (!recoveryReason) {
+    const [currentSnapshot, currentHead] = await Promise.all([
+      snapshotWorkspace(snapshot.sessionState.cwd),
+      workspaceHeadSha(snapshot.sessionState.cwd),
+    ]);
+    if (!currentHead || currentHead !== snapshot['baseHeadSha'] || !sameSnapshot(currentSnapshot, snapshot['baseSnapshot'] as Record<string, string> | undefined)) {
+      recoveryReason = '체크포인트 이후 워크스페이스가 바뀌었습니다.';
+    }
+  }
+
+  if (recoveryReason) {
+    const sessionState = snapshot['sessionState'] as ClarificationState | undefined;
+    const workPath = typeof sessionState?.cwd === 'string' ? sessionState.cwd : '(경로를 확인할 수 없음)';
+    const output = [
+      '[workflow_recovery_required] 자동 재개를 안전하게 확인하지 못했습니다.',
+      `원인: ${recoveryReason}`,
+      `작업 경로: ${workPath}`,
+      '파일은 되돌리지 않았습니다. 작업 경로의 변경 사항을 확인한 뒤 새 실행 또는 수동 복구를 진행하세요.',
+    ].join('\n');
+    try {
+      finishCheckpoint(candidate.workflowRunId, runtime, 'RECOVERY_REQUIRED', {
+        status: 'FAILED', output, durationMs: rootRunDuration(candidate.workflowRunId),
+        errorType: 'workflow_recovery_required', stopReason: 'server_restart',
+      }, { recoveryReason, finalResult: { verdict: 'RECOVERY_REQUIRED' } });
+    } catch (err) {
+      if (!(err instanceof Error && err.message.includes('lease lost'))) throw err;
+      return false;
+    }
+    finishRunEvents(candidate.workflowRunId, 'FAILED');
+    await notifyOpenClawSpec({
+      runId: candidate.workflowRunId,
+      project: sessionState?.project,
+      verdict: 'RECOVERY_REQUIRED',
+      durationMs: rootRunDuration(candidate.workflowRunId),
+      reason: recoveryReason,
+    });
+    return true;
+  }
+
+  const storedOpts = snapshot.options;
+  const opts: SpecSessionOptions = {
+    ...storedOpts,
+    steps: restoreSteps(storedOpts.steps),
+    triggerSource: 'dashboard',
+  };
+  const controller = new AbortController();
+  const unregister = registerRunCancellation(candidate.workflowRunId, controller);
+  const heartbeat = setInterval(() => {
+    if (!heartbeatWorkflowCheckpoint(candidate.workflowRunId, leaseOwner, runtime.revision)) {
+      controller.abort(new Error('workflow checkpoint lease lost'));
+    }
+  }, 20_000);
+  heartbeat.unref();
+  const state = snapshot.sessionState;
+  const input = snapshot.specInput;
+  void finalize(candidate.workflowRunId, state, opts, input, undefined, controller.signal, runtime, recoveredResult)
+    .finally(() => {
+      clearInterval(heartbeat);
+      unregister();
+    });
+  return true;
+}
+
+async function finalize(
+  runId: string,
+  state: ClarificationState,
+  opts: SpecSessionOptions,
+  input: string,
+  resume: { startStep: Step } | undefined,
+  signal: AbortSignal,
+  checkpointRuntime?: CheckpointRuntime,
+  recoveredResult?: RunResult,
+): Promise<void> {
   const wallStart = Date.now();
   try {
     const result = await runSpec(input, {
@@ -283,6 +674,13 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
       startStep: resume?.startStep,
       initialPlanOutput: state.planOutput,
       signal,
+      ...(checkpointRuntime ? {
+        checkpoint: {
+          initialState: checkpointRuntime.workflowState,
+          recoveredResult,
+          onState: (workflowState: PersistedSpecCheckpointState) => persistCheckpointState(checkpointRuntime, workflowState),
+        },
+      } : {}),
     });
 
     // skip 모드가 추천 답안으로 자동 답변한 라운드를 히스토리에 편입해
@@ -304,11 +702,14 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
     if (result.verdict === 'NEEDS-CLARIFICATION' && result.clarification) {
       const rounds: ClarificationRound[] = [...merged.rounds, { questions: result.clarification.questions }];
       saveClarificationState(runId, { ...merged, rounds, planOutput });
-      updateRun(runId, {
-        output: `${workflowOutput(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`,
-        status: 'DONE',
-        durationMs: result.totalDurationMs,
-      });
+      const output = `${workflowOutput(result)}\n\n${JSON.stringify(result.clarification, null, 2)}`;
+      if (checkpointRuntime) {
+        finishCheckpoint(runId, checkpointRuntime, 'WAITING_USER', {
+          status: 'DONE', output, durationMs: result.totalDurationMs,
+        }, { sessionState: { ...merged, rounds, planOutput }, finalResult: { verdict: result.verdict } });
+      } else {
+        updateRun(runId, { output, status: 'DONE', durationMs: result.totalDurationMs });
+      }
       finishRunEvents(runId, 'DONE');
       await notifyOpenClawSpec({
         runId,
@@ -322,16 +723,22 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
 
     saveClarificationState(runId, { ...merged, planOutput });
     const status = workflowRunStatus(result);
-    updateRun(runId, {
-      output: workflowOutput(result),
-      status,
-      durationMs: result.totalDurationMs,
-      ...(result.verdict === 'CANCELLED'
-        ? { errorType: 'user_cancelled', stopReason: 'user_cancelled' }
-        : result.failure
-          ? { errorType: 'workflow_failure', stopReason: result.failure.step }
-          : {}),
-    });
+    const output = workflowOutput(result);
+    const errorType = result.verdict === 'CANCELLED' ? 'user_cancelled' : result.failure ? 'workflow_failure' : undefined;
+    const stopReason = result.verdict === 'CANCELLED' ? 'user_cancelled' : result.failure?.step;
+    if (checkpointRuntime) {
+      const checkpointState: WorkflowCheckpointState = result.verdict === 'CANCELLED'
+        ? 'CANCELLED'
+        : status === 'DONE' ? 'SUCCEEDED' : 'FAILED';
+      finishCheckpoint(runId, checkpointRuntime, checkpointState, {
+        output, status, durationMs: result.totalDurationMs, errorType, stopReason,
+      }, { sessionState: { ...merged, planOutput }, finalResult: { verdict: result.verdict, failure: result.failure } });
+    } else {
+      updateRun(runId, {
+        output, status, durationMs: result.totalDurationMs,
+        ...(errorType ? { errorType, stopReason } : {}),
+      });
+    }
     finishRunEvents(runId, result.verdict === 'CANCELLED' ? 'CANCELLED' : status);
     await notifyOpenClawSpec({
       runId,
@@ -342,11 +749,27 @@ async function finalize(runId: string, state: ClarificationState, opts: SpecSess
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    updateRun(runId, {
-      output: `ERROR: ${message}`,
-      status: 'FAILED',
-      durationMs: Date.now() - wallStart,
-    });
+    if (checkpointRuntime) {
+      try {
+        finishCheckpoint(runId, checkpointRuntime, 'FAILED', {
+          output: `ERROR: ${message}`,
+          status: 'FAILED',
+          durationMs: Date.now() - wallStart,
+          errorType: 'workflow_failure',
+          stopReason: 'exception',
+        }, { finalResult: { verdict: 'FAILED', failure: { step: 'workflow', status: 'FAILED', cause: 'agent_stopped', reason: message, routeAvailable: false } } });
+      } catch (finishError) {
+        // Lease가 다른 worker에 넘어간 경우 오래된 worker는 run 상태를 덮어쓰지 않는다.
+        if (finishError instanceof Error && finishError.message.includes('lease lost')) return;
+        throw finishError;
+      }
+    } else {
+      updateRun(runId, {
+        output: `ERROR: ${message}`,
+        status: 'FAILED',
+        durationMs: Date.now() - wallStart,
+      });
+    }
     finishRunEvents(runId, 'FAILED');
     await notifyOpenClawSpec({
       runId,

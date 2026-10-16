@@ -14,7 +14,7 @@ import { log } from '../lib/logger.js';
 import { executeTeam, parseTeamPlan, type TeamExecutionResult } from './team.js';
 import { defaultWorkspaceDir } from '../lib/workspace.js';
 import { DEFAULT_VERIFY_TIMEOUT_MS, loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
-import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
+import { findRoleBoundaryViolations, snapshotWorkspace, workspaceHeadSha } from '../lib/role-boundary.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
 import { runRuntimeVerification } from './runtime-gate.js';
 import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
@@ -52,6 +52,12 @@ export interface SpecOptions {
   signal?: AbortSignal;
   /** eval 모델 매트릭스를 위한 실행 단위 역할별 모델 ID 오버라이드. */
   agentModels?: Record<string, string>;
+  /** dashboard spec 재시작용 상태 저장. 일반 workflow 호출은 지정하지 않는다. */
+  checkpoint?: {
+    initialState?: PersistedSpecCheckpointState;
+    recoveredResult?: RunResult;
+    onState: (state: PersistedSpecCheckpointState) => void;
+  };
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -92,6 +98,28 @@ export interface SpecResult {
   };
   /** planner가 생성한 동적 팀 실행 결과. */
   team?: TeamExecutionResult;
+}
+
+export interface PersistedSpecCheckpointState {
+  cursor: number;
+  executed: number;
+  routeCount: number;
+  clarifiedSpec: string;
+  planOutput?: string;
+  pendingFeedback?: string;
+  results: Record<string, StepResult>;
+  runtimeEvidenceSummary: string;
+  autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }>;
+  autoQaLines: string[];
+  initialFeedbackApplied: boolean;
+  activeAction?: string;
+  activeStep?: string;
+  activeRunId?: string;
+  activeInput?: string;
+  actionStartedAt?: string;
+  beforeSnapshot?: Record<string, string>;
+  beforeHeadSha?: string;
+  recoveryReason?: string;
 }
 
 export const STEP_ORDER = AGENT_ORDER;
@@ -205,7 +233,10 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     ? Number.POSITIVE_INFINITY
     : Math.max(0, Math.floor(configuredClarifyRounds));
   const start = Date.now();
-  const results: Record<string, StepResult> = {};
+  const checkpointState = opts.checkpoint?.initialState;
+  let recoveredResult = opts.checkpoint?.recoveredResult;
+  let resumeActionPending = Boolean(checkpointState?.activeAction);
+  const results: Record<string, StepResult> = { ...(checkpointState?.results ?? {}) };
 
   // 대상 프로젝트가 선언한 검증 방법. 설정 파일이 없으면 undefined 이고,
   // 그때 workflow 는 Phase 1 이전과 완전히 동일하게 동작한다 (경고 이벤트만 추가).
@@ -216,8 +247,9 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   const boundaryConfig = roleBoundaryEnabled(projectConfig) ? projectConfig.roleBoundary : undefined;
 
   // skip 모드에서 추천 답안으로 자동 답변한 라운드와, 다음 clarifier 입력에 실을 Q&A 라인.
-  const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> = [];
-  const autoQaLines: string[] = [];
+  const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> =
+    checkpointState?.autoClarifyRounds.map(round => ({ questions: round.questions, answers: { ...round.answers } })) ?? [];
+  const autoQaLines: string[] = [...(checkpointState?.autoQaLines ?? [])];
 
   const runOpts = {
     workflowRunId,
@@ -232,16 +264,16 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   };
 
   const baseSpec = specContent;
-  let clarifiedSpec = baseSpec;
-  let planOutput: string | undefined = opts.initialPlanOutput;
+  let clarifiedSpec = checkpointState?.clarifiedSpec ?? baseSpec;
+  let planOutput: string | undefined = checkpointState?.planOutput ?? opts.initialPlanOutput;
   const initialFeedback = opts.initialFeedback?.trim();
-  let initialFeedbackApplied = false;
-  let pendingFeedback: string | undefined;
+  let initialFeedbackApplied = checkpointState?.initialFeedbackApplied ?? false;
+  let pendingFeedback: string | undefined = checkpointState?.pendingFeedback;
   let verdict: string | undefined;
   let clarification: ClarificationResult | undefined;
-  let routeCount = 0;
+  let routeCount = checkpointState?.routeCount ?? 0;
   let failure: SpecResult['failure'];
-  let runtimeEvidenceSummary = '';
+  let runtimeEvidenceSummary = checkpointState?.runtimeEvidenceSummary ?? '';
 
   // 구현/테스트 단계는 최종 판정 기준이 되는 명령을 미리 알아야 한다.
   const verifyNotice = projectConfig?.verify
@@ -328,9 +360,61 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     };
   };
 
-  let cursor = opts.startStep ? STEP_ORDER.indexOf(opts.startStep) : 0;
+  let cursor = checkpointState?.cursor ?? (opts.startStep ? STEP_ORDER.indexOf(opts.startStep) : 0);
   if (cursor < 0) cursor = 0;
-  let executed = 0;
+  let executed = checkpointState?.executed ?? 0;
+  const publishCheckpoint = (extra: Partial<PersistedSpecCheckpointState> = {}): void => {
+    if (!opts.checkpoint) return;
+    opts.checkpoint.onState({
+      cursor,
+      executed,
+      routeCount,
+      clarifiedSpec,
+      planOutput,
+      pendingFeedback,
+      results: { ...results },
+      runtimeEvidenceSummary,
+      autoClarifyRounds: autoClarifyRounds.map(round => ({ questions: round.questions, answers: { ...round.answers } })),
+      autoQaLines: [...autoQaLines],
+      initialFeedbackApplied,
+      ...extra,
+    });
+  };
+  const checkpointActionIntent = async (action: string, step: string, input?: string): Promise<void> => {
+    if (!opts.checkpoint) return;
+    const [workspaceSnapshot, headSha] = await Promise.all([
+      snapshotWorkspace(projectDir),
+      workspaceHeadSha(projectDir),
+    ]);
+    publishCheckpoint({
+      activeAction: action,
+      activeStep: step,
+      activeRunId: undefined,
+      activeInput: input,
+      actionStartedAt: new Date().toISOString(),
+      beforeSnapshot: workspaceSnapshot ? Object.fromEntries(workspaceSnapshot) : undefined,
+      beforeHeadSha: headSha,
+    });
+  };
+  const commitPostSuccess = async (): Promise<void> => {
+    await checkpointActionIntent('delivery', 'post-success', clarifiedSpec);
+    const postSuccess = await commitSuccessfulSpec({
+      specContent: baseSpec,
+      clarifiedSpec,
+      planOutput,
+      runOpts: {
+        ...runOpts,
+        workflowRunId: undefined,
+        specSessionId: undefined,
+        triggerSource: 'background',
+        triggerDetail: 'post-success',
+        signal: undefined,
+      },
+    });
+    if (postSuccess.failure) {
+      log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+    }
+  };
   const routeSafetyCap = STEP_ORDER.length * (maxRoutes + 2);
   const safetyCap = autoClarify && !Number.isFinite(maxClarifyRounds)
     ? Number.POSITIVE_INFINITY
@@ -349,15 +433,38 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       cursor++;
       continue;
     }
-    if (++executed > safetyCap) break;
+    const isResumingAction = resumeActionPending && checkpointState?.activeAction === 'agent' && checkpointState.activeStep === step;
+    if (isResumingAction) resumeActionPending = false;
+    else if (++executed > safetyCap) break;
 
     // test 에이전트도 Bash 를 가지므로 프로덕션 소스를 바꿀 수 있다. 프롬프트 금지만으로는
     // 막히지 않으니 실행 전후 내용 해시를 비교해 사후 검사한다.
     const boundaryBefore = step === 'test' && boundaryConfig
-      ? await snapshotWorkspace(projectDir)
+      ? isResumingAction && checkpointState?.beforeSnapshot
+        ? new Map(Object.entries(checkpointState.beforeSnapshot))
+        : await snapshotWorkspace(projectDir)
       : undefined;
 
-    const r = await agents[step](inputFor(step), runOpts);
+    const input = inputFor(step);
+    const isRecoveredStep = Boolean(
+      recoveredResult && isResumingAction,
+    );
+    let r: RunResult;
+    if (isRecoveredStep) {
+      r = recoveredResult!;
+      // 한 child 결과만 같은 단계 입력으로 소비한다. 이후 재작업은 새 실행이다.
+      recoveredResult = undefined;
+    } else {
+      await checkpointActionIntent('agent', step, input);
+      r = await agents[step](input, {
+        ...runOpts,
+        ...(opts.checkpoint ? {
+          onRunStarted: (runId: string) => publishCheckpoint({
+            activeAction: 'agent', activeStep: step, activeRunId: runId, activeInput: input,
+          }),
+        } : {}),
+      });
+    }
     pendingFeedback = undefined;
     results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
 
@@ -466,6 +573,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       // 버그 모드는 재현 명령을 test 단계 직후 끼워 넣어야 하므로 고정 순차 루프를 쓴다.
       const teamPlan = opts.reproCommand ? undefined : parseTeamPlan(r.output);
       if (teamPlan) {
+        await checkpointActionIntent('team', 'team', r.output);
         const team = await executeTeam(teamPlan, {
           cwd: projectDir,
           input: clarifiedSpec,
@@ -483,6 +591,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         // 동적 팀의 review는 DAG 실행 중 호출하지 않는다. 통합된 결과가 결정적·런타임
         // 검증을 통과한 뒤에만 별도 review 태스크를 실행한다.
         if (!team.failed && projectConfig?.verify && !opts.signal?.aborted) {
+          await checkpointActionIntent('verify', VERIFY_AGENT_NAME, projectConfig.verify.command);
           const gate = await runVerifyStep({
             projectDir,
             verify: projectConfig.verify,
@@ -519,6 +628,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         }
 
         if (!team.failed && projectConfig?.runtime && !opts.signal?.aborted) {
+          await checkpointActionIntent('runtime', 'runtime', projectConfig.runtime.up);
           const runtimeGate = await runRuntimeVerification({
             projectDir,
             runtime: projectConfig.runtime,
@@ -625,19 +735,25 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           };
         }
         if (!team.failed && verdict === 'SHIP' && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
-          void commitSuccessfulSpec({
-            specContent: baseSpec,
-            clarifiedSpec,
-            planOutput,
-            runOpts: {
-              ...runOpts,
-              workflowRunId: undefined,
-              specSessionId: undefined,
-              triggerSource: 'background',
-              triggerDetail: 'post-success',
-              signal: undefined,
-            },
-          }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background dynamic-team post-success failed'));
+          if (opts.checkpoint) {
+            try { await commitPostSuccess(); } catch (err) {
+              log.error({ err: err instanceof Error ? err.message : String(err) }, 'Checkpointed dynamic-team post-success failed');
+            }
+          } else {
+            void commitSuccessfulSpec({
+              specContent: baseSpec,
+              clarifiedSpec,
+              planOutput,
+              runOpts: {
+                ...runOpts,
+                workflowRunId: undefined,
+                specSessionId: undefined,
+                triggerSource: 'background',
+                triggerDetail: 'post-success',
+                signal: undefined,
+              },
+            }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background dynamic-team post-success failed'));
+          }
         }
         return {
           workflowRunId,
@@ -688,6 +804,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
 
       // 버그 모드는 test 마커와 관계없이 매 시도에서 같은 재현 명령을 직접 실행한다.
       if (opts.reproCommand) {
+        await checkpointActionIntent('verify', 'repro', opts.reproCommand);
         const repro = await runVerifyStep({
           projectDir,
           verify: { command: opts.reproCommand, timeoutMs: opts.reproTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS },
@@ -755,6 +872,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       // 여기부터는 tests === 'PASS'. 하지만 PASS 는 에이전트의 자기 보고다.
       // 설정이 있으면 오케스트레이터가 검증 명령을 직접 실행해 종료 코드로 확정한다.
       if (projectConfig?.verify) {
+        await checkpointActionIntent('verify', VERIFY_AGENT_NAME, projectConfig.verify.command);
         const gate = await runVerifyStep({
           projectDir,
           verify: projectConfig.verify,
@@ -808,6 +926,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       }
 
       if (projectConfig?.runtime) {
+        await checkpointActionIntent('runtime', 'runtime', projectConfig.runtime.up);
         const runtimeGate = await runRuntimeVerification({
           projectDir,
           runtime: projectConfig.runtime,
@@ -910,30 +1029,47 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     cursor++;
   }
 
+  publishCheckpoint({
+    // 결과가 부모 run에 영속화되기 전의 짧은 구간을 재생해 중복 완료 처리를 하지 않는다.
+    activeAction: 'finalize',
+    activeStep: 'finalize',
+    activeRunId: undefined,
+    activeInput: undefined,
+    actionStartedAt: undefined,
+    beforeSnapshot: undefined,
+    beforeHeadSha: undefined,
+  });
+
   // Clarification wait, failure, cancellation, and safety-cap exits are not successful specs.
   // Only a fully traversed workflow may audit docs and create commits.
   if (cursor >= STEP_ORDER.length && executed > 0 && !failure && !clarification && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
     // 문서 점검/커밋은 핵심 spec 결과와 무관한 후처리다. 별도 실행으로 넘겨
     // spec children/status를 오염시키지 않고, review 통과 뒤 백그라운드에서 수행한다.
-    void commitSuccessfulSpec({
-      specContent: baseSpec,
-      clarifiedSpec,
-      planOutput,
-      runOpts: {
-        ...runOpts,
-        workflowRunId: undefined,
-        specSessionId: undefined,
-        triggerSource: 'background',
-        triggerDetail: 'post-success',
-        signal: undefined,
-      },
-    }).then((postSuccess) => {
-      if (postSuccess.failure) {
-        log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+    if (opts.checkpoint) {
+      try { await commitPostSuccess(); } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err) }, 'Checkpointed post-success workflow failed');
       }
-    }).catch((err) => {
-      log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background post-success workflow failed');
-    });
+    } else {
+      void commitSuccessfulSpec({
+        specContent: baseSpec,
+        clarifiedSpec,
+        planOutput,
+        runOpts: {
+          ...runOpts,
+          workflowRunId: undefined,
+          specSessionId: undefined,
+          triggerSource: 'background',
+          triggerDetail: 'post-success',
+          signal: undefined,
+        },
+      }).then((postSuccess) => {
+        if (postSuccess.failure) {
+          log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+        }
+      }).catch((err) => {
+        log.error({ err: err instanceof Error ? err.message : String(err) }, 'Background post-success workflow failed');
+      });
+    }
   }
 
   return {

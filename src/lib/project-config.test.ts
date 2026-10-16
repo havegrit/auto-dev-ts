@@ -74,6 +74,16 @@ describe('loadProjectConfig', () => {
     });
   });
 
+  it('reads workflow restart recovery only when explicitly enabled', () => {
+    writeConfig(JSON.stringify({ version: 1, workflow: { resumeOnRestart: true } }));
+    expect(loadProjectConfig(dir)?.workflow).toEqual({ resumeOnRestart: true });
+  });
+
+  it('rejects a non-boolean workflow restart setting', () => {
+    writeConfig(JSON.stringify({ version: 1, workflow: { resumeOnRestart: 'yes' } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/workflow\.resumeOnRestart must be a boolean/);
+  });
+
   it('applies the runtime healthcheck timeout default and ignores future top-level fields', () => {
     writeConfig(JSON.stringify({
       version: 1,

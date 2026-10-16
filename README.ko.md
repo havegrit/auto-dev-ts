@@ -132,9 +132,14 @@ SSH 종료 후에도 서버를 유지하려면 user service를 설치합니다.
 로그아웃 뒤에도 유지하려면 linger가 필요하며, 설치 스크립트가 필요할 때 `sudo loginctl enable-linger <user>` 명령을 안내합니다. 로그는 `npm run service:logs`로 확인합니다. 같은 포트에서 `./run serve`와 service를 동시에 실행하지 마세요.
 
 대시보드가 시작한 스펙은 HTTP 응답과 분리된 background 작업이므로 브라우저나 SSH
-포트 포워딩을 닫아도 service 안에서 계속됩니다. 단, 호스트 재부팅이나 service
-재시작까지 이어가는 durable job queue/checkpoint 복구는 아직 지원하지 않으며, 이 경우
-실행 중 레코드는 `server_restart` 실패로 정리됩니다.
+포트 포워딩을 닫아도 service 안에서 계속됩니다. 대상 프로젝트의 `.auto-dev/project.json`에
+`workflow.resumeOnRestart: true`를 설정하면 체크포인트 복구를 opt-in할 수 있습니다.
+실행 시작 시 Git 작업 트리가 깨끗해야 합니다. 완료된 에이전트 결과는 재시작 뒤 재사용하고,
+중단된 읽기 전용 에이전트는 시작 전 파일 해시와 Git HEAD가 그대로일 때만 재실행합니다.
+파일 쓰기 권한이 있는 에이전트, 동적 팀,
+verify, runtime, 성공 후 전달 작업 도중 중단되거나 파일 변경이 모호하면
+`RECOVERY_REQUIRED`로 멈추고 작업 파일은 보존합니다. 설정이 없으면 기존처럼
+`server_restart` 실패 처리됩니다. 이번 범위에는 run 전용 worktree가 포함되지 않습니다.
 
 ### OpenClaw + Telegram
 
@@ -204,6 +209,11 @@ clarifier → planner → scaffold → test → review → cicd
 - `roleBoundary.testGlobs`를 선언하면 test 단계 전후의 파일 내용 해시를 비교해, 테스트 경로 밖의 파일을 수정한 경우 `role_boundary_violation`으로 실패시킵니다 (되돌리지 않고 보고만 합니다).
 - 이 파일이 없으면 프로젝트 설정 verify/runtime 게이트는 비활성이고 일반 workflow는 이전처럼 동작합니다. 버그 이슈는 아래 재현 우선 흐름을 사용하며, 역할 경계 설정이 없으면 기본 테스트 파일 glob을 적용합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
 
+대시보드 실행은 `"workflow": { "resumeOnRestart": true }`로 재시작 체크포인트를 별도
+opt-in할 수 있습니다. 시작 시 Git 작업 트리가 깨끗해야 합니다. 완료된 결과는 재사용하고
+변경되지 않은 읽기 전용 단계는 재실행합니다. 쓰기 단계/동적 팀/verify/runtime/전달 중단이나 워크스페이스 변경은 대시보드에
+`RECOVERY_REQUIRED`로 표시합니다. 현재 범위와 한계는 위 운영 안내를 참고하세요.
+
 `runtime`을 설정하면 `[TESTS: PASS]` 뒤에 `verify` 명령, 런타임 기동, HTTP healthcheck, 결정적 스크립트, 새 verifier 세션 순서로 실행한 뒤 review로 진행합니다. 기동·healthcheck·check·동작 검증이 실패하면 증거를 붙여 planner로 되돌립니다. 취소를 포함한 모든 경로에서 `finally`가 runtime `down`을 실행합니다. 오케스트레이터는 런타임 명령과 verifier 도구에 `COMPOSE_PROJECT_NAME=autodev-<workflow ID 앞부분>`을 전달합니다.
 
 런타임 관찰 결과는 `data/evidence/<workflowRunId>/evidence.json`에 저장합니다. workflow 상세 화면과 `GET /api/runs/:id/evidence`에서 요청·응답 요약, 명령 출력 꼬리, verifier 보고서를 볼 수 있습니다. Compose 프로젝트 이름은 컨테이너 자원을 분리하지만 호스트 포트는 공유되므로 프로젝트별 변수로 지정해야 합니다. 예: `ports: ["${WEB_PORT:-8080}:8080"]`.
@@ -271,6 +281,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/chat/memory` | 클라이언트가 보낸 대화를 주제별 Markdown 장기 기억으로 압축; 서버 저장 없음 |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/checkpoint` | opt-in workflow 재시작 복구 상태 |
 | `GET` | `/api/runs/:id/evidence` | 런타임 검증 요청·응답·출력·verifier 증거 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 워크플로우 또는 에이전트 프로세스 강제 중단 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |

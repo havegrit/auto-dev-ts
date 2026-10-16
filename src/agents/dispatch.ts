@@ -18,6 +18,7 @@ export type AgentRunOpts = {
   deliveryIntent?: 'ci' | 'cd';
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  onRunStarted?: (runId: string) => void;
 };
 
 export function decorateCicdInput(input: string, deliveryIntent: 'ci' | 'cd' = 'ci'): string {

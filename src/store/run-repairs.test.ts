@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { repairAnthropicAuthFailures, repairCodexCompletedTimeouts } from './run-repairs.js';
+import { repairAnthropicAuthFailures, repairCodexCompletedTimeouts, repairServerRestartRuns } from './run-repairs.js';
 
 describe('repairAnthropicAuthFailures', () => {
   it('marks login outputs and their successful workflow parent as failed', () => {
@@ -70,6 +70,31 @@ describe('repairCodexCompletedTimeouts', () => {
     expect(parent).toMatchObject({ status: 'FAILED', error_type: 'workflow_incomplete' });
     expect(parent.output).toContain('Use resume-last to continue');
     expect(db.prepare('SELECT status FROM agent_run WHERE id = ?').get('bad')).toEqual({ status: 'FAILED' });
+    db.close();
+  });
+});
+
+describe('repairServerRestartRuns', () => {
+  it('keeps opted-in checkpoint parents running and repairs all other orphan rows', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE agent_run (
+        id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, status TEXT NOT NULL,
+        output TEXT, error_type TEXT, workflow_run_id TEXT
+      );
+      CREATE TABLE workflow_checkpoint (
+        workflow_run_id TEXT PRIMARY KEY, state TEXT NOT NULL
+      );
+      INSERT INTO agent_run (id, agent_name, status) VALUES ('legacy', 'spec', 'RUNNING');
+      INSERT INTO agent_run (id, agent_name, status) VALUES ('resumable', 'spec', 'RUNNING');
+      INSERT INTO agent_run (id, agent_name, status, workflow_run_id) VALUES ('child', 'scaffold', 'RUNNING', 'resumable');
+      INSERT INTO workflow_checkpoint (workflow_run_id, state) VALUES ('resumable', 'RUNNING');
+    `);
+
+    expect(repairServerRestartRuns(db)).toBe(2);
+    expect(db.prepare('SELECT status FROM agent_run WHERE id = ?').get('resumable')).toEqual({ status: 'RUNNING' });
+    expect(db.prepare('SELECT status, error_type FROM agent_run WHERE id = ?').get('legacy')).toEqual({ status: 'FAILED', error_type: 'server_restart' });
+    expect(db.prepare('SELECT status, error_type FROM agent_run WHERE id = ?').get('child')).toEqual({ status: 'FAILED', error_type: 'server_restart' });
     db.close();
   });
 });

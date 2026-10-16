@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS agent_run_event (
 );
 CREATE INDEX IF NOT EXISTS idx_run_event_run ON agent_run_event(run_id, id);
 
+CREATE TABLE IF NOT EXISTS workflow_checkpoint (
+  workflow_run_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  state TEXT NOT NULL CHECK(state IN ('READY','RUNNING','WAITING_USER','DELIVERY_PENDING','SUCCEEDED','FAILED','CANCELLED','RECOVERY_REQUIRED')),
+  snapshot_json TEXT NOT NULL,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_checkpoint_recovery
+  ON workflow_checkpoint(state, lease_expires_at);
+
 CREATE TABLE IF NOT EXISTS review_finding (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,

@@ -1,6 +1,25 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { isAnthropicAuthFailure } from '../llm/anthropic/auth-failure.js';
 
+/** 체크포인트가 없는 고아 실행만 기존 server_restart 실패 처리로 교정한다. */
+export function repairServerRestartRuns(db: DatabaseType): number {
+  const result = db.prepare(`
+    UPDATE agent_run
+    SET status = 'FAILED', output = '[server_restart] 서버 재시작으로 중단됨', error_type = 'server_restart'
+    WHERE status = 'RUNNING'
+      AND NOT (
+        agent_name = 'spec'
+        AND workflow_run_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM workflow_checkpoint
+          WHERE workflow_checkpoint.workflow_run_id = agent_run.id
+            AND workflow_checkpoint.state = 'RUNNING'
+        )
+      )
+  `).run();
+  return result.changes;
+}
+
 /**
  * Claude 비로그인 안내가 DONE으로 잘못 저장된 과거 실행을 교정한다.
  * 반환값은 수정한 child run 수다.

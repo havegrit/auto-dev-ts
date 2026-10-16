@@ -77,6 +77,28 @@ describe('runAgent dispatch', () => {
     expect(result.tokensOut).toBe(6);
   });
 
+  it('notifies the checkpoint owner of the persisted child run before starting the provider', async () => {
+    const order: string[] = [];
+    fakeRunnerImpl = {
+      run: async () => {
+        order.push('provider');
+        return { status: 'success', output: 'ok', tokensIn: 0, tokensOut: 0, numTurns: 1, stopReason: 'end_turn' };
+      },
+    };
+
+    const result = await runAgent({
+      name: 'test-agent',
+      prompt: 'checkpoint this run',
+      onRunStarted: (runId) => {
+        order.push('started');
+        expect(runId).toBeDefined();
+      },
+    });
+
+    expect(order).toEqual(['started', 'provider']);
+    expect(result.status).toBe('DONE');
+  });
+
   it('preserves raw JSON output for clarifier workflow parsing', async () => {
     const rawOutput = JSON.stringify({
       ready: false,

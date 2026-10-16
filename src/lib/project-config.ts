@@ -38,11 +38,17 @@ export interface RuntimeConfig {
   checks: string[];
 }
 
+export interface WorkflowConfig {
+  /** 서버 재시작 뒤 대시보드 spec 워크플로우를 안전한 체크포인트에서 이어간다. */
+  resumeOnRestart: boolean;
+}
+
 export interface ProjectConfig {
   version: 1;
   verify?: VerifyConfig;
   roleBoundary?: RoleBoundaryConfig;
   runtime?: RuntimeConfig;
+  workflow?: WorkflowConfig;
 }
 
 export class ProjectConfigError extends Error {
@@ -137,6 +143,16 @@ function parseRuntime(value: unknown, configPath: string): RuntimeConfig | undef
   };
 }
 
+function parseWorkflow(value: unknown, configPath: string): WorkflowConfig | undefined {
+  if (value === undefined) return undefined;
+  const workflow = asRecord(value);
+  if (!workflow) throw new ProjectConfigError(configPath, 'workflow must be an object');
+  if (workflow.resumeOnRestart !== undefined && typeof workflow.resumeOnRestart !== 'boolean') {
+    throw new ProjectConfigError(configPath, 'workflow.resumeOnRestart must be a boolean');
+  }
+  return { resumeOnRestart: workflow.resumeOnRestart === true };
+}
+
 /**
  * `<projectDir>/.auto-dev/project.json` 을 읽어 검증한다.
  *
@@ -171,6 +187,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | undefined
     verify: parseVerify(root.verify, configPath),
     roleBoundary: parseRoleBoundary(root.roleBoundary, configPath),
     ...(root.runtime === undefined ? {} : { runtime: parseRuntime(root.runtime, configPath) }),
+    ...(root.workflow === undefined ? {} : { workflow: parseWorkflow(root.workflow, configPath) }),
   };
 }
 

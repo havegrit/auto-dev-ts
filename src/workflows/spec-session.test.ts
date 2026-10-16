@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
 
 const specInputs: string[] = [];
 const specOptions: any[] = [];
@@ -23,9 +25,11 @@ vi.mock('./spec.js', () => ({
 const inserted: any[] = [];
 const updates: any[] = [];
 let childRuns: any[] = [];
+const runRows = new Map<string, any>();
 vi.mock('../store/runs.js', () => ({
   insertRun: vi.fn((row: any) => inserted.push(row)),
   updateRun: vi.fn((id: string, patch: any) => updates.push({ id, ...patch })),
+  getRun: vi.fn((id: string) => runRows.get(id)),
   getRunsByWorkflowId: vi.fn(() => childRuns),
 }));
 
@@ -55,7 +59,36 @@ vi.mock('fs', () => ({
   mkdirSync: vi.fn(),
 }));
 
-import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from './spec-session.js';
+const { loadProjectConfig } = vi.hoisted(() => ({ loadProjectConfig: vi.fn(() => undefined as any) }));
+vi.mock('../lib/project-config.js', () => ({ loadProjectConfig }));
+const workspaceMocks = vi.hoisted(() => ({
+  snapshotWorkspace: vi.fn(async () => new Map<string, string>()),
+  workspaceHeadSha: vi.fn(async () => 'head-sha' as string | undefined),
+}));
+vi.mock('../lib/role-boundary.js', () => workspaceMocks);
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn((_command: string, args: string[]) => args.includes('status') ? '' : 'head-sha'),
+}));
+
+const recoveryFixtures = vi.hoisted(() => ({ expired: [] as any[], claimed: undefined as any }));
+const checkpointMocks = vi.hoisted(() => ({
+  createCheckpointLeaseOwner: vi.fn(() => 'test-owner'),
+  createWorkflowCheckpoint: vi.fn((workflowRunId: string, snapshot: any, leaseOwner: string) => ({
+    workflowRunId, schemaVersion: 1, revision: 1, state: 'RUNNING', snapshot,
+    leaseOwner, updatedAt: new Date().toISOString(),
+  })),
+  finishWorkflowCheckpoint: vi.fn(() => 2),
+  heartbeatWorkflowCheckpoint: vi.fn(() => true),
+  updateWorkflowCheckpoint: vi.fn(() => 2),
+  listExpiredWorkflowCheckpoints: vi.fn(() => recoveryFixtures.expired),
+  claimExpiredWorkflowCheckpoint: vi.fn((_runId: string, leaseOwner: string, revision: number) => recoveryFixtures.claimed
+    ? { ...recoveryFixtures.claimed, leaseOwner, revision: revision + 1 }
+    : undefined),
+  getWorkflowCheckpoint: vi.fn(),
+}));
+vi.mock('../store/workflow-checkpoints.js', () => checkpointMocks);
+
+import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan, recoverExpiredWorkflowCheckpoints } from './spec-session.js';
 
 const Q1 = { id: 'q1', category: 'scope', text: '범위는?', recommendation: '핵심 CRUD' };
 
@@ -66,12 +99,23 @@ beforeEach(() => {
   updates.length = 0;
   writes.length = 0;
   childRuns = [];
+  runRows.clear();
+  recoveryFixtures.expired.length = 0;
+  recoveryFixtures.claimed = undefined;
   stateStore.clear();
   saveClarificationState.mockClear();
   getClarificationState.mockClear();
   emitRunEvent.mockClear();
   closeEmitter.mockClear();
   notifyOpenClawSpec.mockClear();
+  loadProjectConfig.mockReturnValue(undefined);
+  checkpointMocks.createWorkflowCheckpoint.mockClear();
+  checkpointMocks.finishWorkflowCheckpoint.mockClear();
+  checkpointMocks.updateWorkflowCheckpoint.mockClear();
+  workspaceMocks.snapshotWorkspace.mockResolvedValue(new Map());
+  workspaceMocks.snapshotWorkspace.mockClear();
+  workspaceMocks.workspaceHeadSha.mockResolvedValue('head-sha');
+  workspaceMocks.workspaceHeadSha.mockClear();
 });
 
 describe('startSpecSession (round 0)', () => {
@@ -170,6 +214,36 @@ describe('startSpecSession (round 0)', () => {
 
     expect(specOptions[0].autoClarify).toBe(true);
     expect(specOptions[0].maxClarifyRounds).toBe(0);
+  });
+
+  it('creates and finishes a checkpoint only for explicitly opted-in dashboard sessions', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, workflow: { resumeOnRestart: true } });
+    specResult = {
+      workflowRunId: 'x',
+      steps: { clarifier: { runId: 'c', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+    };
+
+    const { runId, done } = startSpecSession('재시작 복구 기능', {
+      project: 'my-api', cwd: '/tmp/proj', triggerSource: 'dashboard',
+    });
+    await done;
+
+    expect(checkpointMocks.createWorkflowCheckpoint).toHaveBeenCalledWith(
+      runId,
+      expect.objectContaining({ kind: 'dashboard-spec-session', workflowRunId: runId, configFingerprint: expect.any(String) }),
+      'test-owner',
+    );
+    expect(specOptions[0].checkpoint.initialState).toMatchObject({ cursor: 0, routeCount: 0, clarifiedSpec: expect.any(String) });
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      runId,
+      expect.any(Object),
+      'SUCCEEDED',
+      'test-owner',
+      1,
+      expect.objectContaining({ status: 'DONE', output: expect.stringContaining('SHIP') }),
+    );
   });
 });
 
@@ -278,6 +352,139 @@ describe('resumeSpecSession (round N)', () => {
     expect(inserted.find(r => r.id === runId).workflowRunId).toBeUndefined();
     expect(stateStore.get('parent').rounds).toEqual([{ questions: [Q1], answers: { q1: 'CRUD + 검색' } }]);
     expect(stateStore.get(runId).rounds).toEqual([{ questions: [Q1], answers: { q1: 'CRUD + 검색' } }]);
+  });
+});
+
+describe('workflow checkpoint recovery', () => {
+  const config = { version: 1 as const, workflow: { resumeOnRestart: true } };
+
+  function checkpoint(activeAction: string, overrides: Record<string, unknown> = {}) {
+    const workflowState = {
+      cursor: 2,
+      executed: 1,
+      routeCount: 0,
+      clarifiedSpec: '복구 스펙',
+      planOutput: 'PLAN:\n1. scaffold | feature\nEND.',
+      results: {},
+      runtimeEvidenceSummary: '',
+      autoClarifyRounds: [],
+      autoQaLines: [],
+      initialFeedbackApplied: false,
+      activeAction,
+      activeStep: activeAction === 'agent' ? 'scaffold' : activeAction,
+      actionStartedAt: '2026-10-16T00:00:00.000Z',
+      beforeSnapshot: {},
+      beforeHeadSha: 'head-sha',
+      ...overrides,
+    };
+    const snapshot = {
+      kind: 'dashboard-spec-session',
+      workflowRunId: 'recover-run',
+      configFingerprint: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
+      sessionState: {
+        spec: '복구 스펙', project: 'my-api', slug: 'my-api', planFile: 'docs/plan/my-api.md',
+        cwd: '/tmp/proj', rounds: [],
+      },
+      specInput: '복구 스펙',
+      options: { project: 'my-api', cwd: '/tmp/proj', triggerSource: 'dashboard' },
+      workflowState,
+      ...workflowState,
+      baseHeadSha: 'head-sha',
+      baseSnapshot: {},
+    };
+    return {
+      workflowRunId: 'recover-run', schemaVersion: 1, revision: 4, state: 'RUNNING',
+      snapshot, leaseOwner: JSON.stringify({ host: hostname(), pid: 99999999, nonce: 'old' }),
+      updatedAt: '2026-10-16T00:00:00.000Z', leaseExpiresAt: '2026-10-16T00:01:00.000Z',
+    };
+  }
+
+  beforeEach(() => {
+    loadProjectConfig.mockReturnValue(config);
+    runRows.set('recover-run', { id: 'recover-run', status: 'RUNNING', started_at: '2026-10-16T00:00:00.000Z' });
+  });
+
+  it('resumes an interrupted agent from its saved cursor when workspace hashes match', async () => {
+    const pending = checkpoint('agent', { activeStep: 'planner', cursor: 1, executed: 0 });
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+    specResult = {
+      workflowRunId: 'recover-run', steps: { scaffold: { runId: 'new-scaffold', durationMs: 3, status: 'DONE' } },
+      totalDurationMs: 3, verdict: 'SHIP',
+    };
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(specInputs).toContain('복구 스펙');
+    expect(specOptions.at(-1).checkpoint.initialState).toMatchObject({ cursor: 1, activeAction: 'agent', activeStep: 'planner' });
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      'recover-run', expect.any(Object), 'SUCCEEDED', 'test-owner', 5, expect.any(Object),
+    );
+  });
+
+  it('reuses a completed child output even when the workspace changed', async () => {
+    const pending = checkpoint('agent', { activeRunId: 'saved-child' });
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+    runRows.set('saved-child', {
+      id: 'saved-child', agent_name: 'scaffold', status: 'DONE', output: 'finished',
+      tokens_in: 11, tokens_out: 12, duration_ms: 13,
+    });
+    specResult = { workflowRunId: 'recover-run', steps: {}, totalDurationMs: 2, verdict: 'SHIP' };
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(workspaceMocks.snapshotWorkspace).not.toHaveBeenCalled();
+    expect(specOptions.at(-1).checkpoint.recoveredResult).toEqual({
+      runId: 'saved-child', output: 'finished', tokensIn: 11, tokensOut: 12, durationMs: 13, status: 'DONE',
+    });
+  });
+
+  it('requires manual recovery when an interrupted agent changed workspace files', async () => {
+    const pending = checkpoint('agent', { activeStep: 'planner', cursor: 1, beforeSnapshot: { 'src/app.ts': 'before' } });
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+    workspaceMocks.snapshotWorkspace.mockResolvedValue(new Map([['src/app.ts', 'after']]));
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+
+    expect(specInputs).toHaveLength(0);
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      'recover-run', expect.objectContaining({ recoveryReason: expect.stringContaining('워크스페이스') }),
+      'RECOVERY_REQUIRED', 'test-owner', 5,
+      expect.objectContaining({ errorType: 'workflow_recovery_required' }),
+    );
+  });
+
+  it('does not replay an interrupted write-capable agent even when tracked hashes match', async () => {
+    const pending = checkpoint('agent');
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+
+    expect(specInputs).toHaveLength(0);
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      'recover-run', expect.objectContaining({ recoveryReason: expect.stringContaining('파일 쓰기 권한') }),
+      'RECOVERY_REQUIRED', 'test-owner', 5,
+      expect.objectContaining({ errorType: 'workflow_recovery_required' }),
+    );
+  });
+
+  it('marks interrupted internal verification as recovery required', async () => {
+    const pending = checkpoint('verify', { activeStep: 'verify' });
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+
+    expect(specInputs).toHaveLength(0);
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      'recover-run', expect.objectContaining({ recoveryReason: expect.stringContaining('verify') }), 'RECOVERY_REQUIRED', 'test-owner', 5,
+      expect.objectContaining({ status: 'FAILED', errorType: 'workflow_recovery_required' }),
+    );
   });
 });
 

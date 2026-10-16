@@ -659,6 +659,22 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   결제 스펙 clarification이다. 외부 Maven 의존성을 받는 Spring 케이스를 포함해 모든
   명령은 fixture에서 실행된다. 자동 CI 기준선/PR 차단은 이 Phase 범위가 아니다.
 
+### 6.2.6 재시작 체크포인트
+
+- 대시보드 spec은 대상 프로젝트가 `.auto-dev/project.json`에
+  `workflow.resumeOnRestart: true`를 명시한 경우에만 `workflow_checkpoint`를 만든다.
+  설정이 없거나 false이면 기존 startup `server_restart` 처리와 실행 경로를 유지한다.
+- opt-in run은 시작 시 깨끗한 Git 작업 트리를 요구한다. 각 에이전트 호출 전에
+  cursor/라우팅 상태, 입력, 파일 해시, Git HEAD를 저장하고 lease heartbeat를 갱신한다.
+  완료 child 결과는 재사용한다. 중단된 에이전트는 `AGENT_SPECS`의 도구가 `Read`만
+  허용할 때 파일 해시와 HEAD가 그대로인 경우에 한해 같은 입력으로 재실행한다. `Write`나
+  `Bash` 권한이 있으면 gitignore 파일 변경을 배제할 수 없어 자동 재실행하지 않는다.
+- 동적 팀, verify, runtime, 성공 후 전달 작업은 현재 복구 시 재생하지 않는다. 이 작업 중
+  lease가 만료되면 `RECOVERY_REQUIRED`로 부모 run을 실패 처리하고 작업 파일을 보존한다.
+  대시보드 상세 화면과 `GET /api/runs/:id/checkpoint`가 상태 및 사유를 제공한다.
+- 현재 구현은 원본 checkout에서 실행하므로 시작 시점의 깨끗한 작업 트리 이후에도
+  에이전트가 만든 변경은 유지된다. run 전용 worktree와 원본 checkout 통합은 지원하지 않는다.
+
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |
@@ -695,7 +711,22 @@ CREATE TABLE agent_run (
   error_type TEXT, stop_reason TEXT, num_turns INTEGER DEFAULT 0,
   clarification_state TEXT             -- spec 재개용 상태 JSON (원본 스펙 + 라운드별 Q&A)
 );
+
+CREATE TABLE workflow_checkpoint (
+  workflow_run_id TEXT PRIMARY KEY REFERENCES agent_run(id),
+  schema_version INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  updated_at TEXT NOT NULL
+);
 ```
+
+체크포인트는 opt-in한 dashboard spec의 직렬화 상태와 fencing revision, lease를 저장한다.
+부모 `agent_run`과 체크포인트의 종료 상태는 한 SQLite transaction으로 함께 기록한다.
 
 Java 버전 대비 제거된 컬럼:
 - `cost_usd` — 구독 플랜이므로 per-call 비용 없음
@@ -758,6 +789,7 @@ data/
 | `POST` | `/api/chat/memory` | 오래된 대화를 주제별 Markdown 기억으로 압축해 반환. 서버 영속화 없음 |
 | `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/checkpoint` | opt-in workflow 재시작 복구 상태 |
 | `GET` | `/api/runs/:id/evidence` | 런타임 검증 요청·응답·출력·verifier 증거 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 workflow/agent 취소. 부모 취소는 현재 child provider까지 전파 |
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
@@ -903,6 +935,17 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
   소유한 판정은 `failure.cause` 의 `verify_failed` / `role_boundary_violation` 으로 구분된다
   (§6.2.1).
 
+### 10.5 dashboard spec 재시작 복구
+
+- 대상 프로젝트의 `workflow.resumeOnRestart: true`가 명시된 dashboard spec만
+  `workflow_checkpoint`에 직렬화 상태와 host/PID lease를 저장한다. 체크포인트 revision이
+  fencing token으로 동작해 이전 worker의 갱신을 거부한다.
+- 서버 startup은 만료 lease만 원자적으로 claim한다. 같은 host의 이전 프로세스가 살아 있으면
+  경합을 피하려고 claim을 미루고, 다른 host 소유나 설정 fingerprint 불일치는 복구를 멈춘다.
+- 완료된 child는 DB 결과를 다시 소비해 중복 호출을 피한다. 미완료 agent는 호출 전 HEAD와
+  변경 파일 해시가 그대로일 때 재시도한다. 팀, verify, runtime, 전달 중단은
+  `RECOVERY_REQUIRED`로 표시하며 파일을 되돌리지 않는다 (§6.2.6).
+
 ---
 
 ## 11. 보안
@@ -980,6 +1023,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `runtime.checks` | 프로젝트 안의 상대 check 스크립트 경로 목록 |
 | | `roleBoundary.testGlobs` | test 단계가 수정해도 되는 경로. 비면 역할 경계 검사 생략 |
 | | `roleBoundary.ignoreGlobs` | 오탐 제외 경로 |
+| | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
 
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
@@ -1181,6 +1225,7 @@ npm rebuild better-sqlite3
 | 재작업 루프 | review/test → planner·clarifier 라우팅 구현. 단 라우팅 대상(planner/clarifier) 선택은 모델 마커에 의존 |
 | SSE | 실행 중 행은 라이브(§9.1). 단 종료된 실행 목록·통계는 여전히 10s 폴링 |
 | 실행 가드 복원 | 재시작 시 카운터/회로 0 리셋. DB 누적 복원 없음 |
+| spec 재시작 복구 | workflow opt-in dashboard spec의 안전한 순차 체크포인트만 지원. 팀/verify/runtime/전달 중단은 `RECOVERY_REQUIRED`; run 전용 worktree 미지원 |
 | runShell 위험 패턴 | `bypassPermissions` 로 모든 Bash 명령 허용. 신뢰된 환경 필수 |
 | review finding 구조화 | 자유 형식 출력. JSON dedup + verdict 파싱 없음 |
 | 인증 | 없음. 127.0.0.1 바인딩만 |
@@ -1323,6 +1368,7 @@ Bun 으로 런타임 교체도 가능.
     로 프로바이더 선택. 인증/과금 방식 교체 가능
 15. **문서 동기화** — 본 문서를 현재 구현에 맞춰 갱신 ← 현재
 16. **자체 eval** — fixture 기반 모델 매트릭스 실행, 일일 한도 준수, 결과와 회귀 비교
+17. **workflow checkpoint** — 명시적 opt-in dashboard spec의 lease 기반 안전 재개 및 복구 상태 노출
 
 ---
 

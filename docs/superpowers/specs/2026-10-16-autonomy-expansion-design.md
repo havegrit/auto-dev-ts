@@ -1,7 +1,7 @@
 # 자율성 확장 설계
 
 - 날짜: 2026-10-16
-- 상태: 설계 완료 — 구현은 별도 승인 대기
+- 상태: 설계 완료 — Phase 7A 구현 진행 중
 - 범위: 재시작 내성, PR 전달, 제한적 자동 머지
 
 ## 요약
@@ -89,7 +89,7 @@ AbortSignal, 인증 토큰, 프로세스 내부 객체는 저장하지 않는다
 
 - 서버 시작 시 DB migration을 완료한 뒤, lease가 만료된 RUNNING 체크포인트만 복구 후보로 조회한다.
 - 후보를 transaction으로 다시 claim하고 revision을 증가시킨다. 같은 체크포인트를 두 서버가 동시에 실행하지 못하게 한다.
-- 같은 호스트에서 이전 PID가 살아 있거나 lease 소유를 판정할 수 없으면 재개하지 않고 RECOVERY_REQUIRED로 둔다. 이 상태는 대시보드에 원인과 수동 조치 방법을 보여준다.
+- 같은 호스트의 이전 PID가 살아 있으면 소유 프로세스와 경합하지 않도록 claim을 미루고 다음 검사까지 기다린다. lease 소유를 판정할 수 없거나 다른 host 소유라면 재개하지 않고 RECOVERY_REQUIRED로 둔다.
 - 서버가 중단된 시점이 에이전트 호출 중이면, 이전 시도는 server_restart 원인으로 종료 이력에 남기고 **같은 단계 입력으로 새 child run을 만든다**. LLM 호출을 정확히 한 번 실행하는 보장은 제공하지 않는다. 중단 전에 남은 파일 변경은 보존하고, 재실행 뒤 결정적 verify를 다시 실행한다.
 - child run이 DONE이고 체크포인트 커서만 이전 상태라면 저장된 child 결과를 소비해 다음 단계로 이동한다. 이미 완료한 에이전트 호출을 다시 실행하지 않는다.
 - runtime 검증 중 중단된 경우 안정적인 run별 Compose 이름으로 먼저 down 정리를 시도하고, 정리 확인 후 검증을 처음부터 재실행한다. 정리를 확인할 수 없으면 수동 복구 상태로 둔다.
@@ -196,12 +196,24 @@ Eval 기록은 data/evals의 결과를 case ID, 모델, 설정 fingerprint에 �
 
 | 단계 | 구현 범위 | 완료 조건 |
 |---|---|---|
-| A | 체크포인트 저장, lease, 시작 시 복구, UI 상태 노출 | 단계 전/중/후 강제 종료 테스트에서 손실·중복 실행 없이 재개되며, 모호한 상태는 안전하게 멈춘다. |
+| A | 체크포인트 저장, lease, 시작 시 복구, UI 상태 노출 | 지원하는 순차 dashboard spec은 안전한 경계에서 재개하고, 모호한 상태는 보존 후 안전하게 멈춘다. |
 | B | run 전용 PR worktree, commit/push/PR 생성, 증거 deep link | gh와 git 호출 mock 테스트, 원격 작업의 재시작/idempotency 테스트, PR 본문 증거 링크 검증을 통과한다. |
 | C | eval/실사용 streak 집계와 자동 머지 dry-run | 기준선 부족, 분류 불명, fingerprint 변경, revert, head 변경에서 모두 자동 머지가 거부된다. |
 | D | 별도 승인된 프로젝트의 자동 머지 파일럿 | 정책·로그·kill switch 확인 후 opt-in 프로젝트에서만 동작하며, 보호 규칙을 우회하지 않는다. |
 
 구현 완료 시 npm test, npx tsc --noEmit, docs 갱신이 필요하다. 테스트에서는 실제 LLM, Docker, 원격 push, 실제 PR/merge를 호출하지 않고 각 외부 경계를 mock한다. 별도의 승인된 staging 절차가 없으면 실저장소 쓰기 테스트를 하지 않는다.
+
+### Phase 7A 구현 범위 조정 (2026-10-16)
+
+첫 구현은 체크포인트 저장·lease·복구 상태 노출을 제공하되, run 전용 worktree 및 원본
+checkout 통합은 후속 구현으로 미룬다. 재시작 복구는 대시보드에서 명시적으로 opt-in한
+순차 spec에 한정하고, 시작 당시 Git 작업 트리가 깨끗해야 한다. 완료 child 결과는 재사용하며,
+진행 중인 에이전트는 `AGENT_SPECS`에서 `Read` 전용일 때만 시작 전 파일 해시와 HEAD가
+동일하면 재실행한다. 쓰기 권한이 있는 에이전트는 gitignore 파일 변경을 배제할 수 없어
+재실행하지 않는다. 동적 팀,
+verify/runtime, 성공 후 전달 작업 중단이나 상태 불일치는 `RECOVERY_REQUIRED`로 멈추고
+변경 파일을 보존한다. 실행 도중 작성한 변경은 원본 checkout에 남으므로 수동 검토가 필요할
+수 있다. run 전용 worktree는 별도 범위에서 완료 기준과 함께 추가한다.
 
 ## 구현 승인 전에 확정할 사항
 
@@ -210,4 +222,4 @@ Eval 기록은 data/evals의 결과를 case ID, 모델, 설정 fingerprint에 �
 3. auto-dev가 PR 기반 기능을 지원할 첫 GitHub 저장소/조직 범위와 branch protection 최소 설정.
 4. 자동 머지 운영 중 live 성공·revert·hotfix를 수집할 GitHub 조회 주기와 재인증 절차.
 
-Phase 7의 현재 산출물은 이 설계 문서다. 구현은 별도 승인을 받은 뒤 시작한다.
+Phase 7의 PR 전달과 자동 머지는 별도 단계에서 진행한다. 이 Phase 7A 범위는 설계 조정에 따라 안전한 순차 spec 복구에 한정한다.

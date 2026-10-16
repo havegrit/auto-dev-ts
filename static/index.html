@@ -1812,6 +1812,12 @@
       }
 
       const isWorkflow = run.agent_name === 'spec' && !run.workflow_run_id;
+      let checkpoint = null;
+      if (isWorkflow) {
+        try {
+          checkpoint = await fetch(`/api/runs/${run.id}/checkpoint`).then(r => r.json());
+        } catch {}
+      }
       const verdict = workflowVerdict(run.output) ?? displayStatus(run);
       const failed = isWorkflow ? children.filter(c => displayStatus(c) === 'FAILED' || c.error_type) : [];
       const completed = isWorkflow ? children.filter(c => displayStatus(c) === 'DONE').length : 0;
@@ -1824,6 +1830,7 @@
         status: displayStatus(run),
         output: run.output,
         errorType: run.error_type,
+        checkpoint,
         elapsedSecond: run.status === 'RUNNING' ? Math.floor(elapsedMs(run) / 1000) : undefined,
         children: children.map(c => [c.id, displayStatus(c), c.duration_ms, c.tokens_in, c.tokens_out, c.error_type]),
       });
@@ -1836,6 +1843,8 @@
         ['소요시간', formatDuration(elapsedMs(run))],
         ['토큰', `in ${formatTokens(totalInput)} / out ${formatTokens(totalOutput)}`],
         ...(isWorkflow ? [['단계', children.length > 0 ? `${completed}/${children.length} 완료` : '시작 대기']] : []),
+        ...(checkpoint ? [['복구 상태', checkpoint.state]] : []),
+        ...(checkpoint?.action ? [['중단 작업', `${checkpoint.action}${checkpoint.step ? ` · ${checkpoint.step}` : ''}`]] : []),
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
       ];
@@ -1869,6 +1878,12 @@
           <div class="run-summary-failure">
             <div class="run-summary-failure-title">실패 원인</div>
             <div class="run-summary-failure-reason">${escapeHtml(failureReason)}</div>
+          </div>
+        ` : ''}
+        ${checkpoint?.state === 'RECOVERY_REQUIRED' ? `
+          <div class="run-summary-failure">
+            <div class="run-summary-failure-title">수동 복구 필요</div>
+            <div class="run-summary-failure-reason">${escapeHtml(checkpoint.recoveryReason || '중단된 작업을 자동으로 재개할 수 없습니다.')}<br>작업 경로의 변경 사항은 보존되어 있습니다. 확인 후 새 실행 또는 수동 복구를 진행하세요.</div>
           </div>
         ` : ''}
         ${steps}

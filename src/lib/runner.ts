@@ -26,6 +26,8 @@ export interface RunOptions {
   tools?: string[];
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  /** 실행 행이 생성된 직후 오케스트레이터에 run ID를 알린다. */
+  onRunStarted?: (runId: string) => void;
 }
 
 export interface RunResult {
@@ -281,6 +283,7 @@ function _initRun(opts: RunOptions): { runId: string; blocked: false } | { runId
 
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const init = _initRun(opts);
+  opts.onRunStarted?.(init.runId);
   if (init.blocked) {
     return { runId: init.runId, output: init.blockedOutput, tokensIn: 0, tokensOut: 0, durationMs: 0, status: 'BLOCKED' };
   }

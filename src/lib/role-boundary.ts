@@ -96,6 +96,16 @@ export async function snapshotWorkspace(projectDir: string): Promise<WorkspaceSn
   return snapshot;
 }
 
+/** Git HEAD SHA. 저장소가 아니거나 조회할 수 없으면 undefined 를 반환한다. */
+export async function workspaceHeadSha(projectDir: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', projectDir, 'rev-parse', 'HEAD'], { maxBuffer: 1024 * 1024 });
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 두 스냅샷 사이에 내용이 바뀐 경로 중 테스트 경로도 무시 경로도 아닌 것들.
  *

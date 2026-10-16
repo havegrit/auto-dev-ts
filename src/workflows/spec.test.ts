@@ -93,10 +93,11 @@ vi.mock('./post-success-commit.js', () => ({
 }));
 
 
-const { loadProjectConfig, runVerifyStep, snapshotWorkspace, emitRunEvent, executeTeam } = vi.hoisted(() => ({
+const { loadProjectConfig, runVerifyStep, snapshotWorkspace, workspaceHeadSha, emitRunEvent, executeTeam } = vi.hoisted(() => ({
   loadProjectConfig: vi.fn((): any => undefined),
   runVerifyStep: vi.fn(async (_opts: any): Promise<any> => ({ runId: 'verify-run', passed: true, outcome: { exitCode: 0, timedOut: false, cancelled: false, durationMs: 5, outputTail: '' } })),
   snapshotWorkspace: vi.fn(async (_dir: string): Promise<any> => new Map()),
+  workspaceHeadSha: vi.fn(async (_dir: string): Promise<string | undefined> => 'head-sha'),
   emitRunEvent: vi.fn((_runId: string, _event: any) => {}),
   executeTeam: vi.fn(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false })),
 }));
@@ -129,6 +130,7 @@ vi.mock('../lib/project-config.js', async (importOriginal) => ({
 vi.mock('../lib/role-boundary.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/role-boundary.js')>()),
   snapshotWorkspace,
+  workspaceHeadSha,
 }));
 
 vi.mock('./verify-gate.js', async (importOriginal) => ({
@@ -1146,5 +1148,78 @@ describe('runSpec role boundary check', () => {
     await runSpec('명확한 요청');
 
     expect(snapshotWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('runSpec checkpoint hooks', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) inputs[key].length = 0;
+    loadProjectConfig.mockReturnValue(undefined);
+  });
+
+  it('records agent action intent and clears it after the workflow step is processed', async () => {
+    const states: any[] = [];
+    await runSpec('spec', {
+      workflowRunId: 'checkpoint-run',
+      cwd: '/tmp/checkpoint-project',
+      steps: new Set(['scaffold']),
+      startStep: 'scaffold',
+      initialPlanOutput: 'PLAN:\n1. scaffold | feature\nEND.',
+      checkpoint: { onState: state => states.push(state) },
+    });
+
+    expect(states.some(state => state.activeAction === 'agent' && state.activeStep === 'scaffold')).toBe(true);
+    expect(states.some(state => state.cursor === 6 && state.activeAction === 'finalize')).toBe(true);
+    expect(states.at(-1)).toMatchObject({ cursor: 6, activeAction: 'delivery', activeStep: 'post-success' });
+  });
+
+  it('consumes a completed child result after restart without rerunning that agent', async () => {
+    const states: any[] = [];
+    const result = await runSpec('spec', {
+      workflowRunId: 'checkpoint-resume',
+      cwd: '/tmp/checkpoint-project',
+      steps: new Set(['scaffold']),
+      checkpoint: {
+        initialState: {
+          cursor: 2,
+          executed: 1,
+          routeCount: 0,
+          clarifiedSpec: 'spec',
+          planOutput: 'PLAN:\n1. scaffold | feature\nEND.',
+          results: {},
+          runtimeEvidenceSummary: '',
+          autoClarifyRounds: [],
+          autoQaLines: [],
+          initialFeedbackApplied: false,
+          activeAction: 'agent',
+          activeStep: 'scaffold',
+          activeRunId: 'saved-scaffold-run',
+        },
+        recoveredResult: {
+          runId: 'saved-scaffold-run', output: 'created', tokensIn: 1, tokensOut: 1, durationMs: 20, status: 'DONE',
+        },
+        onState: state => states.push(state),
+      },
+    });
+
+    expect(calls).not.toContain('scaffold');
+    expect(result.steps.scaffold).toMatchObject({ runId: 'saved-scaffold-run', status: 'DONE' });
+    expect(states.some(state => state.cursor === 6 && state.activeAction === 'finalize')).toBe(true);
+    expect(states.at(-1)?.activeAction).toBe('delivery');
+  });
+
+  it('persists the verify command as an internal action before executing it', async () => {
+    const states: any[] = [];
+    loadProjectConfig.mockReturnValue({ version: 1, verify: { command: 'npm test', timeoutMs: 1000 } });
+    await runSpec('spec', {
+      workflowRunId: 'checkpoint-verify',
+      cwd: '/tmp/checkpoint-project',
+      steps: new Set(['test']),
+      startStep: 'test',
+      checkpoint: { onState: state => states.push(state) },
+    });
+
+    expect(states).toContainEqual(expect.objectContaining({ activeAction: 'verify', activeStep: 'verify' }));
   });
 });

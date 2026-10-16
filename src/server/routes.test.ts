@@ -2,6 +2,11 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 const { readWorkflowEvidence } = vi.hoisted(() => ({ readWorkflowEvidence: vi.fn() }));
 vi.mock('../lib/evidence.js', () => ({ readWorkflowEvidence }));
+const { getWorkflowCheckpoint } = vi.hoisted(() => ({ getWorkflowCheckpoint: vi.fn() }));
+vi.mock('../store/workflow-checkpoints.js', () => ({
+  getWorkflowCheckpoint,
+  checkpointSummary: (checkpoint: any) => checkpoint ? ({ state: checkpoint.state, revision: checkpoint.revision }) : null,
+}));
 
 vi.mock('../lib/complete.js', () => ({
   complete: vi.fn(),
@@ -120,6 +125,17 @@ describe('health', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('workflow checkpoint detail', () => {
+  it('exposes the checkpoint state for a run', async () => {
+    getWorkflowCheckpoint.mockReturnValueOnce({ state: 'RECOVERY_REQUIRED', revision: 4 });
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/checkpoint'));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ state: 'RECOVERY_REQUIRED', revision: 4 });
   });
 });
 

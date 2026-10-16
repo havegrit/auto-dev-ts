@@ -14,6 +14,7 @@ import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpe
 import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
+import { checkpointSummary, getWorkflowCheckpoint } from '../store/workflow-checkpoints.js';
 import { getReviewFindingCandidates } from '../store/review-findings.js';
 import { readWorkflowEvidence } from '../lib/evidence.js';
 import { costGuard } from '../lib/cost-guard.js';
@@ -411,8 +412,12 @@ export function createRoutes(): Hono {
         return c.json({ error: `iterations must be an integer between 0 and ${MAX_ROUTE_LIMIT}` }, 400);
       }
       const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
-      const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, maxClarifyRounds, deliveryIntent, triggerSource: 'dashboard' });
-      return c.json({ runId, type: 'workflow' });
+      try {
+        const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, maxClarifyRounds, deliveryIntent, triggerSource: 'dashboard' });
+        return c.json({ runId, type: 'workflow' });
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
     }
 
     // 에이전트의 시스템 프롬프트 + 역할 경계(tools)를 적용해 실행한다.
@@ -480,6 +485,11 @@ export function createRoutes(): Hono {
 
   app.get('/api/runs/:id/events/history', (c) => {
     return c.json({ events: getRunEvents(c.req.param('id')) });
+  });
+
+  app.get('/api/runs/:id/checkpoint', (c) => {
+    const checkpoint = getWorkflowCheckpoint(c.req.param('id'));
+    return c.json(checkpoint ? checkpointSummary(checkpoint) : null);
   });
 
   app.get('/api/runs/:id/evidence', async (c) => {

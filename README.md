@@ -135,9 +135,14 @@ The user service requires linger to survive logout; the installer reports the re
 `npm run service:logs`. Do not run `./run serve` and the service on the same port.
 
 Dashboard specs already run in the service background, independently of the HTTP
-response, so closing the browser or SSH port-forward does not cancel them. Durable
-queue/checkpoint recovery across a host reboot or service restart is not implemented;
-an in-flight run is recorded as a `server_restart` failure in that case.
+response, so closing the browser or SSH port-forward does not cancel them. A project can
+opt into checkpoint recovery with `workflow.resumeOnRestart: true` in
+`.auto-dev/project.json`. It requires a clean Git worktree when the run starts. Completed
+agent results are consumed after restart; an interrupted read-only agent is retried only
+when its pre-run workspace hashes and Git HEAD still match. Interrupted write-capable agents,
+team, verify, runtime, or post-success delivery actions stop as `RECOVERY_REQUIRED` and
+preserve the workspace for inspection. Projects without this setting keep the legacy
+`server_restart` failure behavior. Run-isolated worktrees are not part of this first slice.
 
 ### OpenClaw + Telegram
 
@@ -207,6 +212,13 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 - Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
 - Without this file the project-configured verify/runtime gates are inactive and ordinary workflows behave as before. Bug issues still use the repro-first path below, with built-in test-file globs when no role-boundary globs are configured. If the file exists but its schema is wrong, the run fails immediately.
 
+Dashboard runs can additionally opt into restart checkpoints with
+`"workflow": { "resumeOnRestart": true }`. This setting requires a clean Git worktree at
+launch. Completed agent results are reused and unchanged read-only steps can retry; interrupted
+write-capable/team/verify/runtime/delivery work or changed workspace state is shown as
+`RECOVERY_REQUIRED` in the dashboard.
+See the operational notes above for the current scope and limits.
+
 When `runtime` is configured, a `[TESTS: PASS]` run continues through the `verify` command, runtime startup, HTTP healthcheck, deterministic scripts, and a fresh `verifier` session before review. Any startup, healthcheck, check, or behavior-verification failure is recorded with evidence and routed back to the planner. Runtime `down` runs from `finally`, including on cancellation. The orchestrator sets `COMPOSE_PROJECT_NAME=autodev-<workflow id prefix>` for runtime commands and verifier tools.
 
 Runtime observations are stored in `data/evidence/<workflowRunId>/evidence.json`. The workflow detail view and `GET /api/runs/:id/evidence` expose request/response summaries, command output tails, and the verifier report. Compose project names isolate container resources; published host ports still need a project-specific variable, for example `ports: ["${WEB_PORT:-8080}:8080"]`.
@@ -274,6 +286,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/chat/memory` | Compress client-supplied conversation into topic-grouped Markdown memory; server does not persist it |
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
+| `GET` | `/api/runs/:id/checkpoint` | Opt-in workflow restart-recovery state |
 | `GET` | `/api/runs/:id/evidence` | Runtime verification request/response and verifier evidence |
 | `POST` | `/api/runs/:id/cancel` | Force-stop a running workflow or agent process |
 | `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
