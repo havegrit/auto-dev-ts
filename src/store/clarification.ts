@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import type { ClarificationRound } from '../workflows/clarification.js';
+import type { PullRequestDeliveryContext } from '../lib/pr-delivery.js';
 
 /**
  * spec 워크플로우가 clarifier 게이트에서 멈췄을 때, 답변 입력만으로 재개하기 위한
@@ -15,6 +16,10 @@ export interface ClarificationState {
   planFile: string;
   /** 에이전트 실행 cwd (프로젝트 절대경로). */
   cwd: string;
+  /** PR worktree 실행에서 원본 프로젝트 경로. */
+  sourceCwd?: string;
+  /** PR 모드 세션의 전달 상태. 답변/재개 시 같은 worktree와 브랜치를 유지한다. */
+  deliveryContext?: PullRequestDeliveryContext;
   /** 이 run 이 실행해야 하는 spec 단계 필터. undefined 면 전체 파이프라인. */
   steps?: string[];
   /** review/test 피드백을 planner/clarifier로 되돌리는 최대 횟수. */

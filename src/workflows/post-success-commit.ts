@@ -25,6 +25,9 @@ export interface PostSuccessCommitContext {
   clarifiedSpec: string;
   planOutput?: string;
   runOpts: AgentRunOpts;
+  /** PR 전달은 오케스트레이터가 commit하므로 여기서는 문서 점검만 한다. */
+  commit?: boolean;
+  onStage?: (stage: 'docs-audit' | 'local-commit') => void | Promise<void>;
 }
 
 function workflowContext(ctx: PostSuccessCommitContext): string {
@@ -57,10 +60,8 @@ function stoppedFailure(step: string, result: Awaited<ReturnType<typeof runNamed
 export async function commitSuccessfulSpec(ctx: PostSuccessCommitContext): Promise<PostSuccessCommitResult> {
   const steps: Record<string, PostSuccessStepResult> = {};
   let docsSkill: string;
-  let commitSkill: string;
   try {
     docsSkill = loadGlobalSkill(DOCS_CHECK_STEP);
-    commitSkill = loadGlobalSkill(ATOMIC_COMMIT_STEP);
   } catch (err) {
     return {
       steps,
@@ -73,6 +74,7 @@ export async function commitSuccessfulSpec(ctx: PostSuccessCommitContext): Promi
     };
   }
 
+  await ctx.onStage?.('docs-audit');
   const context = workflowContext(ctx);
   const docs = await runNamedAgent(DOCS_CHECK_STEP, [
     'Apply the following globally installed skill exactly before any commit:',
@@ -95,6 +97,24 @@ export async function commitSuccessfulSpec(ctx: PostSuccessCommitContext): Promi
     };
   }
 
+  if (ctx.commit === false) return { steps };
+
+  let commitSkill: string;
+  try {
+    commitSkill = loadGlobalSkill(ATOMIC_COMMIT_STEP);
+  } catch (err) {
+    return {
+      steps,
+      failure: {
+        step: ATOMIC_COMMIT_STEP,
+        status: 'BLOCKED',
+        cause: 'skill_unavailable',
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+
+  await ctx.onStage?.('local-commit');
   const commit = await runNamedAgent(ATOMIC_COMMIT_STEP, [
     'Apply the following globally installed skill exactly. The required docs check already completed successfully:',
     '',

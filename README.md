@@ -137,12 +137,38 @@ The user service requires linger to survive logout; the installer reports the re
 Dashboard specs already run in the service background, independently of the HTTP
 response, so closing the browser or SSH port-forward does not cancel them. A project can
 opt into checkpoint recovery with `workflow.resumeOnRestart: true` in
-`.auto-dev/project.json`. It requires a clean Git worktree when the run starts. Completed
+`.auto-dev/project.json`. Local checkpointed runs require a clean Git worktree when the run starts. Completed
 agent results are consumed after restart; an interrupted read-only agent is retried only
 when its pre-run workspace hashes and Git HEAD still match. Interrupted write-capable agents,
 team, verify, runtime, or post-success delivery actions stop as `RECOVERY_REQUIRED` and
 preserve the workspace for inspection. Projects without this setting keep the legacy
-`server_restart` failure behavior. Run-isolated worktrees are not part of this first slice.
+`server_restart` failure behavior.
+
+For GitHub pull request delivery, set `delivery.mode` to `pull-request` in the target
+project's `.auto-dev/project.json`. auto-dev checks the GitHub `origin`, `gh` authentication,
+and HTTPS dashboard access before starting an agent, then runs the full workflow in
+`data/worktrees/<workflowRunId>` on `autodev/<runId>` from the configured or remote default
+branch. A successful review and configured verification are followed by an orchestrator-owned
+commit, ordinary push, and idempotent PR create/reuse. Delivery interruptions during commit,
+push, or PR creation reconcile the local and GitHub state after restart. A failed external
+delivery leaves the verified worktree in `DELIVERY_PENDING`; the dashboard offers a retry.
+
+```json
+{
+  "version": 1,
+  "verify": { "command": "npm test" },
+  "delivery": { "mode": "pull-request", "baseBranch": "main" }
+}
+```
+
+PR delivery also requires `AUTO_DEV_PUBLIC_BASE_URL` and
+`AUTO_DEV_PUBLIC_ACCESS_CONTROL=authenticated` or `network-restricted`. These values assert
+that an external HTTPS proxy protects the dashboard and **all** API routes, including run and
+evidence endpoints; they do not add authentication themselves. Do not set them until that
+access control is enforced. The server keeps its default `127.0.0.1` bind address. CLI and
+`POST /api/specs` use checkpointed sessions automatically when this mode is enabled.
+Issue-tracker-triggered workflows currently stop before starting agents in PR mode; launch
+those specs from the dashboard or CLI.
 
 ### OpenClaw + Telegram
 
@@ -287,6 +313,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
 | `GET` | `/api/runs/:id/checkpoint` | Opt-in workflow restart-recovery state |
+| `POST` | `/api/runs/:id/delivery/retry` | Retry a pending checkpointed PR delivery |
 | `GET` | `/api/runs/:id/evidence` | Runtime verification request/response and verifier evidence |
 | `POST` | `/api/runs/:id/cancel` | Force-stop a running workflow or agent process |
 | `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
@@ -324,6 +351,8 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite database path |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP server bind address |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP server port |
+| `AUTO_DEV_PUBLIC_BASE_URL` | unset | HTTPS dashboard URL used in PR links; required for PR delivery |
+| `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | unset | Operator assertion that an external proxy protects all dashboard/API routes (`authenticated` or `network-restricted`) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | Max agent runs per day (empty = unlimited) |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | Enable OpenClaw Telegram terminal-state notifications |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | OpenClaw Telegram account used for notifications |

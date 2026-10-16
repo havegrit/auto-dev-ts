@@ -134,12 +134,37 @@ SSH 종료 후에도 서버를 유지하려면 user service를 설치합니다.
 대시보드가 시작한 스펙은 HTTP 응답과 분리된 background 작업이므로 브라우저나 SSH
 포트 포워딩을 닫아도 service 안에서 계속됩니다. 대상 프로젝트의 `.auto-dev/project.json`에
 `workflow.resumeOnRestart: true`를 설정하면 체크포인트 복구를 opt-in할 수 있습니다.
-실행 시작 시 Git 작업 트리가 깨끗해야 합니다. 완료된 에이전트 결과는 재시작 뒤 재사용하고,
+로컬 체크포인트 실행은 시작 시 Git 작업 트리가 깨끗해야 합니다. 완료된 에이전트 결과는 재시작 뒤 재사용하고,
 중단된 읽기 전용 에이전트는 시작 전 파일 해시와 Git HEAD가 그대로일 때만 재실행합니다.
 파일 쓰기 권한이 있는 에이전트, 동적 팀,
 verify, runtime, 성공 후 전달 작업 도중 중단되거나 파일 변경이 모호하면
 `RECOVERY_REQUIRED`로 멈추고 작업 파일은 보존합니다. 설정이 없으면 기존처럼
-`server_restart` 실패 처리됩니다. 이번 범위에는 run 전용 worktree가 포함되지 않습니다.
+`server_restart` 실패 처리됩니다.
+
+GitHub PR 전달은 대상 프로젝트의 `.auto-dev/project.json`에
+`delivery.mode: "pull-request"`를 설정합니다. 에이전트를 시작하기 전에 GitHub `origin`,
+`gh` 인증, HTTPS 대시보드 주소를 확인하고 `data/worktrees/<workflowRunId>`의 전용
+`autodev/<runId>` 브랜치에서 원격 기본 브랜치 또는 지정한 base로 작업합니다. 리뷰와
+설정된 검증이 통과하면 오케스트레이터가 commit, 일반 push, PR 생성 또는 기존 PR 재사용을
+수행합니다. commit/push/PR 도중 재시작하면 로컬 및 GitHub 상태를 확인해 이어갑니다.
+외부 전달만 실패한 경우 검증된 worktree와 함께 `DELIVERY_PENDING`으로 남으며 대시보드에서
+재시도할 수 있습니다.
+
+```json
+{
+  "version": 1,
+  "verify": { "command": "npm test" },
+  "delivery": { "mode": "pull-request", "baseBranch": "main" }
+}
+```
+
+PR 전달에는 `AUTO_DEV_PUBLIC_BASE_URL`과
+`AUTO_DEV_PUBLIC_ACCESS_CONTROL=authenticated` 또는 `network-restricted`가 필요합니다.
+이 값은 외부 HTTPS 프록시가 대시보드와 **모든 API 경로**(실행·증거 API 포함)를 보호한다는
+운영자 확인값일 뿐, 자체 인증을 추가하지 않습니다. 접근 제어가 실제로 적용된 뒤에만 설정하세요.
+서버 기본 바인드 주소는 계속 `127.0.0.1`입니다. 이 모드에서 CLI와 `POST /api/specs`도
+체크포인트 세션을 사용합니다. 이슈 트래커에서 시작한 워크플로우는 PR 모드에서 에이전트를
+시작하기 전에 중단됩니다. 대시보드나 CLI에서 실행하세요.
 
 ### OpenClaw + Telegram
 
@@ -282,6 +307,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
 | `GET` | `/api/runs/:id/checkpoint` | opt-in workflow 재시작 복구 상태 |
+| `POST` | `/api/runs/:id/delivery/retry` | 대기 중인 체크포인트 PR 전달 재시도 |
 | `GET` | `/api/runs/:id/evidence` | 런타임 검증 요청·응답·출력·verifier 증거 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 워크플로우 또는 에이전트 프로세스 강제 중단 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
@@ -315,6 +341,8 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 데이터베이스 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 서버 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 서버 포트 |
+| `AUTO_DEV_PUBLIC_BASE_URL` | 미설정 | PR 링크에 사용할 HTTPS 대시보드 URL |
+| `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | 미설정 | 외부 프록시의 전체 대시보드/API 접근 제어 확인값 (`authenticated` 또는 `network-restricted`) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 실행 횟수 한도 (비우면 무제한) |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 완료/실패 알림 활성 |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림에 사용할 OpenClaw Telegram 계정 |

@@ -742,6 +742,13 @@ function failingVerify(outputTail = 'FooTest > bar FAILED') {
 }
 
 describe('runSpec verification gate', () => {
+  it('blocks uncheckpointed PR mode before invoking any agents', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, delivery: { mode: 'pull-request' } });
+
+    await expect(runSpec('PR 전달 요청', { cwd: '/project' })).rejects.toThrow(/requires a checkpointed PR spec session/);
+    expect(calls).toEqual([]);
+  });
+
   beforeEach(() => {
     calls.length = 0;
     for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) inputs[key].length = 0;
@@ -1171,7 +1178,8 @@ describe('runSpec checkpoint hooks', () => {
 
     expect(states.some(state => state.activeAction === 'agent' && state.activeStep === 'scaffold')).toBe(true);
     expect(states.some(state => state.cursor === 6 && state.activeAction === 'finalize')).toBe(true);
-    expect(states.at(-1)).toMatchObject({ cursor: 6, activeAction: 'delivery', activeStep: 'post-success' });
+    expect(states.some(state => state.cursor === 6 && state.activeAction === 'delivery' && state.activeStep === 'post-success')).toBe(true);
+    expect(states.at(-1)).toMatchObject({ cursor: 6, activeAction: undefined, activeStep: undefined });
   });
 
   it('consumes a completed child result after restart without rerunning that agent', async () => {
@@ -1206,7 +1214,8 @@ describe('runSpec checkpoint hooks', () => {
     expect(calls).not.toContain('scaffold');
     expect(result.steps.scaffold).toMatchObject({ runId: 'saved-scaffold-run', status: 'DONE' });
     expect(states.some(state => state.cursor === 6 && state.activeAction === 'finalize')).toBe(true);
-    expect(states.at(-1)?.activeAction).toBe('delivery');
+    expect(states.some(state => state.cursor === 6 && state.activeAction === 'delivery')).toBe(true);
+    expect(states.at(-1)?.activeAction).toBeUndefined();
   });
 
   it('persists the verify command as an internal action before executing it', async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -14,13 +14,18 @@ import { notifyOpenClawSpec } from '../integrations/openclaw/notify.js';
 import { AGENT_SPECS } from '../agents/specs.js';
 import { loadProjectConfig } from '../lib/project-config.js';
 import { snapshotWorkspace, workspaceHeadSha } from '../lib/role-boundary.js';
+import { completePullRequestDelivery, preparePullRequestWorktree, validatePullRequestDeliveryContext, type PullRequestDeliveryContext, type PullRequestDeliveryState, type PullRequestDescription } from '../lib/pr-delivery.js';
+import { commitSuccessfulSpec } from './post-success-commit.js';
+import { VERIFY_AGENT_NAME } from './verify-gate.js';
 import type { RunResult } from '../lib/runner.js';
 import {
   claimExpiredWorkflowCheckpoint,
+  claimWorkflowDeliveryRetry,
   createCheckpointLeaseOwner,
   createWorkflowCheckpoint,
   finishWorkflowCheckpoint,
   heartbeatWorkflowCheckpoint,
+  getWorkflowCheckpoint,
   listExpiredWorkflowCheckpoints,
   updateWorkflowCheckpoint,
   type WorkflowCheckpoint,
@@ -51,6 +56,10 @@ export interface SpecSessionHandle {
   done: Promise<void>;
 }
 
+export interface DeliveryRetryHandle {
+  done: Promise<void>;
+}
+
 export interface ResumeSpecSessionOptions {
   autoClarify?: boolean;
   maxClarifyRounds?: number;
@@ -64,7 +73,7 @@ interface SpecCheckpointSnapshot extends WorkflowCheckpointSnapshot {
   specInput: string;
   options: Omit<SpecSessionOptions, 'steps'> & { steps?: string[] };
   workflowState: PersistedSpecCheckpointState;
-  finalResult?: { verdict?: string; failure?: SpecResult['failure'] };
+  finalResult?: { verdict?: string; failure?: SpecResult['failure']; delivery?: PullRequestDeliveryState };
 }
 
 interface CheckpointRuntime {
@@ -75,18 +84,31 @@ interface CheckpointRuntime {
   workflowState: PersistedSpecCheckpointState;
 }
 
-function requireCleanGitWorkspace(cwd: string): string {
+function gitWorkspaceBaseline(cwd: string, requireClean: boolean): { head: string; snapshot: Record<string, string> } {
   try {
     const head = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     const status = execFileSync('git', ['-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (!head) throw new Error('HEAD를 확인할 수 없습니다.');
-    if (status) throw new Error('미커밋 변경이 있습니다. 작업 트리를 정리한 뒤 다시 시작하세요.');
-    return head;
+    if (requireClean && status) throw new Error('미커밋 변경이 있습니다. 작업 트리를 정리한 뒤 다시 시작하세요.');
+    const records = status.split('\0').filter(Boolean);
+    const snapshot: Record<string, string> = {};
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      if (record.length < 4) continue;
+      const path = record.slice(3);
+      try {
+        snapshot[path] = createHash('sha1').update(readFileSync(join(cwd, path))).digest('hex');
+      } catch {
+        snapshot[path] = '<deleted>';
+      }
+      if (record.slice(0, 2).includes('R') || record.slice(0, 2).includes('C')) i++;
+    }
+    return { head, snapshot };
   } catch (err) {
     if (err instanceof Error && err.message.includes('미커밋')) throw err;
-    throw new Error(`workflow.resumeOnRestart에는 깨끗한 Git 저장소가 필요합니다: ${cwd}`);
+    throw new Error(`체크포인트 워크플로우에는 Git 작업 트리가 필요합니다: ${cwd}`);
   }
 }
 
@@ -96,6 +118,28 @@ function runtimeSnapshot(runtime: CheckpointRuntime): SpecCheckpointSnapshot {
 
 function persistCheckpointState(runtime: CheckpointRuntime, state: PersistedSpecCheckpointState): void {
   runtime.workflowState = state;
+  runtime.snapshot = runtimeSnapshot(runtime);
+  runtime.revision = updateWorkflowCheckpoint(
+    runtime.workflowRunId, runtime.snapshot, 'RUNNING', runtime.leaseOwner, runtime.revision,
+  );
+}
+
+function persistDeliveryState(runtime: CheckpointRuntime, stage: string, state: PullRequestDeliveryState): void {
+  const context = runtime.snapshot.sessionState.deliveryContext;
+  if (context) context.state = state;
+  runtime.snapshot = {
+    ...runtimeSnapshot(runtime),
+    ...(context ? { deliveryContext: context, sessionState: { ...runtime.snapshot.sessionState, deliveryContext: context } } : {}),
+    deliveryState: state,
+  };
+  runtime.workflowState = {
+    ...runtime.workflowState,
+    activeAction: 'delivery',
+    activeStep: stage,
+    activeRunId: undefined,
+    activeInput: JSON.stringify(state),
+    actionStartedAt: new Date().toISOString(),
+  };
   runtime.snapshot = runtimeSnapshot(runtime);
   runtime.revision = updateWorkflowCheckpoint(
     runtime.workflowRunId, runtime.snapshot, 'RUNNING', runtime.leaseOwner, runtime.revision,
@@ -269,14 +313,29 @@ export function continueSpecSession(parentRunId: string, instruction: string): S
   const prev = getClarificationState(parentRunId);
   if (!prev) throw new Error(`No clarification state for run: ${parentRunId}`);
 
+  if (prev.deliveryContext?.state?.status === 'DELIVERY_PENDING') {
+    throw new Error('Retry the pending PR delivery before continuing this workflow.');
+  }
+
   const text = instruction.trim();
   const rounds: ClarificationRound[] = text
     ? [...prev.rounds.map((r) => ({ ...r })), { questions: [], followup: text }]
     : [...prev.rounds.map((r) => ({ ...r }))];
-  const state: ClarificationState = { ...prev, sessionId: prev.sessionId ?? parentRunId, rounds };
+  const newPullRequest = prev.deliveryContext &&
+    (prev.deliveryContext.state?.status === 'DELIVERED' || prev.deliveryContext.state?.status === 'NO_CHANGES');
+  const state: ClarificationState = {
+    ...prev,
+    sessionId: prev.sessionId ?? parentRunId,
+    rounds,
+    ...(newPullRequest ? {
+      cwd: prev.sourceCwd ?? prev.cwd,
+      sourceCwd: prev.sourceCwd ?? prev.cwd,
+      deliveryContext: undefined,
+    } : {}),
+  };
   return launch(state, {
     project: prev.project,
-    cwd: prev.cwd,
+    cwd: state.cwd,
     steps: restoreSteps(prev.steps),
     iterations: prev.iterations,
     autoClarify: prev.autoClarify,
@@ -410,20 +469,39 @@ function restoreSteps(steps: string[] | undefined): Set<string> | undefined {
 
 function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { startStep: Step }): SpecSessionHandle {
   const runId = randomUUID();
-  const sessionState: ClarificationState = { ...state, sessionId: state.sessionId ?? runId };
-  const input = composeClarifierInput(sessionState.spec, sessionState.rounds);
+  let sessionState: ClarificationState = { ...state, sessionId: state.sessionId ?? runId };
   const sessionOpts = { ...opts, triggerSource: opts.triggerSource ?? 'dashboard' };
+  const sourceCwd = sessionState.sourceCwd ?? sessionState.cwd;
   let projectConfig: ReturnType<typeof loadProjectConfig>;
   try {
-    projectConfig = loadProjectConfig(sessionState.cwd);
+    projectConfig = loadProjectConfig(sourceCwd);
   } catch {
     // 설정 오류는 runSpec 내부에서 기존처럼 부모 run 실패로 기록한다.
   }
-  const checkpointEnabled = sessionOpts.triggerSource === 'dashboard' && projectConfig?.workflow?.resumeOnRestart === true;
+  const prMode = projectConfig?.delivery?.mode === 'pull-request';
+  if (prMode) {
+    const missingSteps = ['planner', 'scaffold', 'test', 'review'].filter(step => sessionOpts.steps && !sessionOpts.steps.has(step));
+    if (missingSteps.length) throw new Error(`PR delivery requires the full verified workflow; enabled steps are missing: ${missingSteps.join(', ')}.`);
+    const deliveryContext: PullRequestDeliveryContext = sessionState.deliveryContext
+      ? { ...sessionState.deliveryContext, dashboardRunId: runId }
+      : preparePullRequestWorktree(sourceCwd, runId, projectConfig!.delivery!, process.env);
+    deliveryContext.dashboardRunId = runId;
+    if (sessionState.deliveryContext) validatePullRequestDeliveryContext(deliveryContext, process.env);
+    sessionState = {
+      ...sessionState,
+      sourceCwd,
+      cwd: deliveryContext.worktreeDir,
+      deliveryContext,
+    };
+  } else if (sessionState.deliveryContext) {
+    throw new Error('PR delivery 설정이 제거되어 저장된 PR worktree를 이어갈 수 없습니다.');
+  }
+  const input = composeClarifierInput(sessionState.spec, sessionState.rounds);
+  const checkpointEnabled = prMode || (sessionOpts.triggerSource === 'dashboard' && projectConfig?.workflow?.resumeOnRestart === true);
   let checkpointRuntime: CheckpointRuntime | undefined;
   let pendingCheckpoint: { leaseOwner: string; snapshot: SpecCheckpointSnapshot } | undefined;
   if (checkpointEnabled) {
-    const baseHeadSha = requireCleanGitWorkspace(sessionState.cwd);
+    const baseline = gitWorkspaceBaseline(sessionState.cwd, !prMode);
     const leaseOwner = createCheckpointLeaseOwner();
     const initialState: PersistedSpecCheckpointState = {
       cursor: Math.max(0, resume ? STEP_ORDER.indexOf(resume.startStep) : 0),
@@ -442,15 +520,17 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
       workflowRunId: runId,
       configFingerprint: createHash('sha256').update(JSON.stringify(projectConfig)).digest('hex'),
       sessionState,
+      ...(sessionState.deliveryContext ? { deliveryContext: sessionState.deliveryContext, deliveryState: sessionState.deliveryContext.state } : {}),
       specInput: input,
       options: {
         ...sessionOpts,
+        cwd: sessionState.cwd,
         steps: serializeSteps(sessionOpts.steps),
       },
       workflowState: initialState,
       ...initialState,
-      baseHeadSha,
-      baseSnapshot: {},
+      baseHeadSha: baseline.head,
+      baseSnapshot: baseline.snapshot,
     };
     pendingCheckpoint = { leaseOwner, snapshot: checkpointSnapshot };
   }
@@ -539,6 +619,7 @@ async function recoverExpiredCheckpoint(candidate: WorkflowCheckpoint): Promise<
   const runtime = createCheckpointRuntime(claimed, leaseOwner, snapshot);
   let recoveryReason: string | undefined;
   let recoveredResult: RunResult | undefined;
+  let deliveryRecoveryStage: string | undefined;
 
   if (claimed.schemaVersion !== 1 || snapshot.kind !== 'dashboard-spec-session') {
     recoveryReason = `지원하지 않는 체크포인트 형식입니다 (schema ${claimed.schemaVersion}).`;
@@ -548,12 +629,15 @@ async function recoverExpiredCheckpoint(candidate: WorkflowCheckpoint): Promise<
 
   if (!recoveryReason) {
     try {
-      const config = loadProjectConfig(snapshot.sessionState.cwd);
+      const config = loadProjectConfig(snapshot.sessionState.sourceCwd ?? snapshot.sessionState.cwd);
       const fingerprint = createHash('sha256').update(JSON.stringify(config ?? null)).digest('hex');
-      if (config?.workflow?.resumeOnRestart !== true) {
-        recoveryReason = '프로젝트 설정에서 workflow.resumeOnRestart가 더 이상 활성화되어 있지 않습니다.';
+      if (config?.workflow?.resumeOnRestart !== true && config?.delivery?.mode !== 'pull-request') {
+        recoveryReason = '프로젝트 설정에서 workflow.resumeOnRestart 또는 delivery.mode=pull-request가 더 이상 활성화되어 있지 않습니다.';
       } else if (fingerprint !== snapshot.configFingerprint) {
         recoveryReason = '실행 중 프로젝트 설정이 바뀌어 저장된 워크플로우를 재현할 수 없습니다.';
+      } else if (config?.delivery?.mode === 'pull-request') {
+        if (!snapshot.sessionState.deliveryContext) throw new Error('PR delivery worktree context is missing.');
+        validatePullRequestDeliveryContext(snapshot.sessionState.deliveryContext, process.env);
       }
     } catch (err) {
       recoveryReason = `프로젝트 설정을 읽을 수 없습니다: ${err instanceof Error ? err.message : String(err)}`;
@@ -582,6 +666,14 @@ async function recoverExpiredCheckpoint(candidate: WorkflowCheckpoint): Promise<
           recoveryReason = '에이전트 실행 중 워크스페이스가 바뀌어 재실행하면 결과가 중복될 수 있습니다.';
         }
       }
+    }
+  } else if (!recoveryReason && workflowState.activeAction === 'delivery') {
+    if (!snapshot.sessionState.deliveryContext) {
+      recoveryReason = '중단된 PR 전달의 worktree 정보가 체크포인트에 없습니다.';
+    } else if (!['commit', 'push', 'pull-request'].includes(workflowState.activeStep ?? '')) {
+      recoveryReason = '문서 점검 중 중단되어 쓰기 작업의 완료 여부를 확인할 수 없습니다. worktree를 검토한 뒤 수동 복구가 필요합니다.';
+    } else {
+      deliveryRecoveryStage = workflowState.activeStep;
     }
   } else if (!recoveryReason && workflowState.activeAction) {
     recoveryReason = `중단된 내부 작업(${workflowState.activeAction})은 안전한 재생을 지원하지 않습니다.`;
@@ -621,6 +713,11 @@ async function recoverExpiredCheckpoint(candidate: WorkflowCheckpoint): Promise<
       durationMs: rootRunDuration(candidate.workflowRunId),
       reason: recoveryReason,
     });
+    return true;
+  }
+
+  if (deliveryRecoveryStage) {
+    await finishPullRequestDelivery(candidate.workflowRunId, runtime, deliveryRecoveryStage);
     return true;
   }
 
@@ -671,6 +768,8 @@ async function finalize(
       deliveryIntent: opts.deliveryIntent ?? 'ci',
       triggerSource: opts.triggerSource ?? 'dashboard',
       cwd: state.cwd,
+      projectConfigDir: state.sourceCwd ?? state.cwd,
+      deliveryContext: state.deliveryContext,
       startStep: resume?.startStep,
       initialPlanOutput: state.planOutput,
       signal,
@@ -680,6 +779,9 @@ async function finalize(
           recoveredResult,
           onState: (workflowState: PersistedSpecCheckpointState) => persistCheckpointState(checkpointRuntime, workflowState),
         },
+      } : {}),
+      ...(checkpointRuntime && state.deliveryContext ? {
+        onDeliveryState: (stage: string, deliveryState: PullRequestDeliveryState) => persistDeliveryState(checkpointRuntime, stage, deliveryState),
       } : {}),
     });
 
@@ -723,16 +825,28 @@ async function finalize(
 
     saveClarificationState(runId, { ...merged, planOutput });
     const status = workflowRunStatus(result);
-    const output = workflowOutput(result);
+    const deliveryOutput = result.delivery?.status === 'DELIVERED'
+      ? `\n\nPR: ${result.delivery.prUrl}`
+      : result.delivery?.status === 'DELIVERY_PENDING'
+        ? `\n\n[DELIVERY: PENDING]\n${result.delivery.reason ?? 'PR 전달을 마치지 못했습니다.'}`
+        : result.delivery?.status === 'NO_CHANGES'
+          ? '\n\n[DELIVERY: NO-CHANGES]'
+          : '';
+    const output = `${workflowOutput(result)}${deliveryOutput}`;
     const errorType = result.verdict === 'CANCELLED' ? 'user_cancelled' : result.failure ? 'workflow_failure' : undefined;
     const stopReason = result.verdict === 'CANCELLED' ? 'user_cancelled' : result.failure?.step;
+    if (checkpointRuntime && state.deliveryContext && result.delivery &&
+      ['DELIVERY_PENDING', 'DELIVERED', 'NO_CHANGES'].includes(result.delivery.status)) {
+      persistDeliveryState(checkpointRuntime, result.delivery.stage ?? 'pull-request', result.delivery);
+    }
     if (checkpointRuntime) {
       const checkpointState: WorkflowCheckpointState = result.verdict === 'CANCELLED'
         ? 'CANCELLED'
-        : status === 'DONE' ? 'SUCCEEDED' : 'FAILED';
+        : result.delivery?.status === 'DELIVERY_PENDING' ? 'DELIVERY_PENDING'
+          : status === 'DONE' ? 'SUCCEEDED' : 'FAILED';
       finishCheckpoint(runId, checkpointRuntime, checkpointState, {
         output, status, durationMs: result.totalDurationMs, errorType, stopReason,
-      }, { sessionState: { ...merged, planOutput }, finalResult: { verdict: result.verdict, failure: result.failure } });
+      }, { sessionState: { ...merged, planOutput }, finalResult: { verdict: result.verdict, failure: result.failure, delivery: result.delivery } });
     } else {
       updateRun(runId, {
         output, status, durationMs: result.totalDurationMs,
@@ -743,9 +857,9 @@ async function finalize(
     await notifyOpenClawSpec({
       runId,
       project: opts.project,
-      verdict: result.verdict ?? status,
+      verdict: result.delivery?.status === 'DELIVERY_PENDING' ? 'DELIVERY_PENDING' : result.verdict ?? status,
       durationMs: result.totalDurationMs,
-      reason: result.failure?.reason,
+      reason: result.failure?.reason ?? result.delivery?.reason,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -784,6 +898,158 @@ async function finalize(
 function finishRunEvents(runId: string, status: 'DONE' | 'FAILED' | 'CANCELLED'): void {
   emitRunEvent(runId, { type: 'status', ts: new Date().toISOString(), data: status });
   closeEmitter(runId);
+}
+
+function deliveryDescription(snapshot: SpecCheckpointSnapshot): PullRequestDescription {
+  const state = snapshot.sessionState;
+  const projectConfig = loadProjectConfig(state.sourceCwd ?? state.cwd);
+  const summary = snapshot.workflowState.runtimeEvidenceSummary.split(/\r?\n/)[0] || 'Deterministic checks passed.';
+  return {
+    requestSummary: state.spec,
+    verifyCommand: projectConfig?.verify?.command,
+    verifyConfigured: Boolean(projectConfig?.verify),
+    verifyDurationMs: snapshot.workflowState.results[VERIFY_AGENT_NAME]?.durationMs,
+    verifySummary: summary,
+    reviewSummary: 'Review verdict: SHIP. See workflow evidence for details.',
+  };
+}
+
+function deliveryOutput(base: string, state: PullRequestDeliveryState): string {
+  const cleanBase = base
+    .replace(/\n\n\[DELIVERY: PENDING\][\s\S]*$/, '')
+    .replace(/\n\n\[DELIVERY: NO-CHANGES\]$/, '')
+    .replace(/\n\nPR: https?:\/\/\S+$/, '');
+  if (state.status === 'DELIVERED') return `${cleanBase}\n\nPR: ${state.prUrl}`;
+  if (state.status === 'NO_CHANGES') return `${cleanBase}\n\n[DELIVERY: NO-CHANGES]`;
+  return `${cleanBase}\n\n[DELIVERY: PENDING]\n${state.reason ?? 'PR 전달을 마치지 못했습니다.'}`;
+}
+
+async function finishPullRequestDelivery(
+  runId: string,
+  runtime: CheckpointRuntime,
+  stage: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const context = runtime.snapshot.sessionState.deliveryContext;
+  if (!context) throw new Error('PR delivery checkpoint has no saved worktree context.');
+  if (runtime.snapshot.deliveryState && typeof runtime.snapshot.deliveryState === 'object') {
+    context.state = runtime.snapshot.deliveryState as PullRequestDeliveryState;
+  }
+  let state: PullRequestDeliveryState = {
+    status: 'READY',
+    stage: stage === 'docs-audit' ? 'docs-audit' : undefined,
+  };
+  try {
+    if (stage === 'docs-audit' || stage === 'post-success') {
+      persistDeliveryState(runtime, 'docs-audit', { status: 'READY', stage: 'docs-audit' });
+      const audit = await commitSuccessfulSpec({
+        specContent: runtime.snapshot.sessionState.spec,
+        clarifiedSpec: runtime.workflowState.clarifiedSpec,
+        planOutput: runtime.workflowState.planOutput,
+        commit: false,
+        runOpts: {
+          cwd: context.worktreeDir,
+          triggerSource: 'background',
+          triggerDetail: 'pr-delivery-retry',
+          signal,
+        },
+      });
+      if (audit.failure) {
+        state = { status: 'DELIVERY_PENDING', stage: 'docs-audit', reason: audit.failure.reason };
+      }
+    }
+    if (state.status !== 'DELIVERY_PENDING') {
+      state = await completePullRequestDelivery(context, deliveryDescription(runtime.snapshot), async (nextStage, progress) => {
+        persistDeliveryState(runtime, nextStage, progress);
+      });
+    }
+  } catch (err) {
+    state = {
+      status: 'DELIVERY_PENDING',
+      stage: context.state?.stage ?? 'commit',
+      commitSha: context.state?.commitSha,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  context.state = state;
+  runtime.snapshot = {
+    ...runtimeSnapshot(runtime),
+    sessionState: { ...runtime.snapshot.sessionState, deliveryContext: context },
+    deliveryContext: context,
+    deliveryState: state,
+    activeAction: undefined,
+    activeStep: undefined,
+    activeRunId: undefined,
+    activeInput: undefined,
+    actionStartedAt: undefined,
+  };
+  runtime.workflowState = {
+    ...runtime.workflowState,
+    activeAction: undefined,
+    activeStep: undefined,
+    activeRunId: undefined,
+    activeInput: undefined,
+    actionStartedAt: undefined,
+  };
+  runtime.snapshot.workflowState = runtime.workflowState;
+  const prior = getRun(runId)?.output ?? '';
+  const output = deliveryOutput(prior, state);
+  const nextCheckpointState: WorkflowCheckpointState = state.status === 'DELIVERY_PENDING' ? 'DELIVERY_PENDING' : 'SUCCEEDED';
+  finishCheckpoint(runId, runtime, nextCheckpointState, {
+    status: 'DONE', output, durationMs: rootRunDuration(runId),
+  }, {
+    sessionState: runtime.snapshot.sessionState,
+    deliveryContext: context,
+    deliveryState: state,
+    finalResult: { verdict: 'SHIP', delivery: state },
+  });
+  finishRunEvents(runId, 'DONE');
+  await notifyOpenClawSpec({
+    runId,
+    project: runtime.snapshot.sessionState.project,
+    verdict: state.status === 'DELIVERY_PENDING' ? 'DELIVERY_PENDING' : 'SHIP',
+    durationMs: rootRunDuration(runId),
+    reason: state.reason,
+  });
+}
+
+/** DELIVERY_PENDING worktree의 문서 점검/commit/push/PR 단계를 재시도한다. */
+export function retryPullRequestDelivery(runId: string): DeliveryRetryHandle {
+  const current = getWorkflowCheckpoint(runId);
+  if (!current || current.state !== 'DELIVERY_PENDING') throw new Error('Run has no pending PR delivery.');
+  const snapshot = current.snapshot as SpecCheckpointSnapshot;
+  if (snapshot.kind !== 'dashboard-spec-session' || !snapshot.sessionState.deliveryContext) {
+    throw new Error('Run has no resumable PR delivery context.');
+  }
+  const config = loadProjectConfig(snapshot.sessionState.sourceCwd ?? snapshot.sessionState.cwd);
+  const fingerprint = createHash('sha256').update(JSON.stringify(config ?? null)).digest('hex');
+  if (config?.delivery?.mode !== 'pull-request' || fingerprint !== snapshot.configFingerprint) {
+    throw new Error('PR delivery configuration changed after the run. Start a new workflow after reviewing the saved worktree.');
+  }
+  validatePullRequestDeliveryContext(snapshot.sessionState.deliveryContext, process.env);
+  const owner = createCheckpointLeaseOwner();
+  const claimed = claimWorkflowDeliveryRetry(runId, owner, current.revision);
+  if (!claimed) throw new Error('PR delivery is already being retried or the checkpoint changed.');
+  const runtime = createCheckpointRuntime(claimed, owner, claimed.snapshot as SpecCheckpointSnapshot);
+  const controller = new AbortController();
+  const unregister = registerRunCancellation(runId, controller);
+  const heartbeat = setInterval(() => {
+    if (!heartbeatWorkflowCheckpoint(runId, owner, runtime.revision)) controller.abort(new Error('workflow checkpoint lease lost'));
+  }, 20_000);
+  heartbeat.unref();
+  const stage = String(runtime.snapshot.deliveryState && typeof runtime.snapshot.deliveryState === 'object'
+    ? (runtime.snapshot.deliveryState as Record<string, unknown>)['stage'] ?? 'docs-audit'
+    : 'docs-audit');
+  const done = finishPullRequestDelivery(runId, runtime, stage, controller.signal)
+    .catch((err) => {
+      console.error(`PR delivery retry failed for ${runId}: ${err instanceof Error ? err.message : String(err)}`);
+    })
+    .finally(() => {
+      clearInterval(heartbeat);
+      unregister();
+    });
+  return { done };
 }
 
 /** plan 파일을 cwd/docs/plan/<slug>.md 에 항상 최신 전체 스냅샷으로 기록한다. */

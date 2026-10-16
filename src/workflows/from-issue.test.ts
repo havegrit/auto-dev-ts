@@ -92,6 +92,16 @@ beforeEach(() => {
 });
 
 describe('bug issue mode', () => {
+  it('rejects PR delivery before reproduction agents or issue status changes', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, delivery: { mode: 'pull-request' } } as any);
+
+    await expect(processIssue('AD-42')).rejects.toThrow(/Issue-triggered workflows do not support PR delivery yet/);
+
+    expect(testAgent).not.toHaveBeenCalled();
+    expect(runSpec).not.toHaveBeenCalled();
+    expect(updateIssue).not.toHaveBeenCalled();
+  });
+
   it('matches only the BUG type, ignoring case and surrounding whitespace', () => {
     expect(isBugIssueType('bug')).toBe(true);
     expect(isBugIssueType(' BUG ')).toBe(true);

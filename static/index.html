@@ -1845,6 +1845,10 @@
         ...(isWorkflow ? [['단계', children.length > 0 ? `${completed}/${children.length} 완료` : '시작 대기']] : []),
         ...(checkpoint ? [['복구 상태', checkpoint.state]] : []),
         ...(checkpoint?.action ? [['중단 작업', `${checkpoint.action}${checkpoint.step ? ` · ${checkpoint.step}` : ''}`]] : []),
+        ...(checkpoint?.delivery?.status ? [['전달 상태', checkpoint.delivery.status]] : []),
+        ...(checkpoint?.delivery?.branch ? [['전달 브랜치', checkpoint.delivery.branch]] : []),
+        ...(checkpoint?.delivery?.baseBranch ? [['기준 브랜치', `${checkpoint.delivery.baseBranch} · ${checkpoint.delivery.baseSha?.slice(0, 8) || ''}`]] : []),
+        ...(checkpoint?.delivery?.commitSha ? [['전달 커밋', checkpoint.delivery.commitSha.slice(0, 12)]] : []),
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
       ];
@@ -1884,6 +1888,19 @@
           <div class="run-summary-failure">
             <div class="run-summary-failure-title">수동 복구 필요</div>
             <div class="run-summary-failure-reason">${escapeHtml(checkpoint.recoveryReason || '중단된 작업을 자동으로 재개할 수 없습니다.')}<br>작업 경로의 변경 사항은 보존되어 있습니다. 확인 후 새 실행 또는 수동 복구를 진행하세요.</div>
+          </div>
+        ` : ''}
+        ${checkpoint?.delivery?.prUrl ? `
+          <div class="run-summary-failure">
+            <div class="run-summary-failure-title">Pull request</div>
+            <div class="run-summary-failure-reason"><a href="${escapeHtml(checkpoint.delivery.prUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(checkpoint.delivery.prUrl)}</a></div>
+          </div>
+        ` : ''}
+        ${checkpoint?.state === 'DELIVERY_PENDING' ? `
+          <div class="run-summary-failure">
+            <div class="run-summary-failure-title">PR 전달 재시도 필요</div>
+            <div class="run-summary-failure-reason">${escapeHtml(checkpoint.delivery?.reason || '검증된 변경은 worktree에 보존되어 있습니다.')}</div>
+            <button class="refresh" type="button" onclick="retryPullRequestDelivery('${run.id}')">PR 전달 재시도</button>
           </div>
         ` : ''}
         ${steps}
@@ -2252,6 +2269,23 @@
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    async function retryPullRequestDelivery(runId) {
+      const response = await fetch(`/api/runs/${runId}/delivery/retry`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || 'PR 전달 재시작에 실패했습니다.');
+        return;
+      }
+      await showRunDetail(runId);
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const checkpoint = await fetch(`/api/runs/${runId}/checkpoint`).then(r => r.json()).catch(() => null);
+        if (checkpoint?.state !== 'RUNNING') break;
+      }
+      await loadStats();
+      await showRunDetail(runId);
+    }
+
     let projectList = [];
     let projectActiveIdx = -1;
 
@@ -2362,7 +2396,8 @@
     loadRequestDraft();
     bindRequestDraftPersistence();
     loadProjects();
-    loadStats();
+    const requestedRunId = new URLSearchParams(window.location.search).get('run');
+    loadStats().then(() => { if (requestedRunId) showRunDetail(requestedRunId); });
     toggleAutoClarifyRow();
     document.addEventListener('keydown', (event) => {
       const modal = document.getElementById('claude-auth-modal');

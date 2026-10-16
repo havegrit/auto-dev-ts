@@ -10,7 +10,7 @@ import { getAgent, listAgents } from '../agents/index.js';
 import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { MAX_ROUTE_LIMIT, runSpec, STEP_ORDER, type Step } from '../workflows/spec.js';
-import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan } from '../workflows/spec-session.js';
+import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan, retryPullRequestDelivery } from '../workflows/spec-session.js';
 import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
@@ -20,6 +20,7 @@ import { readWorkflowEvidence } from '../lib/evidence.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
+import { loadProjectConfig } from '../lib/project-config.js';
 import { getOrCreateEmitter } from '../lib/run-events.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
@@ -299,6 +300,19 @@ export function createRoutes(): Hono {
     try {
       const steps = body.steps ? new Set(body.steps) : undefined;
       const cwd = resolveProjectDir(body.project ?? body.cwd, body.content);
+      const projectConfig = loadProjectConfig(cwd);
+      if (projectConfig?.delivery?.mode === 'pull-request') {
+        const { runId } = startSpecSession(body.content, {
+          project: body.project,
+          cwd,
+          steps,
+          iterations: body.iterations,
+          triggerSource: 'api',
+          triggerDetail: 'api:spec',
+          deliveryIntent: body.deliveryIntent,
+        });
+        return c.json({ runId, type: 'workflow', status: 'RUNNING' }, 202);
+      }
       const result = await runSpec(body.content, { steps, iterations: body.iterations, triggerSource: 'api', cwd, deliveryIntent: body.deliveryIntent });
       return c.json(result);
     } catch (err) {
@@ -490,6 +504,16 @@ export function createRoutes(): Hono {
   app.get('/api/runs/:id/checkpoint', (c) => {
     const checkpoint = getWorkflowCheckpoint(c.req.param('id'));
     return c.json(checkpoint ? checkpointSummary(checkpoint) : null);
+  });
+
+  app.post('/api/runs/:id/delivery/retry', (c) => {
+    try {
+      const retry = retryPullRequestDelivery(c.req.param('id'));
+      void retry.done;
+      return c.json({ status: 'RUNNING' }, 202);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+    }
   });
 
   app.get('/api/runs/:id/evidence', async (c) => {

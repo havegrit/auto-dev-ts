@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   claimExpiredWorkflowCheckpoint,
+  claimWorkflowDeliveryRetry,
   createWorkflowCheckpoint,
   finishWorkflowCheckpoint,
   getWorkflowCheckpoint,
@@ -75,6 +76,23 @@ describe('workflow checkpoints', () => {
     });
     expect(database.prepare('SELECT status, output, duration_ms FROM agent_run WHERE id = ?').get('run-1')).toEqual({
       status: 'DONE', output: 'verdict: SHIP', duration_ms: 42,
+    });
+  });
+
+  it('claims a pending PR delivery for one retry without changing the verified parent result', () => {
+    const database = createDb();
+    const created = createWorkflowCheckpoint('run-1', { deliveryState: { status: 'DELIVERY_PENDING' } }, 'owner-a', database);
+    finishWorkflowCheckpoint('run-1', { deliveryState: { status: 'DELIVERY_PENDING' } }, 'DELIVERY_PENDING', 'owner-a', created.revision, {
+      status: 'DONE', output: '[DELIVERY: PENDING]', durationMs: 42,
+    }, database);
+
+    const pending = getWorkflowCheckpoint('run-1', database)!;
+    const claimed = claimWorkflowDeliveryRetry('run-1', 'retry-owner', pending.revision, database);
+
+    expect(claimed).toMatchObject({ state: 'RUNNING', revision: pending.revision + 1, leaseOwner: 'retry-owner' });
+    expect(claimWorkflowDeliveryRetry('run-1', 'other-owner', pending.revision, database)).toBeUndefined();
+    expect(database.prepare('SELECT status, output FROM agent_run WHERE id = ?').get('run-1')).toEqual({
+      status: 'DONE', output: '[DELIVERY: PENDING]',
     });
   });
 });

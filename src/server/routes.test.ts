@@ -50,6 +50,7 @@ vi.mock('../workflows/spec-session.js', () => ({
   resumeLastSpecStep: vi.fn(),
   pendingClarification: vi.fn(),
   specRunPlan: vi.fn(),
+  retryPullRequestDelivery: vi.fn(() => ({ done: Promise.resolve() })),
 }));
 vi.mock('../store/runs.js', () => ({
   getRun: vi.fn(() => ({ status: 'RUNNING' })),
@@ -76,6 +77,8 @@ vi.mock('../lib/model-config.js', () => ({
   modelConfig: { stats: vi.fn(() => ({})), set: vi.fn() },
   loadModelsFromCli: vi.fn(async () => {}),
 }));
+const { loadProjectConfig } = vi.hoisted(() => ({ loadProjectConfig: vi.fn(() => undefined as any) }));
+vi.mock('../lib/project-config.js', () => ({ loadProjectConfig }));
 vi.mock('../lib/claude-auth.js', () => ({
   claudeAuth: {
     status: vi.fn(async () => ({ available: true, loggedIn: false, phase: 'idle' })),
@@ -109,6 +112,7 @@ import { resolveProjectDir } from '../lib/workspace.js';
 import { getAgent } from '../agents/index.js';
 import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, resumeLastSpecStep } from '../workflows/spec-session.js';
+import { retryPullRequestDelivery } from '../workflows/spec-session.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
 import { getRun, getRunWithSessionTotals, updateRun } from '../store/runs.js';
 import { getReviewFindingCandidates } from '../store/review-findings.js';
@@ -128,6 +132,27 @@ describe('health', () => {
   });
 });
 
+describe('PR-mode spec entrypoint', () => {
+  it('uses a checkpointed background session for POST /api/specs', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, delivery: { mode: 'pull-request' } } as any);
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'pr-run', done: Promise.resolve() });
+    const app = createRoutes();
+
+    const response = await app.fetch(new Request('http://localhost/api/specs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'implement PR mode', project: 'demo' }),
+    }));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ runId: 'pr-run', type: 'workflow', status: 'RUNNING' });
+    expect(startSpecSession).toHaveBeenCalledWith('implement PR mode', expect.objectContaining({
+      cwd: 'demo', triggerSource: 'api',
+    }));
+    expect(runSpec).not.toHaveBeenCalled();
+  });
+});
+
 describe('workflow checkpoint detail', () => {
   it('exposes the checkpoint state for a run', async () => {
     getWorkflowCheckpoint.mockReturnValueOnce({ state: 'RECOVERY_REQUIRED', revision: 4 });
@@ -136,6 +161,14 @@ describe('workflow checkpoint detail', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ state: 'RECOVERY_REQUIRED', revision: 4 });
+  });
+
+  it('starts a pending PR delivery retry', async () => {
+    const app = createRoutes();
+    const res = await app.fetch(new Request('http://localhost/api/runs/run-1/delivery/retry', { method: 'POST' }));
+    expect(res.status).toBe(202);
+    await expect(res.json()).resolves.toEqual({ status: 'RUNNING' });
+    expect(retryPullRequestDelivery).toHaveBeenCalledWith('run-1');
   });
 });
 

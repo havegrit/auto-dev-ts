@@ -662,9 +662,9 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 ### 6.2.6 재시작 체크포인트
 
 - 대시보드 spec은 대상 프로젝트가 `.auto-dev/project.json`에
-  `workflow.resumeOnRestart: true`를 명시한 경우에만 `workflow_checkpoint`를 만든다.
+  `workflow.resumeOnRestart: true`를 명시한 local run에서 `workflow_checkpoint`를 만든다.
   설정이 없거나 false이면 기존 startup `server_restart` 처리와 실행 경로를 유지한다.
-- opt-in run은 시작 시 깨끗한 Git 작업 트리를 요구한다. 각 에이전트 호출 전에
+- local checkpoint run은 시작 시 깨끗한 Git 작업 트리를 요구한다. 각 에이전트 호출 전에
   cursor/라우팅 상태, 입력, 파일 해시, Git HEAD를 저장하고 lease heartbeat를 갱신한다.
   완료 child 결과는 재사용한다. 중단된 에이전트는 `AGENT_SPECS`의 도구가 `Read`만
   허용할 때 파일 해시와 HEAD가 그대로인 경우에 한해 같은 입력으로 재실행한다. `Write`나
@@ -672,8 +672,31 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - 동적 팀, verify, runtime, 성공 후 전달 작업은 현재 복구 시 재생하지 않는다. 이 작업 중
   lease가 만료되면 `RECOVERY_REQUIRED`로 부모 run을 실패 처리하고 작업 파일을 보존한다.
   대시보드 상세 화면과 `GET /api/runs/:id/checkpoint`가 상태 및 사유를 제공한다.
-- 현재 구현은 원본 checkout에서 실행하므로 시작 시점의 깨끗한 작업 트리 이후에도
-  에이전트가 만든 변경은 유지된다. run 전용 worktree와 원본 checkout 통합은 지원하지 않는다.
+- local checkpoint mode는 원본 checkout에서 실행하므로 에이전트가 만든 변경을 그곳에 보존한다.
+
+### 6.2.7 GitHub PR 전달
+
+- 대상 프로젝트가 `.auto-dev/project.json`에 `delivery.mode: "pull-request"`를 설정하면
+  trigger 종류와 무관하게 workflow checkpoint를 사용한다. `workflow.resumeOnRestart`도
+  별도로 켤 필요가 없다. 로컬 변경을 가져오지 않고 GitHub `origin`의 base SHA에서
+  `data/worktrees/<workflowRunId>`와 `autodev/<runId 앞 8자리>` 브랜치를 만든다.
+- 에이전트 시작 전에 HTTPS `AUTO_DEV_PUBLIC_BASE_URL`, 외부 접근 제어 확인값,
+  `gh auth status`, GitHub 저장소와 base ref를 확인한다. 외부 접근 제어 환경변수는
+  운영자 확인값일 뿐 서버에 인증을 추가하지 않는다. reverse proxy가 대시보드와 모든
+  API를 보호해야 한다. PR 모드는 planner/scaffold/test/review 단계를 생략할 수 없다.
+- 성공 후 docs audit을 수행한 다음 오케스트레이터가 worktree 변경을 commit하고 일반
+  `git push`를 호출한다. force push는 사용하지 않는다. 동일 branch/base PR은 head SHA까지
+  확인해 재사용하며, 일치하지 않는 원격 상태는 자동 수정하지 않는다. PR 본문은 요청의
+  첫 줄과 verify/runtime 상태, review 요약, base/head SHA, `/?run=<id>` 링크만 담는다.
+  토큰, 전체 로그와 원시 증거 본문은 포함하지 않는다.
+- commit/push/PR 중 재시작하면 branch, commit marker, remote SHA, 기존 PR을 조회해 완료된
+  작업을 재실행하지 않는다. 문서 audit처럼 쓰기 권한이 있는 agent 실행 중 중단되면
+  `RECOVERY_REQUIRED`로 보존한다. 외부 전달 실패는 코드 결과를 실패로 바꾸지 않고
+  `DELIVERY_PENDING`에 남기며 `POST /api/runs/:id/delivery/retry`로 다시 시도할 수 있다.
+- checkpoint summary와 대시보드는 branch, base/commit SHA, PR URL, 실패 사유를 노출한다.
+  PR의 `/?run=<workflowRunId>` 링크는 대시보드에서 해당 실행을 바로 연다.
+- issue tracker의 `processIssue`는 현재 PR 모드를 지원하지 않으며, bug 재현 agent가
+  시작되기 전에 명확히 거부한다. dashboard, CLI, `POST /api/specs` 진입은 지원한다.
 
 ### 6.3 Java 버전 대비 미구현 항목
 
@@ -971,6 +994,11 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 
 - 인증 없음. 기본 바인딩 `127.0.0.1` 으로만 보호
 - `AUTO_DEV_BIND_ADDR=0.0.0.0` 외부 노출 시 별도 인증 추가 필요
+- PR 전달의 `AUTO_DEV_PUBLIC_BASE_URL` 및 `AUTO_DEV_PUBLIC_ACCESS_CONTROL`은
+  외부 HTTPS reverse proxy의 설정을 운영자가 확인했다는 표시다. 이 값을 설정해도
+  auto-dev에 인증은 추가되지 않으므로 proxy가 정적 대시보드와 모든 `/api/*` 경로를
+  함께 보호하도록 배포해야 한다. 애플리케이션은 값의 형식만 확인하며 proxy 정책을
+  검증하지 못한다.
 - OpenClaw integration route는 서버 bind와 요청 host가 모두 loopback이어야 하며,
   선택적으로 `AUTO_DEV_OPENCLAW_API_TOKEN` Bearer 검증을 적용한다.
 
@@ -993,6 +1021,8 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
+| `AUTO_DEV_PUBLIC_BASE_URL` | 미설정 | PR 본문에 쓸 HTTPS 대시보드 URL |
+| `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | 미설정 | 외부 proxy 접근 제어 운영자 확인값 (`authenticated` / `network-restricted`) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 에이전트 실행 횟수 한도 (비우면 무제한) |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 종료 상태 알림 활성 |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림 전송 Telegram 계정 |
@@ -1024,10 +1054,13 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `roleBoundary.testGlobs` | test 단계가 수정해도 되는 경로. 비면 역할 경계 검사 생략 |
 | | `roleBoundary.ignoreGlobs` | 오탐 제외 경로 |
 | | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
+| | `delivery.mode` | `local` (기본) 또는 `pull-request`; PR은 자동 checkpoint/worktree 사용 |
+| | `delivery.baseBranch` | PR base branch. 생략하면 GitHub 저장소 기본 브랜치 |
 
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
 `runtime` 이 있으면 실제 동작 검증 게이트도 활성화된다 (§6.2.2).
+`delivery.mode: "pull-request"`는 GitHub 인증 및 외부 접근 제어 확인을 요구한다 (§6.2.7).
 
 프로젝트 지식은 별도 `<projectDir>/.auto-dev/feature-map.md` 에 둔다. 에이전트별 주입
 범위와 크기 제한은 §5.0.1 을 따른다.
@@ -1123,6 +1156,7 @@ auto-dev-ts/
 │   │   ├── run-events.ts             # SSE 이벤트 emitter (실행별)
 │   │   ├── workspace.ts              # 프로젝트명 → cwd 해석 (경로 탈출 차단)
 │   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2)
+│   │   ├── pr-delivery.ts            # run 전용 PR worktree와 idempotent 전달 (§6.2.7)
 │   │   ├── evidence.ts               # workflow runtime 증거 파일 읽기·쓰기 (§6.2.2)
 │   │   ├── verify.ts                 # 검증 명령 실행 + 프로세스 그룹 정리 (§6.2.1)
 │   │   ├── role-boundary.ts          # test 단계 역할 경계 사후 검사 (§6.2.1)

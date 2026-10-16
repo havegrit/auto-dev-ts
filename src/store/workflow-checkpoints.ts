@@ -52,6 +52,15 @@ export interface WorkflowCheckpointSummary {
   cursor?: number;
   routeCount?: number;
   recoveryReason?: string;
+  delivery?: {
+    status?: string;
+    branch?: string;
+    baseBranch?: string;
+    baseSha?: string;
+    commitSha?: string;
+    prUrl?: string;
+    reason?: string;
+  };
   updatedAt: string;
 }
 
@@ -239,8 +248,41 @@ export function claimExpiredWorkflowCheckpoint(
   return parseRecoveryRow(row);
 }
 
+/** DELIVERY_PENDING PR 전달을 사용자 재시도 요청으로 원자적으로 claim한다. */
+export function claimWorkflowDeliveryRetry(
+  workflowRunId: string,
+  leaseOwner: string,
+  expectedRevision: number,
+  database: DatabaseType = appDb,
+  now = new Date(),
+): WorkflowCheckpoint | undefined {
+  const timestamp = now.toISOString();
+  const leaseExpiresAt = new Date(now.getTime() + WORKFLOW_CHECKPOINT_LEASE_MS).toISOString();
+  const result = database.prepare(`
+    UPDATE workflow_checkpoint
+    SET state = 'RUNNING', revision = revision + 1, lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
+    WHERE workflow_run_id = ? AND state = 'DELIVERY_PENDING' AND revision = ?
+  `).run(leaseOwner, leaseExpiresAt, timestamp, timestamp, workflowRunId, expectedRevision);
+  if (result.changes !== 1) return undefined;
+  const row = database.prepare('SELECT * FROM workflow_checkpoint WHERE workflow_run_id = ?').get(workflowRunId) as WorkflowCheckpointRow;
+  return parseRow(row);
+}
+
 export function checkpointSummary(checkpoint: WorkflowCheckpoint): WorkflowCheckpointSummary {
   const snapshot = checkpoint.snapshot;
+  const sessionState = snapshot['sessionState'] && typeof snapshot['sessionState'] === 'object'
+    ? snapshot['sessionState'] as Record<string, unknown>
+    : undefined;
+  const deliveryContext = sessionState?.['deliveryContext'] && typeof sessionState['deliveryContext'] === 'object'
+    ? sessionState['deliveryContext'] as Record<string, unknown>
+    : snapshot['deliveryContext'] && typeof snapshot['deliveryContext'] === 'object'
+      ? snapshot['deliveryContext'] as Record<string, unknown>
+      : undefined;
+  const deliveryState = snapshot['deliveryState'] && typeof snapshot['deliveryState'] === 'object'
+    ? snapshot['deliveryState'] as Record<string, unknown>
+    : deliveryContext?.['state'] && typeof deliveryContext['state'] === 'object'
+      ? deliveryContext['state'] as Record<string, unknown>
+      : undefined;
   return {
     state: checkpoint.state,
     revision: checkpoint.revision,
@@ -249,6 +291,17 @@ export function checkpointSummary(checkpoint: WorkflowCheckpoint): WorkflowCheck
     ...(typeof snapshot['cursor'] === 'number' ? { cursor: snapshot['cursor'] } : {}),
     ...(typeof snapshot['routeCount'] === 'number' ? { routeCount: snapshot['routeCount'] } : {}),
     ...(typeof snapshot['recoveryReason'] === 'string' ? { recoveryReason: snapshot['recoveryReason'] } : {}),
+    ...(deliveryContext || deliveryState ? {
+      delivery: {
+        ...(typeof deliveryState?.['status'] === 'string' ? { status: deliveryState['status'] } : {}),
+        ...(typeof deliveryContext?.['branch'] === 'string' ? { branch: deliveryContext['branch'] } : {}),
+        ...(typeof deliveryContext?.['baseBranch'] === 'string' ? { baseBranch: deliveryContext['baseBranch'] } : {}),
+        ...(typeof deliveryContext?.['baseSha'] === 'string' ? { baseSha: deliveryContext['baseSha'] } : {}),
+        ...(typeof deliveryState?.['commitSha'] === 'string' ? { commitSha: deliveryState['commitSha'] } : {}),
+        ...(typeof deliveryState?.['prUrl'] === 'string' ? { prUrl: deliveryState['prUrl'] } : {}),
+        ...(typeof deliveryState?.['reason'] === 'string' ? { reason: deliveryState['reason'] } : {}),
+      },
+    } : {}),
     updatedAt: checkpoint.updatedAt,
   };
 }

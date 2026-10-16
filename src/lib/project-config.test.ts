@@ -84,6 +84,20 @@ describe('loadProjectConfig', () => {
     expect(() => loadProjectConfig(dir)).toThrow(/workflow\.resumeOnRestart must be a boolean/);
   });
 
+  it('parses PR delivery and optional base branch', () => {
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', baseBranch: 'release/next' } }));
+    expect(loadProjectConfig(dir)?.delivery).toEqual({ mode: 'pull-request', baseBranch: 'release/next' });
+  });
+
+  it('defaults an omitted delivery mode to local and rejects unsupported modes', () => {
+    writeConfig(JSON.stringify({ version: 1, delivery: {} }));
+    expect(loadProjectConfig(dir)?.delivery).toEqual({ mode: 'local' });
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'merge' } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/delivery\.mode must be local or pull-request/);
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: null } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/delivery\.mode must be local or pull-request/);
+  });
+
   it('applies the runtime healthcheck timeout default and ignores future top-level fields', () => {
     writeConfig(JSON.stringify({
       version: 1,

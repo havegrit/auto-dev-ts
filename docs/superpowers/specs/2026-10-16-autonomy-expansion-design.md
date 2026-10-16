@@ -1,7 +1,7 @@
 # 자율성 확장 설계
 
 - 날짜: 2026-10-16
-- 상태: 설계 완료 — Phase 7A 구현 진행 중
+- 상태: 설계 완료 — Phase 7A/7B 구현 완료, Phase 7C 이후 미구현
 - 범위: 재시작 내성, PR 전달, 제한적 자동 머지
 
 ## 요약
@@ -215,6 +215,23 @@ verify/runtime, 성공 후 전달 작업 중단이나 상태 불일치는 `RECOV
 변경 파일을 보존한다. 실행 도중 작성한 변경은 원본 checkout에 남으므로 수동 검토가 필요할
 수 있다. run 전용 worktree는 별도 범위에서 완료 기준과 함께 추가한다.
 
+### Phase 7B 구현 범위 조정 (2026-10-16)
+
+- `delivery.mode: "pull-request"`는 dashboard/API/CLI spec을 체크포인트 세션으로 시작하고,
+  GitHub origin의 base SHA에서 run 전용 worktree와 `autodev/<id8>` branch를 만든다.
+  issue tracker 진입은 bug 재현 단계가 아직 worktree를 공유하지 않으므로 에이전트 시작 전에
+  명확히 거부한다.
+- 성공한 review 이후 docs audit, 오케스트레이터 commit, 일반 push, 기존 PR 조회/생성까지
+  연결한다. 재시작 뒤 commit marker, remote SHA, head/base PR을 확인해 중복 생성이나 force
+  update를 막는다. 전달 실패는 코드 성공과 분리해 `DELIVERY_PENDING`에 저장하고 dashboard에서
+  재시도한다.
+- PR 본문에는 짧은 요청 요약, 검증·리뷰 상태, base/head SHA와 dashboard deep link만 넣는다.
+  외부 접근 제어는 `AUTO_DEV_PUBLIC_ACCESS_CONTROL` 운영자 확인값이다. 앱은 인증을 추가하거나
+  reverse proxy 설정을 검사하지 않으므로, 모든 dashboard/API 경로를 보호하는 HTTPS proxy가
+  실제로 구성돼야 한다.
+- 구현 테스트는 git/gh 호출을 모두 mock하며 실제 원격 push/PR은 만들지 않는다. auto-merge,
+  eval/live streak, staging 실저장소 쓰기는 다음 구현 범위다.
+
 ## 구현 승인 전에 확정할 사항
 
 1. Eval 20회/10 case, live PR 10개/14일이라는 제안 최소 기준을 그대로 채택할지.
@@ -222,4 +239,4 @@ verify/runtime, 성공 후 전달 작업 중단이나 상태 불일치는 `RECOV
 3. auto-dev가 PR 기반 기능을 지원할 첫 GitHub 저장소/조직 범위와 branch protection 최소 설정.
 4. 자동 머지 운영 중 live 성공·revert·hotfix를 수집할 GitHub 조회 주기와 재인증 절차.
 
-Phase 7의 PR 전달과 자동 머지는 별도 단계에서 진행한다. 이 Phase 7A 범위는 설계 조정에 따라 안전한 순차 spec 복구에 한정한다.
+Phase 7C/7D의 자동 머지 자격 집계와 실행은 별도 승인 전까지 구현하지 않는다.

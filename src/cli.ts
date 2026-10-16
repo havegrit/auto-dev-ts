@@ -8,6 +8,9 @@ import { cicd } from './agents/cicd.js';
 import { planner } from './agents/planner.js';
 import { clarifier } from './agents/clarifier.js';
 import { runSpec } from './workflows/spec.js';
+import { startSpecSession } from './workflows/spec-session.js';
+import { loadProjectConfig } from './lib/project-config.js';
+import { getRun } from './store/runs.js';
 import { listAgents } from './agents/index.js';
 import { costGuard } from './lib/cost-guard.js';
 import { getStats } from './store/runs.js';
@@ -82,6 +85,20 @@ program.command('spec <file>')
     const steps = options.steps ? new Set(options.steps.split(',').map(s => s.trim())) : undefined;
     const iterations = Number(options.iterations);
     const cwd = resolveProjectDir(options.project, content);
+    const projectConfig = loadProjectConfig(cwd);
+    if (projectConfig?.delivery?.mode === 'pull-request') {
+      const session = startSpecSession(content, {
+        project: options.project,
+        cwd,
+        steps,
+        iterations,
+        triggerSource: 'cli',
+        triggerDetail: 'cli:spec',
+      });
+      await session.done;
+      console.log(JSON.stringify(getRun(session.runId), null, 2));
+      return;
+    }
     const result = await runSpec(content, { steps, iterations, triggerSource: 'cli', cwd });
     console.log(JSON.stringify(result, null, 2));
   });

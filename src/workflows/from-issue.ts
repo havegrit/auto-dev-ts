@@ -240,6 +240,11 @@ export async function processIssue(key: string): Promise<FromIssueResult> {
     throw new Error(`이슈 ${key}는 이미 종료된 상태입니다 (${issue.status})`);
   }
 
+  const projectConfig = loadProjectConfig(defaultWorkspaceDir());
+  if (projectConfig?.delivery?.mode === 'pull-request') {
+    throw new Error('Issue-triggered workflows do not support PR delivery yet. Start the spec from the dashboard or CLI.');
+  }
+
   const specContent = buildSpecFromIssue(issue);
   const workflowRunId = randomUUID();
   const bugMode = isBugIssueType(issue.type);

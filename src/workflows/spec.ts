@@ -20,6 +20,7 @@ import { runRuntimeVerification } from './runtime-gate.js';
 import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
 import { emitRunEvent } from '../lib/run-events.js';
 import { withAgentModelOverrides } from '../lib/model-config.js';
+import { completePullRequestDelivery, type PullRequestDeliveryContext, type PullRequestDeliveryState } from '../lib/pr-delivery.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
@@ -32,6 +33,12 @@ export interface SpecOptions {
   /** clarification 답변 전후 workflow를 묶는 spec 세션 ID. */
   specSessionId?: string;
   cwd?: string;
+  /** PR worktree 설정을 원본 프로젝트에서 읽는다. */
+  projectConfigDir?: string;
+  /** 사전 검사에서 만든 run 전용 PR worktree. */
+  deliveryContext?: PullRequestDeliveryContext;
+  /** 전달 단계 변경을 workflow 체크포인트에 반영한다. */
+  onDeliveryState?: (stage: string, state: PullRequestDeliveryState) => void | Promise<void>;
   /** skip 모드: clarifier 질문을 AI 추천 답안으로 자동 답변해 멈추지 않고 진행한다. */
   autoClarify?: boolean;
   /** autoClarify 자동 답변 최대 라운드. 0 또는 미지정이면 무제한. */
@@ -98,6 +105,7 @@ export interface SpecResult {
   };
   /** planner가 생성한 동적 팀 실행 결과. */
   team?: TeamExecutionResult;
+  delivery?: PullRequestDeliveryState;
 }
 
 export interface PersistedSpecCheckpointState {
@@ -237,12 +245,23 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   let recoveredResult = opts.checkpoint?.recoveredResult;
   let resumeActionPending = Boolean(checkpointState?.activeAction);
   const results: Record<string, StepResult> = { ...(checkpointState?.results ?? {}) };
+  let deliveryState: PullRequestDeliveryState | undefined = opts.deliveryContext?.state;
 
   // 대상 프로젝트가 선언한 검증 방법. 설정 파일이 없으면 undefined 이고,
   // 그때 workflow 는 Phase 1 이전과 완전히 동일하게 동작한다 (경고 이벤트만 추가).
   // 설정이 깨져 있으면 loadProjectConfig 가 던져서 run 을 실패시킨다.
   const projectDir = opts.cwd ?? defaultWorkspaceDir();
-  const projectConfig = loadProjectConfig(projectDir);
+  const projectConfig = loadProjectConfig(opts.projectConfigDir ?? projectDir);
+  if (projectConfig?.delivery?.mode === 'pull-request' && !opts.deliveryContext) {
+    throw new Error('delivery.mode=pull-request requires a checkpointed PR spec session. Start it from the auto-dev dashboard.');
+  }
+  if (opts.deliveryContext) {
+    const missingSteps = ['planner', 'scaffold', 'test', 'review'].filter(step => !stepsFilter.has(step));
+    if (missingSteps.length) throw new Error(`PR delivery requires the full verified workflow; enabled steps are missing: ${missingSteps.join(', ')}.`);
+  }
+  if (opts.deliveryContext && !opts.checkpoint) {
+    throw new Error('PR delivery requires a workflow checkpoint. Start it from the auto-dev dashboard.');
+  }
   const findingProject = projectFindingKey(projectDir);
   const boundaryConfig = roleBoundaryEnabled(projectConfig) ? projectConfig.roleBoundary : undefined;
 
@@ -397,7 +416,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     });
   };
   const commitPostSuccess = async (): Promise<void> => {
-    await checkpointActionIntent('delivery', 'post-success', clarifiedSpec);
+    await checkpointActionIntent('delivery', opts.deliveryContext ? 'docs-audit' : 'post-success', clarifiedSpec);
     const postSuccess = await commitSuccessfulSpec({
       specContent: baseSpec,
       clarifiedSpec,
@@ -410,10 +429,51 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         triggerDetail: 'post-success',
         signal: undefined,
       },
+      ...(opts.deliveryContext ? {
+        commit: false,
+        onStage: async (stage: 'docs-audit' | 'local-commit') => {
+          await checkpointActionIntent('delivery', stage, clarifiedSpec);
+        },
+      } : {}),
     });
     if (postSuccess.failure) {
       log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+      if (opts.deliveryContext) {
+        deliveryState = { status: 'DELIVERY_PENDING', stage: 'docs-audit', reason: postSuccess.failure.reason };
+        await opts.onDeliveryState?.('docs-audit', deliveryState);
+      }
+      return;
     }
+    if (opts.deliveryContext) {
+      try {
+        deliveryState = await completePullRequestDelivery(opts.deliveryContext, {
+          requestSummary: baseSpec,
+          verifyCommand: projectConfig?.verify?.command,
+          verifyConfigured: Boolean(projectConfig?.verify),
+          verifyDurationMs: results[VERIFY_AGENT_NAME]?.durationMs,
+          verifySummary: runtimeEvidenceSummary.split(/\r?\n/)
+            .map(line => line.match(/^\s*-\s*([^:]+):\s*(PASS|FAIL|BLOCKED)/i))
+            .filter((match): match is RegExpMatchArray => Boolean(match))
+            .map(match => `${match[1].trim()}: ${match[2].toUpperCase()}`)
+            .join('; ') || 'No runtime checks configured.',
+          reviewSummary: 'Review verdict: SHIP. See workflow evidence for details.',
+        }, async (stage, state) => {
+          deliveryState = state;
+          await checkpointActionIntent('delivery', stage, JSON.stringify(state));
+          await opts.onDeliveryState?.(stage, state);
+        });
+      } catch (err) {
+        deliveryState = {
+          status: 'DELIVERY_PENDING',
+          stage: opts.deliveryContext.state?.stage ?? 'commit',
+          commitSha: opts.deliveryContext.state?.commitSha,
+          reason: err instanceof Error ? err.message : String(err),
+        };
+        await opts.onDeliveryState?.(deliveryState.stage ?? 'commit', deliveryState);
+        log.error({ reason: deliveryState.reason }, 'Pull request delivery is pending');
+      }
+    }
+    if (opts.checkpoint) publishCheckpoint({ activeAction: undefined, activeStep: undefined, activeRunId: undefined, activeInput: undefined, actionStartedAt: undefined, beforeSnapshot: undefined, beforeHeadSha: undefined });
   };
   const routeSafetyCap = STEP_ORDER.length * (maxRoutes + 2);
   const safetyCap = autoClarify && !Number.isFinite(maxClarifyRounds)
@@ -763,6 +823,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           planOutput,
           routeCount,
           team,
+          delivery: deliveryState,
           failure: team.failed ? {
             step: team.tasks.find(task => task.status !== 'DONE')?.taskId ?? 'team',
             status: 'FAILED',
@@ -1076,6 +1137,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount,
     autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
     failure,
+    delivery: deliveryState,
   };
 }
 

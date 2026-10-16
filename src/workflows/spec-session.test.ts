@@ -6,6 +6,11 @@ const specInputs: string[] = [];
 const specOptions: any[] = [];
 let specResult: any;
 
+const { commitSuccessfulSpec } = vi.hoisted(() => ({
+  commitSuccessfulSpec: vi.fn(async () => ({ steps: {} })),
+}));
+vi.mock('./post-success-commit.js', () => ({ commitSuccessfulSpec }));
+
 vi.mock('./spec.js', () => ({
   STEP_ORDER: ['clarifier', 'planner', 'scaffold', 'test', 'review', 'cicd'],
   runSpec: vi.fn(async (input: string, opts: any) => {
@@ -61,6 +66,16 @@ vi.mock('fs', () => ({
 
 const { loadProjectConfig } = vi.hoisted(() => ({ loadProjectConfig: vi.fn(() => undefined as any) }));
 vi.mock('../lib/project-config.js', () => ({ loadProjectConfig }));
+const deliveryMocks = vi.hoisted(() => ({
+  preparePullRequestWorktree: vi.fn((_sourceDir: string, workflowRunId: string) => ({
+    workflowRunId, sourceDir: '/tmp/proj', worktreeDir: '/tmp/worktrees/pr-run', remote: 'origin',
+    repository: 'org/project', branch: 'autodev/pr-run', baseBranch: 'main', baseSha: 'head-sha',
+    publicBaseUrl: 'https://dashboard.example.test', accessControl: 'authenticated', state: { status: 'READY' },
+  })),
+  validatePullRequestDeliveryContext: vi.fn(),
+  completePullRequestDelivery: vi.fn(),
+}));
+vi.mock('../lib/pr-delivery.js', () => deliveryMocks);
 const workspaceMocks = vi.hoisted(() => ({
   snapshotWorkspace: vi.fn(async () => new Map<string, string>()),
   workspaceHeadSha: vi.fn(async () => 'head-sha' as string | undefined),
@@ -85,6 +100,7 @@ const checkpointMocks = vi.hoisted(() => ({
     ? { ...recoveryFixtures.claimed, leaseOwner, revision: revision + 1 }
     : undefined),
   getWorkflowCheckpoint: vi.fn(),
+  claimWorkflowDeliveryRetry: vi.fn(),
 }));
 vi.mock('../store/workflow-checkpoints.js', () => checkpointMocks);
 
@@ -109,6 +125,8 @@ beforeEach(() => {
   closeEmitter.mockClear();
   notifyOpenClawSpec.mockClear();
   loadProjectConfig.mockReturnValue(undefined);
+  deliveryMocks.preparePullRequestWorktree.mockClear();
+  deliveryMocks.validatePullRequestDeliveryContext.mockClear();
   checkpointMocks.createWorkflowCheckpoint.mockClear();
   checkpointMocks.finishWorkflowCheckpoint.mockClear();
   checkpointMocks.updateWorkflowCheckpoint.mockClear();
@@ -244,6 +262,57 @@ describe('startSpecSession (round 0)', () => {
       1,
       expect.objectContaining({ status: 'DONE', output: expect.stringContaining('SHIP') }),
     );
+  });
+
+  it('preflights PR delivery and starts the workflow inside a run-only worktree with an implied checkpoint', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, delivery: { mode: 'pull-request' } });
+    specResult = {
+      workflowRunId: 'x',
+      steps: { clarifier: { runId: 'c', durationMs: 5, status: 'DONE' } },
+      totalDurationMs: 5,
+      verdict: 'SHIP',
+      delivery: { status: 'DELIVERED', prUrl: 'https://github.com/org/project/pull/1' },
+    };
+
+    const { runId, done } = startSpecSession('PR 전달 기능', {
+      project: 'my-api', cwd: '/tmp/proj', triggerSource: 'dashboard',
+    });
+    await done;
+
+    expect(deliveryMocks.preparePullRequestWorktree).toHaveBeenCalledWith(
+      '/tmp/proj', runId, { mode: 'pull-request' }, process.env,
+    );
+    expect(stateStore.get(runId)).toMatchObject({
+      cwd: '/tmp/worktrees/pr-run', sourceCwd: '/tmp/proj',
+      deliveryContext: { workflowRunId: runId, dashboardRunId: runId },
+    });
+    expect(specOptions.at(-1)).toMatchObject({
+      cwd: '/tmp/worktrees/pr-run', projectConfigDir: '/tmp/proj',
+      deliveryContext: { repository: 'org/project' }, checkpoint: expect.any(Object),
+    });
+    expect(checkpointMocks.createWorkflowCheckpoint).toHaveBeenCalledWith(
+      runId,
+      expect.objectContaining({ deliveryContext: expect.objectContaining({ branch: 'autodev/pr-run' }) }),
+      'test-owner',
+    );
+    const finishCall = (checkpointMocks.finishWorkflowCheckpoint.mock.calls as unknown as any[][]).at(-1);
+    expect(finishCall?.[5].output).toContain('PR: https://github.com/org/project/pull/1');
+  });
+
+  it('keeps code success as DONE while exposing a failed external PR delivery as DELIVERY_PENDING', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, delivery: { mode: 'pull-request' } });
+    specResult = {
+      workflowRunId: 'x', steps: {}, totalDurationMs: 5, verdict: 'SHIP',
+      delivery: { status: 'DELIVERY_PENDING', stage: 'push', reason: 'network unavailable' },
+    };
+
+    const { runId, done } = startSpecSession('PR 전달 장애 처리', { cwd: '/tmp/proj', triggerSource: 'dashboard' });
+    await done;
+
+    const finishCall = (checkpointMocks.finishWorkflowCheckpoint.mock.calls as unknown as any[][]).at(-1);
+    expect(finishCall?.[2]).toBe('DELIVERY_PENDING');
+    expect(finishCall?.[5]).toMatchObject({ status: 'DONE', output: expect.stringContaining('network unavailable') });
+    expect(runId).toBe(finishCall?.[0]);
   });
 });
 
@@ -484,6 +553,37 @@ describe('workflow checkpoint recovery', () => {
     expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
       'recover-run', expect.objectContaining({ recoveryReason: expect.stringContaining('verify') }), 'RECOVERY_REQUIRED', 'test-owner', 5,
       expect.objectContaining({ status: 'FAILED', errorType: 'workflow_recovery_required' }),
+    );
+  });
+
+  it('reconciles an interrupted PR push/PR stage without restarting workflow agents', async () => {
+    const prConfig = { version: 1 as const, delivery: { mode: 'pull-request' as const } };
+    loadProjectConfig.mockReturnValue(prConfig);
+    const pending = checkpoint('delivery', { activeStep: 'push' }) as any;
+    const context = {
+      workflowRunId: 'recover-run', dashboardRunId: 'recover-run', sourceDir: '/tmp/proj',
+      worktreeDir: '/tmp/worktrees/recover-run', remote: 'origin', repository: 'org/project',
+      branch: 'autodev/recover', baseBranch: 'main', baseSha: 'head-sha',
+      publicBaseUrl: 'https://dashboard.example.test', accessControl: 'authenticated',
+    };
+    pending.snapshot.sessionState.deliveryContext = context;
+    pending.snapshot.deliveryContext = context;
+    pending.snapshot.deliveryState = { status: 'READY', stage: 'push', commitSha: 'commit-sha' };
+    pending.snapshot.configFingerprint = createHash('sha256').update(JSON.stringify(prConfig)).digest('hex');
+    recoveryFixtures.expired.push(pending);
+    recoveryFixtures.claimed = pending;
+    deliveryMocks.completePullRequestDelivery.mockResolvedValue({
+      status: 'DELIVERED', stage: 'pull-request', commitSha: 'commit-sha', prUrl: 'https://github.com/org/project/pull/1',
+    });
+
+    expect(await recoverExpiredWorkflowCheckpoints()).toBe(1);
+
+    expect(specInputs).toHaveLength(0);
+    expect(deliveryMocks.validatePullRequestDeliveryContext).toHaveBeenCalledWith(context, process.env);
+    expect(deliveryMocks.completePullRequestDelivery).toHaveBeenCalledOnce();
+    expect(checkpointMocks.finishWorkflowCheckpoint).toHaveBeenCalledWith(
+      'recover-run', expect.any(Object), 'SUCCEEDED', 'test-owner', 5,
+      expect.objectContaining({ status: 'DONE', output: expect.stringContaining('https://github.com/org/project/pull/1') }),
     );
   });
 });

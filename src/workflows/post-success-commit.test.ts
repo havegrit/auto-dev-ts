@@ -89,6 +89,25 @@ describe('commitSuccessfulSpec', () => {
     });
   });
 
+  it('supports a docs-only audit before orchestrator-owned PR delivery', async () => {
+    runNamedAgent.mockResolvedValueOnce(result('docs-run', 'Docs updated: README.md\n[DOCS: READY]'));
+    const stages: string[] = [];
+
+    const completed = await commitSuccessfulSpec({
+      specContent: '요청',
+      clarifiedSpec: '구현 범위',
+      runOpts,
+      commit: false,
+      onStage: stage => { stages.push(stage); },
+    });
+
+    expect(completed.failure).toBeUndefined();
+    expect(Object.keys(completed.steps)).toEqual([DOCS_CHECK_STEP]);
+    expect(runNamedAgent).toHaveBeenCalledTimes(1);
+    expect(loadGlobalSkill).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['docs-audit']);
+  });
+
   it('blocks before running agents when either required global skill is unavailable', async () => {
     loadGlobalSkill.mockImplementationOnce(() => { throw new Error('missing skill'); });
 

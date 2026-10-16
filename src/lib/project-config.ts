@@ -43,12 +43,20 @@ export interface WorkflowConfig {
   resumeOnRestart: boolean;
 }
 
+export interface DeliveryConfig {
+  /** 성공 결과를 로컬에 남기거나 GitHub PR로 전달한다. */
+  mode: 'local' | 'pull-request';
+  /** 생략 시 GitHub 저장소 기본 브랜치를 사용한다. */
+  baseBranch?: string;
+}
+
 export interface ProjectConfig {
   version: 1;
   verify?: VerifyConfig;
   roleBoundary?: RoleBoundaryConfig;
   runtime?: RuntimeConfig;
   workflow?: WorkflowConfig;
+  delivery?: DeliveryConfig;
 }
 
 export class ProjectConfigError extends Error {
@@ -153,6 +161,24 @@ function parseWorkflow(value: unknown, configPath: string): WorkflowConfig | und
   return { resumeOnRestart: workflow.resumeOnRestart === true };
 }
 
+function parseDelivery(value: unknown, configPath: string): DeliveryConfig | undefined {
+  if (value === undefined) return undefined;
+  const delivery = asRecord(value);
+  if (!delivery) throw new ProjectConfigError(configPath, 'delivery must be an object');
+  const mode = delivery.mode === undefined ? 'local' : delivery.mode;
+  if (mode !== 'local' && mode !== 'pull-request') {
+    throw new ProjectConfigError(configPath, 'delivery.mode must be local or pull-request');
+  }
+  if (delivery.baseBranch !== undefined &&
+    (typeof delivery.baseBranch !== 'string' || !delivery.baseBranch.trim())) {
+    throw new ProjectConfigError(configPath, 'delivery.baseBranch must be a non-empty string');
+  }
+  return {
+    mode,
+    ...(typeof delivery.baseBranch === 'string' ? { baseBranch: delivery.baseBranch.trim() } : {}),
+  };
+}
+
 /**
  * `<projectDir>/.auto-dev/project.json` 을 읽어 검증한다.
  *
@@ -188,6 +214,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | undefined
     roleBoundary: parseRoleBoundary(root.roleBoundary, configPath),
     ...(root.runtime === undefined ? {} : { runtime: parseRuntime(root.runtime, configPath) }),
     ...(root.workflow === undefined ? {} : { workflow: parseWorkflow(root.workflow, configPath) }),
+    ...(root.delivery === undefined ? {} : { delivery: parseDelivery(root.delivery, configPath) }),
   };
 }
 
