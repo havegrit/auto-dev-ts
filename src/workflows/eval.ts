@@ -5,6 +5,8 @@ import { basename, join, resolve } from 'node:path';
 import { AGENT_ORDER } from '../agents/specs.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
+import { autoMergePolicyFingerprint, type AutoMergeRiskCategory } from '../lib/auto-merge-policy.js';
+import { loadProjectConfig } from '../lib/project-config.js';
 import { runVerify, verifyPassed, type VerifyOutcome } from '../lib/verify.js';
 import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
 import { runSpec, type SpecResult } from './spec.js';
@@ -14,6 +16,8 @@ export type EvalExpectedResult = 'SHIP' | 'CLARIFICATION';
 export interface EvalCaseMeta {
   tags?: string[];
   expectedResult: EvalExpectedResult | 'NEEDS-CLARIFICATION';
+  /** 신뢰 streak에 포함할 저위험 eval. 임의 태그가 아닌 저장소 관리 meta에서만 읽는다. */
+  autoMergeCategory?: AutoMergeRiskCategory;
   timeoutMs?: number;
   /** 버그 fixture의 수정 전 재현 명령. 0이 아닌 종료 코드를 기대한다. */
   reproCommand?: string;
@@ -29,6 +33,8 @@ export interface EvalCheckResult {
 export interface EvalCaseResult {
   caseId: string;
   tags: string[];
+  autoMergeCategory?: AutoMergeRiskCategory;
+  policyFingerprint?: string;
   model: string;
   agentModels?: Record<string, string>;
   pass: boolean;
@@ -45,7 +51,7 @@ export interface EvalCaseResult {
 }
 
 export interface EvalArtifact {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   startedAt: string;
   finishedAt: string;
   baselineFile?: string;
@@ -116,6 +122,10 @@ async function loadEvalCase(casesDir: string, id: string): Promise<LoadedEvalCas
   if (meta.tags !== undefined && (!Array.isArray(meta.tags) || meta.tags.some((tag) => typeof tag !== 'string'))) {
     throw new Error(`Eval case ${id} tags must be an array of strings`);
   }
+  if (meta.autoMergeCategory !== undefined &&
+    meta.autoMergeCategory !== 'docs' && meta.autoMergeCategory !== 'dependency-patch') {
+    throw new Error(`Eval case ${id} autoMergeCategory must be docs or dependency-patch`);
+  }
   const fixtureDir = join(dir, 'fixture');
   const checksPath = join(dir, 'checks.sh');
   const checksStat = await stat(checksPath).catch(() => undefined);
@@ -185,6 +195,7 @@ async function runCase(
   const base: EvalCaseResult = {
     caseId: testCase.id,
     tags: testCase.meta.tags ?? [],
+    autoMergeCategory: testCase.meta.autoMergeCategory,
     model,
     agentModels: overrides,
     pass: false,
@@ -216,6 +227,12 @@ async function runCase(
   try {
     if (testCase.fixtureDir) await cp(testCase.fixtureDir, projectDir, { recursive: true, force: true });
     await cp(testCase.checksPath, join(projectDir, 'checks.sh'));
+    const projectConfig = loadProjectConfig(projectDir);
+    const effectiveModels = { ...modelConfig.getAgentModels(), ...(overrides ?? {}) };
+    base.policyFingerprint = autoMergePolicyFingerprint(projectConfig, effectiveModels, {
+      effort: modelConfig.getEffort(),
+      fallbackModel: modelConfig.getFallbackModel(),
+    });
     if (testCase.meta.reproCommand) {
       const repro = await runVerify(projectDir, {
         command: testCase.meta.reproCommand,
@@ -366,7 +383,7 @@ export async function runEval(opts: RunEvalOptions = {}): Promise<{ file: string
   const comparison = compareWithBaseline(results, previous?.artifact);
   const finishedAt = new Date().toISOString();
   const artifact: EvalArtifact = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     startedAt,
     finishedAt,
     baselineFile: previous?.file,

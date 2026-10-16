@@ -170,6 +170,24 @@ access control is enforced. The server keeps its default `127.0.0.1` bind addres
 Issue-tracker-triggered workflows currently stop before starting agents in PR mode; launch
 those specs from the dashboard or CLI.
 
+### Auto-merge qualification (dry-run only)
+
+PR workflows can record a read-only auto-merge eligibility assessment with
+`"delivery": { "autoMerge": { "enabled": true } }`. This setting does **not** merge PRs.
+The dashboard shows the candidate category, trust counts, and denial reasons; each result is
+also retained in the workflow checkpoint and SQLite audit table. The setting defaults to off
+and is valid only with `delivery.mode: "pull-request"`.
+
+Eligibility requires an exact low-risk diff, unchanged policy fingerprint, stored deterministic
+verification evidence, successful review, current human approval, a clean PR with successful
+required checks and branch protection, 20 consecutive categorized eval passes across at least
+10 distinct cases, and 10 human-reviewed PRs merged by a human and stable for 14 days each.
+The current eval suite does not yet supply that baseline, so candidates remain ineligible until
+matching eval history exists. For live history, a human must add `auto-dev/merge-stable` after
+the 14-day window. Applying `auto-dev/merge-reverted`, `auto-dev/merge-hotfix`, or
+`auto-dev/merge-rework` invalidates the streak. Missing or incomplete GitHub history fails
+closed.
+
 ### OpenClaw + Telegram
 
 An existing OpenClaw Telegram account can act as the inbound gateway. No public domain,
@@ -210,7 +228,7 @@ After the enabled workflow stages finish successfully, two internal post-success
 
 ### Auto-dev evaluation
 
-`./run eval` runs every `evals/cases/<case-id>/` fixture; use `--case <id>` to select one or `--models id1,id2` to run a model matrix. Each case has `spec.md`, `fixture/`, `checks.sh`, and `meta.json`. The evaluator copies the fixture into a temporary workspace, runs `runSpec` with `triggerSource: eval`, applies the normal daily run limit, then checks the expected verdict and script exit code. Model overrides are isolated to each asynchronous workflow and do not change saved settings. Results include route count, token usage, duration, check output, and pass/fail changes against the previous run in `data/evals/<timestamp>.json`. Eval runs do not schedule post-success commits. The Spring/PostgreSQL case requires Maven, Docker Compose, and dependency access; the TypeScript case requires Node.js 24.
+`./run eval` runs every `evals/cases/<case-id>/` fixture; use `--case <id>` to select one or `--models id1,id2` to run a model matrix. Each case has `spec.md`, `fixture/`, `checks.sh`, and `meta.json`. The evaluator copies the fixture into a temporary workspace, runs `runSpec` with `triggerSource: eval`, applies the normal daily run limit, then checks the expected verdict and script exit code. Model overrides are isolated to each asynchronous workflow and do not change saved settings. Results include route count, token usage, duration, check output, and pass/fail changes against the previous run in `data/evals/<timestamp>.json`. A case may set `autoMergeCategory` to `docs` or `dependency-patch` in `meta.json` to contribute to the matching auto-merge eval streak; ordinary cases without a category never count. Eval runs do not schedule post-success commits. The Spring/PostgreSQL case requires Maven, Docker Compose, and dependency access; the TypeScript case requires Node.js 24.
 
 ### Deterministic verification gate
 

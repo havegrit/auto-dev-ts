@@ -1849,6 +1849,7 @@
         ...(checkpoint?.delivery?.branch ? [['전달 브랜치', checkpoint.delivery.branch]] : []),
         ...(checkpoint?.delivery?.baseBranch ? [['기준 브랜치', `${checkpoint.delivery.baseBranch} · ${checkpoint.delivery.baseSha?.slice(0, 8) || ''}`]] : []),
         ...(checkpoint?.delivery?.commitSha ? [['전달 커밋', checkpoint.delivery.commitSha.slice(0, 12)]] : []),
+        ...(checkpoint?.autoMergeDryRun ? [['자동 머지 dry-run', checkpoint.autoMergeDryRun.eligible ? '조건 충족 · 실행 없음' : '자격 거부']] : []),
         ...(failed.length > 0 ? [['실패 단계', failed.map(c => c.agent_name).join(', ')]] : []),
         ...(run.error_type ? [['오류', run.error_type]] : []),
       ];
@@ -1894,6 +1895,15 @@
           <div class="run-summary-failure">
             <div class="run-summary-failure-title">Pull request</div>
             <div class="run-summary-failure-reason"><a href="${escapeHtml(checkpoint.delivery.prUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(checkpoint.delivery.prUrl)}</a></div>
+          </div>
+        ` : ''}
+        ${checkpoint?.autoMergeDryRun ? `
+          <div class="run-summary-failure">
+            <div class="run-summary-failure-title">자동 머지 dry-run · 실제 merge 요청 없음</div>
+            <div class="run-summary-failure-reason">
+              분류: ${escapeHtml(checkpoint.autoMergeDryRun.category)} · eval: ${escapeHtml(`${checkpoint.autoMergeDryRun.eval.passedCount}/${checkpoint.autoMergeDryRun.eval.requiredCount}, ${checkpoint.autoMergeDryRun.eval.distinctCaseCount}/${checkpoint.autoMergeDryRun.eval.requiredDistinctCases} cases`)} · 실사용: ${escapeHtml(`${checkpoint.autoMergeDryRun.live.passedCount}/${checkpoint.autoMergeDryRun.live.requiredCount}`)}
+              <ul>${checkpoint.autoMergeDryRun.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>
+            </div>
           </div>
         ` : ''}
         ${checkpoint?.state === 'DELIVERY_PENDING' ? `

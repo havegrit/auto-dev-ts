@@ -21,6 +21,8 @@ vi.mock('../lib/cost-guard.js', () => ({ costGuard: { allow: () => state.allow }
 vi.mock('../lib/model-config.js', () => ({
   modelConfig: {
     getModel: () => 'anthropic:configured',
+    getEffort: () => 'high',
+    getFallbackModel: () => undefined,
     getAgentModels: () => ({
       clarifier: 'anthropic:configured',
       planner: 'anthropic:configured',
@@ -53,13 +55,14 @@ describe('runEval', () => {
   let dataDir: string;
   let tempRoot: string;
 
-  function addCase(id: string, options: { reproCommand?: string; expectedResult?: string } = {}): string {
+  function addCase(id: string, options: { reproCommand?: string; expectedResult?: string; autoMergeCategory?: 'docs' | 'dependency-patch' } = {}): string {
     const dir = join(casesDir, id);
     mkdirSync(join(dir, 'fixture'), { recursive: true });
     writeFileSync(join(dir, 'spec.md'), `Implement ${id}.`);
     writeFileSync(join(dir, 'meta.json'), JSON.stringify({
       tags: ['test'],
       expectedResult: options.expectedResult ?? 'SHIP',
+      ...(options.autoMergeCategory ? { autoMergeCategory: options.autoMergeCategory } : {}),
       timeoutMs: 1000,
       ...(options.reproCommand ? { reproCommand: options.reproCommand } : {}),
     }));
@@ -110,17 +113,20 @@ describe('runEval', () => {
   });
 
   it('copies a fixture, labels runs as eval, records token usage, and compares with the prior baseline', async () => {
-    const caseDir = addCase('small-ts');
+    const caseDir = addCase('small-ts', { autoMergeCategory: 'docs' });
     const first = await runEval({ casesDir, dataDir, tempRoot });
 
     expect(first.artifact.summary).toMatchObject({ total: 1, passed: 1, failed: 0, skipped: 0 });
     expect(first.artifact.results[0]).toMatchObject({
       caseId: 'small-ts',
+      autoMergeCategory: 'docs',
       model: 'configured',
       tokensIn: 12,
       tokensOut: 34,
       routeCount: 1,
     });
+    expect(first.artifact.results[0].policyFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.artifact.schemaVersion).toBe(2);
     expect(state.insertRun).toHaveBeenCalledWith(expect.objectContaining({
       agentName: 'eval',
       triggerSource: 'eval',

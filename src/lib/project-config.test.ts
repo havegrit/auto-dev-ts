@@ -89,6 +89,17 @@ describe('loadProjectConfig', () => {
     expect(loadProjectConfig(dir)?.delivery).toEqual({ mode: 'pull-request', baseBranch: 'release/next' });
   });
 
+  it('keeps automatic merge disabled unless explicitly enabled for dry-run evaluation', () => {
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: true } } }));
+    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: true });
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: {} } }));
+    expect(loadProjectConfig(dir)?.delivery?.autoMerge).toEqual({ enabled: false });
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'pull-request', autoMerge: { enabled: 'yes' } } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/delivery\.autoMerge\.enabled must be a boolean/);
+    writeConfig(JSON.stringify({ version: 1, delivery: { mode: 'local', autoMerge: { enabled: true } } }));
+    expect(() => loadProjectConfig(dir)).toThrow(/requires delivery\.mode=pull-request/);
+  });
+
   it('defaults an omitted delivery mode to local and rejects unsupported modes', () => {
     writeConfig(JSON.stringify({ version: 1, delivery: {} }));
     expect(loadProjectConfig(dir)?.delivery).toEqual({ mode: 'local' });

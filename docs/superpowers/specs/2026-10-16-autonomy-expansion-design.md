@@ -1,7 +1,7 @@
 # 자율성 확장 설계
 
 - 날짜: 2026-10-16
-- 상태: 설계 완료 — Phase 7A/7B 구현 완료, Phase 7C 이후 미구현
+- 상태: Phase 7A/7B/7C 구현 완료, Phase 7D 미구현
 - 범위: 재시작 내성, PR 전달, 제한적 자동 머지
 
 ## 요약
@@ -13,7 +13,7 @@ Phase 7에서는 성공 판정을 더 자율적으로 만들기 전에, 중단�
 | 실행 복구 | 재개를 opt-in한 프로젝트에서 SQLite 체크포인트와 만료 가능한 실행 lease로 안전한 지점부터 재개한다. |
 | PR 전달 | 기본 동작은 유지한다. 프로젝트가 PR 모드를 명시한 경우에만 run 전용 브랜치를 push하고 PR을 만든다. |
 | 자동 머지 | 기본 비활성. 사람이 보호된 기본 브랜치에 설정한 opt-in, 저위험 변경 분류, 측정 기준, 저장소 보호 규칙이 모두 필요하다. |
-| 범위 | 이 문서는 설계 산출물이다. 코드, DB 마이그레이션, GitHub 작업은 수행하지 않는다. |
+| 범위 | A/B/C는 별도 구현 작업으로 완료했다. C는 read-only dry-run이며, D의 실제 merge 실행은 별도 승인 대상이다. |
 
 ## 배경과 현재 동작
 
@@ -35,7 +35,8 @@ Phase 7에서는 성공 판정을 더 자율적으로 만들기 전에, 중단�
 
 ### 제외 범위
 
-- 본 Phase에서 구현, 배포, 실제 GitHub 저장소에 대한 push/PR/merge를 수행하지 않는다.
+- Phase 7C는 자동 머지 자격을 읽기 전용으로 계산하며, 실제 `gh pr merge`를 호출하지 않는다.
+- 이 문서는 실저장소 자동 머지 실행이나 배포 승인을 대신하지 않는다.
 - 체크포인트가 없는 과거 run을 추측해 재생하지 않는다.
 - .auto-dev/ 설정이 없는 프로젝트의 실행 경로와 재시작 실패 처리는 그대로 둔다.
 - 일반 기능 변경, 버그 수정, 리팩터링을 자동 머지 대상으로 확대하지 않는다.
@@ -229,14 +230,27 @@ verify/runtime, 성공 후 전달 작업 중단이나 상태 불일치는 `RECOV
   외부 접근 제어는 `AUTO_DEV_PUBLIC_ACCESS_CONTROL` 운영자 확인값이다. 앱은 인증을 추가하거나
   reverse proxy 설정을 검사하지 않으므로, 모든 dashboard/API 경로를 보호하는 HTTPS proxy가
   실제로 구성돼야 한다.
-- 구현 테스트는 git/gh 호출을 모두 mock하며 실제 원격 push/PR은 만들지 않는다. auto-merge,
-  eval/live streak, staging 실저장소 쓰기는 다음 구현 범위다.
+- 구현 테스트는 git/gh 호출을 모두 mock하며 실제 원격 push/PR은 만들지 않는다. 자동 머지
+  자격 dry-run과 eval/live streak 집계는 Phase 7C에서 추가했고, staging 실저장소 쓰기는 하지 않는다.
+
+### Phase 7C 구현 범위 조정 (2026-10-16)
+
+- `delivery.autoMerge.enabled`는 PR workflow의 dry-run 자격 평가만 opt-in한다. 실제 merge 명령은
+  구현하지 않았으며, 대시보드·checkpoint·`auto_merge_dry_run` 감사 테이블에 결과와 거부 이유를 남긴다.
+- diff 분류는 서버 소유 allowlist를 사용한다. 정책 fingerprint, verify/runtime 증거, review,
+  current head approval, branch protection, required checks, eval 20회/10개 case, live 10개 PR/14일을
+  모두 통과해야 dry-run eligible로 표시한다. 기준은 프로젝트 설정으로 낮출 수 없다.
+- live 성공 증거는 PR 작성자와 다른 사람의 현재 head 승인, 사람 계정의 merge, 병합 14일 뒤
+  사람이 추가한 현재 `auto-dev/merge-stable` 라벨을 요구한다. revert/hotfix/rework 라벨,
+  변경된 head, 불완전한 이벤트 이력, bot 병합은 streak에 포함하지 않는다.
+- 현재 기본 eval 세트는 `autoMergeCategory`를 선언하지 않아 자격 기준선이 없다. 추가 eval 케이스와
+  실제 GitHub 이력 없이는 dry-run이 거부되는 상태가 정상이다.
 
 ## 구현 승인 전에 확정할 사항
 
-1. Eval 20회/10 case, live PR 10개/14일이라는 제안 최소 기준을 그대로 채택할지.
+1. 실제 merge 파일럿에 사용할 대상 저장소/조직과 branch protection 최소 설정.
 2. AUTO_DEV_PUBLIC_BASE_URL이 가리킬 대시보드의 배포 방식과 접근 제어.
-3. auto-dev가 PR 기반 기능을 지원할 첫 GitHub 저장소/조직 범위와 branch protection 최소 설정.
-4. 자동 머지 운영 중 live 성공·revert·hotfix를 수집할 GitHub 조회 주기와 재인증 절차.
+3. 자동 머지 운영 중 live 성공·revert·hotfix를 수집할 GitHub 조회 주기와 재인증 절차.
 
-Phase 7C/7D의 자동 머지 자격 집계와 실행은 별도 승인 전까지 구현하지 않는다.
+Phase 7C의 자격 집계와 dry-run은 구현됐다. Phase 7D의 실제 merge 파일럿은 대상 저장소,
+전역 kill switch, 감사/롤백 절차를 확정한 별도 승인 뒤에만 구현한다.

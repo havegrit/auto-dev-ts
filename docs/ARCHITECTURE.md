@@ -698,6 +698,28 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - issue tracker의 `processIssue`는 현재 PR 모드를 지원하지 않으며, bug 재현 agent가
   시작되기 전에 명확히 거부한다. dashboard, CLI, `POST /api/specs` 진입은 지원한다.
 
+### 6.2.8 자동 머지 자격 dry-run
+
+- PR 모드에서만 `delivery.autoMerge.enabled: true`를 설정할 수 있다. 기본값은 false이며,
+  Phase 7C 구현은 GitHub 상태를 읽어 자격을 계산하고 SQLite와 체크포인트에 결과를 남긴다.
+  실제 `gh pr merge` 호출은 없다.
+- 분류는 실제 PR 파일 목록으로 계산한다. 문서는 보호된 문서 경로만, 의존성 패치는
+  지원되는 root manifest/lockfile만 허용한다. 혼합·미분류·경로 이탈 diff는 거부한다.
+- 자격 계산은 workflow 시작 시점과 현재의 모델·프롬프트·verify/runtime 설정 fingerprint가
+  같고, 결정적 검증 및 review/evidence가 통과했으며, head/base SHA가 검증된 값과 같고,
+  PR이 열려 있고 draft가 아니며 CLEAN 상태인지 확인한다. 최소 한 개의 필수 status check와
+  한 개의 필수 PR 승인 규칙, 성공한 checks, PR 작성자가 아닌 사람의 현재 head 승인이 필요하다.
+- eval 기준은 동일 fingerprint의 분류별 연속 성공 20회와 서로 다른 case 10개다.
+  케이스 `meta.json`에 `autoMergeCategory: "docs" | "dependency-patch"`를 지정해야 집계된다.
+- 실사용 streak는 기록된 auto-dev PR 중 사람이 승인하고 사람 계정이 병합한 PR에 한정한다.
+  병합 14일 이후 사람이 현재 PR에 `auto-dev/merge-stable` 라벨을 추가하고,
+  동일 head의 사람 승인이 확인돼야 성공으로 센다. `auto-dev/merge-reverted`,
+  `auto-dev/merge-hotfix`, `auto-dev/merge-rework`는 실패로 streak를 초기화한다.
+  라벨/이벤트 이력 누락, 100개 초과 페이지, 변경된 head, bot 병합은 확인 불가로 처리한다.
+- eval 20회/10 case와 안정된 실사용 PR 10개의 기준은 프로젝트 설정으로 낮출 수 없다.
+  현재 기본 eval 세트는 자동 머지 분류를 제공하지 않으므로 기준선이 아직 없고, 대시보드는
+  거부 이유와 streak 수를 표시한다. 실제 자동 머지는 후속 Phase 7D의 별도 승인 범위다.
+
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |
@@ -1056,6 +1078,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
 | | `delivery.mode` | `local` (기본) 또는 `pull-request`; PR은 자동 checkpoint/worktree 사용 |
 | | `delivery.baseBranch` | PR base branch. 생략하면 GitHub 저장소 기본 브랜치 |
+| | `delivery.autoMerge.enabled` | PR 자격 dry-run 기록 opt-in. 기본 false; Phase 7C에서는 실제 병합하지 않음 |
 
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
@@ -1403,6 +1426,7 @@ Bun 으로 런타임 교체도 가능.
 15. **문서 동기화** — 본 문서를 현재 구현에 맞춰 갱신 ← 현재
 16. **자체 eval** — fixture 기반 모델 매트릭스 실행, 일일 한도 준수, 결과와 회귀 비교
 17. **workflow checkpoint** — 명시적 opt-in dashboard spec의 lease 기반 안전 재개 및 복구 상태 노출
+18. **PR delivery / auto-merge dry-run** — run 전용 worktree로 PR 전달, 저위험 diff와 eval/live trust streak를 읽기 전용 평가
 
 ---
 

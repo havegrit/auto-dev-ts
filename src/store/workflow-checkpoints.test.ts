@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import {
   claimExpiredWorkflowCheckpoint,
   claimWorkflowDeliveryRetry,
+  checkpointSummary,
   createWorkflowCheckpoint,
   finishWorkflowCheckpoint,
   getWorkflowCheckpoint,
@@ -93,6 +94,24 @@ describe('workflow checkpoints', () => {
     expect(claimWorkflowDeliveryRetry('run-1', 'other-owner', pending.revision, database)).toBeUndefined();
     expect(database.prepare('SELECT status, output FROM agent_run WHERE id = ?').get('run-1')).toEqual({
       status: 'DONE', output: '[DELIVERY: PENDING]',
+    });
+  });
+
+  it('exposes the auto-merge dry-run result in checkpoint summaries', () => {
+    const database = createDb();
+    const checkpoint = createWorkflowCheckpoint('run-1', {
+      autoMergeDryRun: {
+        mode: 'dry-run', eligible: false, category: 'docs', policyFingerprint: 'policy-a',
+        eval: { passedCount: 3, distinctCaseCount: 2, requiredCount: 20, requiredDistinctCases: 10, qualifies: false },
+        live: { passedCount: 0, requiredCount: 10, qualifies: false },
+        reasons: ['trust streak is too short'], checkedAt: '2026-10-16T00:00:00.000Z',
+      },
+    }, 'owner-a', database);
+
+    expect(checkpointSummary(checkpoint).autoMergeDryRun).toMatchObject({
+      mode: 'dry-run', eligible: false, category: 'docs',
+      eval: { passedCount: 3, distinctCaseCount: 2 },
+      reasons: ['trust streak is too short'],
     });
   });
 });

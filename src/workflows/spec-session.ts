@@ -13,6 +13,11 @@ import { registerRunCancellation } from '../lib/run-cancellation.js';
 import { notifyOpenClawSpec } from '../integrations/openclaw/notify.js';
 import { AGENT_SPECS } from '../agents/specs.js';
 import { loadProjectConfig } from '../lib/project-config.js';
+import { autoMergePolicyFingerprint } from '../lib/auto-merge-policy.js';
+import { deniedAutoMergeDryRun, evaluateAutoMergeDryRun, type AutoMergeDryRunResult, type AutoMergeWorkflowEvidence } from '../lib/auto-merge.js';
+import { modelConfig } from '../lib/model-config.js';
+import { readWorkflowEvidence } from '../lib/evidence.js';
+import { recordAutoMergeDryRun } from '../store/auto-merge.js';
 import { snapshotWorkspace, workspaceHeadSha } from '../lib/role-boundary.js';
 import { completePullRequestDelivery, preparePullRequestWorktree, validatePullRequestDeliveryContext, type PullRequestDeliveryContext, type PullRequestDeliveryState, type PullRequestDescription } from '../lib/pr-delivery.js';
 import { commitSuccessfulSpec } from './post-success-commit.js';
@@ -73,7 +78,17 @@ interface SpecCheckpointSnapshot extends WorkflowCheckpointSnapshot {
   specInput: string;
   options: Omit<SpecSessionOptions, 'steps'> & { steps?: string[] };
   workflowState: PersistedSpecCheckpointState;
-  finalResult?: { verdict?: string; failure?: SpecResult['failure']; delivery?: PullRequestDeliveryState };
+  autoMergePolicyFingerprint?: string;
+  autoMergeEnabledAtStart?: boolean;
+  autoMergeEvidence?: AutoMergeWorkflowEvidence;
+  autoMergeDryRun?: AutoMergeDryRunResult;
+  finalResult?: {
+    verdict?: string;
+    failure?: SpecResult['failure'];
+    delivery?: PullRequestDeliveryState;
+    autoMergeEvidence?: AutoMergeWorkflowEvidence;
+    autoMergeDryRun?: AutoMergeDryRunResult;
+  };
 }
 
 interface CheckpointRuntime {
@@ -479,6 +494,13 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
     // 설정 오류는 runSpec 내부에서 기존처럼 부모 run 실패로 기록한다.
   }
   const prMode = projectConfig?.delivery?.mode === 'pull-request';
+  const autoMergeModels = prMode ? modelConfig.getAgentModels() : undefined;
+  const autoMergeFingerprint = prMode && autoMergeModels
+    ? autoMergePolicyFingerprint(projectConfig, autoMergeModels, {
+      effort: modelConfig.getEffort(),
+      fallbackModel: modelConfig.getFallbackModel(),
+    })
+    : undefined;
   if (prMode) {
     const missingSteps = ['planner', 'scaffold', 'test', 'review'].filter(step => sessionOpts.steps && !sessionOpts.steps.has(step));
     if (missingSteps.length) throw new Error(`PR delivery requires the full verified workflow; enabled steps are missing: ${missingSteps.join(', ')}.`);
@@ -519,6 +541,8 @@ function launch(state: ClarificationState, opts: SpecSessionOptions, resume?: { 
       kind: 'dashboard-spec-session',
       workflowRunId: runId,
       configFingerprint: createHash('sha256').update(JSON.stringify(projectConfig)).digest('hex'),
+      ...(autoMergeFingerprint ? { autoMergePolicyFingerprint: autoMergeFingerprint } : {}),
+      ...(prMode ? { autoMergeEnabledAtStart: projectConfig?.delivery?.autoMerge?.enabled === true } : {}),
       sessionState,
       ...(sessionState.deliveryContext ? { deliveryContext: sessionState.deliveryContext, deliveryState: sessionState.deliveryContext.state } : {}),
       specInput: input,
@@ -825,6 +849,16 @@ async function finalize(
 
     saveClarificationState(runId, { ...merged, planOutput });
     const status = workflowRunStatus(result);
+    let autoMergeEvidence: AutoMergeWorkflowEvidence | undefined;
+    let autoMergeDryRun: AutoMergeDryRunResult | undefined;
+    if (checkpointRuntime && state.deliveryContext && result.verdict === 'SHIP' && !result.failure) {
+      let projectConfig: ReturnType<typeof loadProjectConfig>;
+      try { projectConfig = loadProjectConfig(state.sourceCwd ?? state.cwd); } catch { projectConfig = undefined; }
+      autoMergeEvidence = await autoMergeEvidenceForResult(runId, result, projectConfig);
+      if (result.delivery?.status === 'DELIVERED') {
+        autoMergeDryRun = await runAutoMergeDryRun(runId, checkpointRuntime.snapshot, result.delivery, autoMergeEvidence);
+      }
+    }
     const deliveryOutput = result.delivery?.status === 'DELIVERED'
       ? `\n\nPR: ${result.delivery.prUrl}`
       : result.delivery?.status === 'DELIVERY_PENDING'
@@ -846,7 +880,18 @@ async function finalize(
           : status === 'DONE' ? 'SUCCEEDED' : 'FAILED';
       finishCheckpoint(runId, checkpointRuntime, checkpointState, {
         output, status, durationMs: result.totalDurationMs, errorType, stopReason,
-      }, { sessionState: { ...merged, planOutput }, finalResult: { verdict: result.verdict, failure: result.failure, delivery: result.delivery } });
+      }, {
+        sessionState: { ...merged, planOutput },
+        ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
+        ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+        finalResult: {
+          verdict: result.verdict,
+          failure: result.failure,
+          delivery: result.delivery,
+          ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
+          ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+        },
+      });
     } else {
       updateRun(runId, {
         output, status, durationMs: result.totalDurationMs,
@@ -914,6 +959,97 @@ function deliveryDescription(snapshot: SpecCheckpointSnapshot): PullRequestDescr
   };
 }
 
+async function autoMergeEvidenceForResult(
+  runId: string,
+  result: SpecResult,
+  projectConfig: ReturnType<typeof loadProjectConfig>,
+): Promise<AutoMergeWorkflowEvidence> {
+  const children = getRunsByWorkflowId(runId);
+  const verificationRuns = children.filter(row => row.agent_name === VERIFY_AGENT_NAME);
+  const reviewRuns = children.filter(row => row.agent_name === 'review' || row.agent_name.startsWith('review-'));
+  const evidenceFile = await readWorkflowEvidence(runId).catch(() => undefined);
+  const deterministicConfigured = Boolean(projectConfig?.verify || projectConfig?.runtime);
+  const deterministicPassed = deterministicConfigured && result.steps[VERIFY_AGENT_NAME]?.status === 'DONE' &&
+    verificationRuns.some(row => row.status === 'DONE');
+  const hasReviewRun = reviewRuns.some(row => row.status === 'DONE') ||
+    result.team?.tasks.some(task => task.agent === 'review' && task.status === 'DONE') === true;
+  const reviewPassed = result.verdict === 'SHIP' && !result.failure && hasReviewRun;
+  const evidenceStored = deterministicPassed && reviewPassed && (
+    verificationRuns.some(row => Boolean(row.output?.trim())) && reviewRuns.some(row => Boolean(row.output?.trim())) ||
+    (evidenceFile?.records.some(record => record.status === 'PASS') ?? false)
+  );
+  return { deterministicConfigured, deterministicPassed, reviewPassed, evidenceStored };
+}
+
+async function runAutoMergeDryRun(
+  runId: string,
+  snapshot: SpecCheckpointSnapshot,
+  delivery: PullRequestDeliveryState,
+  evidence: AutoMergeWorkflowEvidence,
+): Promise<AutoMergeDryRunResult> {
+  const context = snapshot.sessionState.deliveryContext;
+  if (!context) throw new Error('Auto-merge dry-run requires a saved PR delivery context.');
+  context.state = delivery;
+  const projectDir = snapshot.sessionState.sourceCwd ?? snapshot.sessionState.cwd;
+  let projectConfig: ReturnType<typeof loadProjectConfig>;
+  try {
+    projectConfig = loadProjectConfig(projectDir);
+  } catch {
+    projectConfig = undefined;
+  }
+  const projectConfigFingerprint = createHash('sha256').update(JSON.stringify(projectConfig ?? null)).digest('hex');
+  let result: AutoMergeDryRunResult;
+  try {
+    result = evaluateAutoMergeDryRun({
+      context,
+      projectConfig,
+      startingPolicyFingerprint: snapshot.autoMergePolicyFingerprint ?? '',
+      models: modelConfig.getAgentModels(),
+      runtimeModelSettings: {
+        effort: modelConfig.getEffort(),
+        fallbackModel: modelConfig.getFallbackModel(),
+      },
+      evidence,
+      autoMergeEnabledAtStart: snapshot.autoMergeEnabledAtStart === true,
+      projectConfigUnchanged: projectConfigFingerprint === snapshot.configFingerprint,
+    });
+  } catch (err) {
+    result = deniedAutoMergeDryRun(
+      `Auto-merge dry-run failed closed: ${err instanceof Error ? err.message : String(err)}`,
+      snapshot.autoMergePolicyFingerprint,
+    );
+  }
+
+  if (delivery.prNumber && delivery.commitSha) {
+    try {
+      recordAutoMergeDryRun({
+        workflowRunId: runId,
+        repository: context.repository,
+        prNumber: delivery.prNumber,
+        headSha: delivery.commitSha,
+        baseSha: context.baseSha,
+        baseBranch: context.baseBranch,
+        category: result.category,
+        policyFingerprint: result.policyFingerprint,
+        evalPassCount: result.eval.passedCount,
+        evalDistinctCaseCount: result.eval.distinctCaseCount,
+        livePassCount: result.live.passedCount,
+        eligible: result.eligible,
+        reasons: result.reasons,
+        checkedAt: result.checkedAt,
+      });
+    } catch {
+      // 자동 머지 dry-run 기록 실패는 이미 전달된 PR의 상태를 바꾸지 않는다.
+    }
+  }
+  emitRunEvent(runId, {
+    type: 'tool_result',
+    ts: result.checkedAt,
+    data: `auto_merge_dry_run:${result.eligible ? 'eligible' : 'denied'} category=${result.category}; ${result.reasons.join(' ')}`.slice(0, 2000),
+  });
+  return result;
+}
+
 function deliveryOutput(base: string, state: PullRequestDeliveryState): string {
   const cleanBase = base
     .replace(/\n\n\[DELIVERY: PENDING\][\s\S]*$/, '')
@@ -973,11 +1109,17 @@ async function finishPullRequestDelivery(
   }
 
   context.state = state;
+  const autoMergeEvidence = runtime.snapshot.autoMergeEvidence ?? runtime.snapshot.finalResult?.autoMergeEvidence;
+  const autoMergeDryRun = state.status === 'DELIVERED' && autoMergeEvidence
+    ? await runAutoMergeDryRun(runId, runtime.snapshot, state, autoMergeEvidence)
+    : runtime.snapshot.autoMergeDryRun;
   runtime.snapshot = {
     ...runtimeSnapshot(runtime),
     sessionState: { ...runtime.snapshot.sessionState, deliveryContext: context },
     deliveryContext: context,
     deliveryState: state,
+    ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
+    ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
     activeAction: undefined,
     activeStep: undefined,
     activeRunId: undefined,
@@ -1002,7 +1144,15 @@ async function finishPullRequestDelivery(
     sessionState: runtime.snapshot.sessionState,
     deliveryContext: context,
     deliveryState: state,
-    finalResult: { verdict: 'SHIP', delivery: state },
+    ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
+    ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+    finalResult: {
+      ...(runtime.snapshot.finalResult ?? {}),
+      verdict: 'SHIP',
+      delivery: state,
+      ...(autoMergeEvidence ? { autoMergeEvidence } : {}),
+      ...(autoMergeDryRun ? { autoMergeDryRun } : {}),
+    },
   });
   finishRunEvents(runId, 'DONE');
   await notifyOpenClawSpec({

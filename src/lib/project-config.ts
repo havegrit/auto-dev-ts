@@ -48,6 +48,8 @@ export interface DeliveryConfig {
   mode: 'local' | 'pull-request';
   /** 생략 시 GitHub 저장소 기본 브랜치를 사용한다. */
   baseBranch?: string;
+  /** 자동 머지 자격 dry-run을 켠다. 실제 머지는 별도 기능이며 이 설정으로 실행되지 않는다. */
+  autoMerge?: { enabled: boolean };
 }
 
 export interface ProjectConfig {
@@ -173,9 +175,21 @@ function parseDelivery(value: unknown, configPath: string): DeliveryConfig | und
     (typeof delivery.baseBranch !== 'string' || !delivery.baseBranch.trim())) {
     throw new ProjectConfigError(configPath, 'delivery.baseBranch must be a non-empty string');
   }
+  let autoMerge: DeliveryConfig['autoMerge'];
+  if (delivery.autoMerge !== undefined) {
+    const candidate = asRecord(delivery.autoMerge);
+    if (!candidate || (candidate.enabled !== undefined && typeof candidate.enabled !== 'boolean')) {
+      throw new ProjectConfigError(configPath, 'delivery.autoMerge.enabled must be a boolean');
+    }
+    autoMerge = { enabled: candidate.enabled === true };
+  }
+  if (autoMerge?.enabled && mode !== 'pull-request') {
+    throw new ProjectConfigError(configPath, 'delivery.autoMerge.enabled requires delivery.mode=pull-request');
+  }
   return {
     mode,
     ...(typeof delivery.baseBranch === 'string' ? { baseBranch: delivery.baseBranch.trim() } : {}),
+    ...(autoMerge ? { autoMerge } : {}),
   };
 }
 

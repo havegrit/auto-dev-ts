@@ -166,6 +166,22 @@ PR 전달에는 `AUTO_DEV_PUBLIC_BASE_URL`과
 체크포인트 세션을 사용합니다. 이슈 트래커에서 시작한 워크플로우는 PR 모드에서 에이전트를
 시작하기 전에 중단됩니다. 대시보드나 CLI에서 실행하세요.
 
+### 자동 머지 자격 평가 (dry-run 전용)
+
+PR workflow는 `"delivery": { "autoMerge": { "enabled": true } }`로 자동 머지 자격을
+읽기 전용으로 평가할 수 있습니다. 이 설정은 PR을 **실제로 병합하지 않습니다**. 대시보드에
+분류, 신뢰 기록 수, 거부 이유를 표시하고 결과는 체크포인트와 SQLite 감사 테이블에 보존합니다.
+기본값은 비활성이고 `delivery.mode: "pull-request"`에서만 설정할 수 있습니다.
+
+자격에는 정확한 저위험 diff, 변경되지 않은 정책 fingerprint, 저장된 결정적 검증 증거,
+성공한 review, 현재 head에 대한 사람의 승인, 보호 규칙과 필수 체크 통과, 서로 다른 케이스
+10개 이상에 걸친 연속 eval 20회, 그리고 사람의 승인을 받고 사람 계정이 병합한 PR 10개가
+각각 14일 동안 안정된 기록이 필요합니다. 현재 eval 케이스는 아직 이 기준을 제공하지 않아
+matching eval 기록이 쌓이기 전까지 자격이 없습니다. 실사용 기록은 14일이 지난 뒤 사람이
+`auto-dev/merge-stable` 라벨을 붙여 확인합니다. `auto-dev/merge-reverted`,
+`auto-dev/merge-hotfix`, `auto-dev/merge-rework` 라벨은 streak를 초기화합니다. GitHub 이력이
+불완전하거나 확인할 수 없으면 자격을 거부합니다.
+
 ### OpenClaw + Telegram
 
 기존 OpenClaw Telegram 계정을 수신 게이트웨이로 재사용할 수 있습니다. 별도 공개
@@ -206,7 +222,7 @@ clarifier → planner → scaffold → test → review → cicd
 
 ### auto-dev 자체 평가
 
-`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성됩니다. fixture를 임시 workspace에 복사해 `triggerSource: eval`로 `runSpec`을 실행하고, 기존 일일 실행 한도를 지킵니다. 기대 verdict와 checks 스크립트 종료 코드를 함께 판정합니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. 결과에는 라우트 수, 토큰, 시간, 검증 출력과 직전 실행 대비 통과·회귀가 기록되며 `data/evals/<timestamp>.json`에 저장됩니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
+`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성됩니다. fixture를 임시 workspace에 복사해 `triggerSource: eval`로 `runSpec`을 실행하고, 기존 일일 실행 한도를 지킵니다. 기대 verdict와 checks 스크립트 종료 코드를 함께 판정합니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. 결과에는 라우트 수, 토큰, 시간, 검증 출력과 직전 실행 대비 통과·회귀가 기록되며 `data/evals/<timestamp>.json`에 저장됩니다. `meta.json`의 `autoMergeCategory`에 `docs` 또는 `dependency-patch`를 지정하면 해당 분류의 자동 머지 eval streak에 반영됩니다. 분류가 없는 일반 케이스는 streak에 포함되지 않습니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
 
 ### 결정적 검증 게이트
 

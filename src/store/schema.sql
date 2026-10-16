@@ -60,3 +60,44 @@ CREATE TABLE IF NOT EXISTS review_finding (
 );
 CREATE INDEX IF NOT EXISTS idx_review_finding_project_created
   ON review_finding(project, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS auto_merge_dry_run (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL,
+  repository TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  category TEXT NOT NULL CHECK(category IN ('docs','dependency-patch','ineligible')),
+  policy_fingerprint TEXT NOT NULL,
+  eval_pass_count INTEGER NOT NULL DEFAULT 0,
+  eval_distinct_case_count INTEGER NOT NULL DEFAULT 0,
+  live_pass_count INTEGER NOT NULL DEFAULT 0,
+  eligible INTEGER NOT NULL CHECK(eligible IN (0,1)),
+  reasons_json TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  FOREIGN KEY(workflow_run_id) REFERENCES agent_run(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_auto_merge_dry_run_workflow
+  ON auto_merge_dry_run(workflow_run_id, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS auto_merge_live_observation (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  category TEXT NOT NULL CHECK(category IN ('docs','dependency-patch')),
+  policy_fingerprint TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('stable','reverted','hotfix','rework','unknown')),
+  merged_by TEXT NOT NULL,
+  approved_by TEXT NOT NULL,
+  evidence_source TEXT NOT NULL,
+  merged_at TEXT NOT NULL,
+  stability_verified_at TEXT,
+  recorded_at TEXT NOT NULL,
+  UNIQUE(repository, base_branch, pr_number, head_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_auto_merge_live_streak
+  ON auto_merge_live_observation(repository, base_branch, category, merged_at DESC);

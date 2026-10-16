@@ -66,6 +66,33 @@ vi.mock('fs', () => ({
 
 const { loadProjectConfig } = vi.hoisted(() => ({ loadProjectConfig: vi.fn(() => undefined as any) }));
 vi.mock('../lib/project-config.js', () => ({ loadProjectConfig }));
+vi.mock('../lib/auto-merge-policy.js', () => ({ autoMergePolicyFingerprint: () => 'policy-test' }));
+vi.mock('../lib/model-config.js', () => ({
+  modelConfig: {
+    getAgentModels: () => ({ clarifier: 'model-a', planner: 'model-a', scaffold: 'model-a', test: 'model-a', review: 'model-a', cicd: 'model-a' }),
+    getEffort: () => 'high',
+    getFallbackModel: () => undefined,
+  },
+}));
+const autoMergeMocks = vi.hoisted(() => ({
+  evaluate: vi.fn((input: any) => ({
+    mode: 'dry-run', eligible: false, category: 'docs', policyFingerprint: input.startingPolicyFingerprint,
+    headSha: 'commit-sha', baseSha: 'base-sha',
+    eval: { passedCount: 0, distinctCaseCount: 0, requiredCount: 20, requiredDistinctCases: 10, qualifies: false },
+    live: { passedCount: 0, requiredCount: 10, qualifies: false },
+    reasons: ['insufficient trust'], checkedAt: '2026-10-16T00:00:00.000Z',
+  })),
+}));
+vi.mock('../lib/auto-merge.js', () => ({
+  evaluateAutoMergeDryRun: (input: any) => autoMergeMocks.evaluate(input),
+  deniedAutoMergeDryRun: (reason: string) => ({
+    mode: 'dry-run', eligible: false, category: 'ineligible', policyFingerprint: 'unavailable',
+    eval: { passedCount: 0, distinctCaseCount: 0, requiredCount: 20, requiredDistinctCases: 10, qualifies: false },
+    live: { passedCount: 0, requiredCount: 10, qualifies: false }, reasons: [reason], checkedAt: new Date().toISOString(),
+  }),
+}));
+const autoMergeStore = vi.hoisted(() => ({ recordAutoMergeDryRun: vi.fn() }));
+vi.mock('../store/auto-merge.js', () => autoMergeStore);
 const deliveryMocks = vi.hoisted(() => ({
   preparePullRequestWorktree: vi.fn((_sourceDir: string, workflowRunId: string) => ({
     workflowRunId, sourceDir: '/tmp/proj', worktreeDir: '/tmp/worktrees/pr-run', remote: 'origin',
@@ -124,6 +151,8 @@ beforeEach(() => {
   emitRunEvent.mockClear();
   closeEmitter.mockClear();
   notifyOpenClawSpec.mockClear();
+  autoMergeMocks.evaluate.mockClear();
+  autoMergeStore.recordAutoMergeDryRun.mockClear();
   loadProjectConfig.mockReturnValue(undefined);
   deliveryMocks.preparePullRequestWorktree.mockClear();
   deliveryMocks.validatePullRequestDeliveryContext.mockClear();
@@ -297,6 +326,58 @@ describe('startSpecSession (round 0)', () => {
     );
     const finishCall = (checkpointMocks.finishWorkflowCheckpoint.mock.calls as unknown as any[][]).at(-1);
     expect(finishCall?.[5].output).toContain('PR: https://github.com/org/project/pull/1');
+  });
+
+  it('runs and stores an auto-merge dry-run after verified PR delivery', async () => {
+    const config = {
+      version: 1 as const,
+      verify: { command: 'npm test', timeoutMs: 60_000 },
+      delivery: { mode: 'pull-request' as const, autoMerge: { enabled: true } },
+    };
+    loadProjectConfig.mockReturnValue(config);
+    childRuns = [
+      { agent_name: 'verify', status: 'DONE', output: '$ npm test\nPASS' },
+      { agent_name: 'review', status: 'DONE', output: '[VERDICT: SHIP]' },
+    ];
+    specResult = {
+      workflowRunId: 'x',
+      steps: {
+        verify: { runId: 'v', durationMs: 10, status: 'DONE' },
+        review: { runId: 'r', durationMs: 10, status: 'DONE' },
+      },
+      totalDurationMs: 25,
+      verdict: 'SHIP',
+      delivery: {
+        status: 'DELIVERED', prNumber: 42, prUrl: 'https://github.com/org/project/pull/42', commitSha: 'commit-sha',
+      },
+    };
+
+    const { runId, done } = startSpecSession('문서 변경', { cwd: '/tmp/proj', triggerSource: 'dashboard' });
+    await done;
+
+    expect(autoMergeMocks.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      autoMergeEnabledAtStart: true,
+      projectConfigUnchanged: true,
+      evidence: {
+        deterministicConfigured: true,
+        deterministicPassed: true,
+        reviewPassed: true,
+        evidenceStored: true,
+      },
+    }));
+    expect(autoMergeStore.recordAutoMergeDryRun).toHaveBeenCalledWith(expect.objectContaining({
+      workflowRunId: runId,
+      repository: 'org/project',
+      prNumber: 42,
+      baseBranch: 'main',
+      category: 'docs',
+      eligible: false,
+    }));
+    const finishCall = (checkpointMocks.finishWorkflowCheckpoint.mock.calls as unknown as any[][]).at(-1);
+    expect(finishCall?.[1]).toMatchObject({
+      autoMergeDryRun: { mode: 'dry-run', eligible: false, reasons: ['insufficient trust'] },
+      finalResult: { autoMergeDryRun: { eligible: false } },
+    });
   });
 
   it('keeps code success as DONE while exposing a failed external PR delivery as DELIVERY_PENDING', async () => {
