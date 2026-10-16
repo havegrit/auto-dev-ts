@@ -101,6 +101,19 @@ const { loadProjectConfig, runVerifyStep, snapshotWorkspace, emitRunEvent, execu
   executeTeam: vi.fn(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false })),
 }));
 
+const { runRuntimeVerification } = vi.hoisted(() => ({
+  runRuntimeVerification: vi.fn(async (): Promise<any> => ({
+    runId: 'runtime-verify-run',
+    passed: true,
+    cancelled: false,
+    blocked: false,
+    output: 'runtime verified',
+    feedback: '',
+    evidenceSummary: '- healthcheck: PASS (HTTP 200)',
+    records: [{ stage: 'healthcheck', status: 'PASS' }],
+  })),
+}));
+
 vi.mock('../lib/run-events.js', () => ({ emitRunEvent, closeEmitter: vi.fn(), getOrCreateEmitter: vi.fn() }));
 
 vi.mock('../lib/project-config.js', async (importOriginal) => ({
@@ -118,6 +131,8 @@ vi.mock('./verify-gate.js', async (importOriginal) => ({
   runVerifyStep,
 }));
 
+vi.mock('./runtime-gate.js', () => ({ runRuntimeVerification }));
+
 vi.mock('./team.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./team.js')>()),
   executeTeam,
@@ -132,7 +147,23 @@ describe('runSpec clarification gate', () => {
     clarifierResult = undefined;
     clarifierQueue = [];
     plannerResult = undefined;
+    loadProjectConfig.mockReturnValue(undefined);
+    executeTeam.mockReset();
+    executeTeam.mockImplementation(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false }));
+    runVerifyStep.mockReset();
+    runVerifyStep.mockImplementation(async (_opts: any): Promise<any> => ({ runId: 'verify-run', passed: true, outcome: verifyOutcome() }));
     commitSuccessfulSpec.mockClear();
+    runRuntimeVerification.mockReset();
+    runRuntimeVerification.mockImplementation(async () => ({
+      runId: 'runtime-verify-run',
+      passed: true,
+      cancelled: false,
+      blocked: false,
+      output: 'runtime verified',
+      feedback: '',
+      evidenceSummary: '- healthcheck: PASS (HTTP 200)',
+      records: [{ stage: 'healthcheck', status: 'PASS' }],
+    }));
   });
 
   it('stops before planning and implementation when clarifier says requirements are not ready', async () => {
@@ -679,6 +710,7 @@ describe('runSpec verification gate', () => {
     clarifierQueue = [];
     plannerResult = PLAN_WITH_TEST;
     commitSuccessfulSpec.mockClear();
+    runRuntimeVerification.mockClear();
     loadProjectConfig.mockReturnValue({ version: 1, verify: { command: './gradlew check', timeoutMs: 1000 } });
     runVerifyStep.mockClear();
     runVerifyStep.mockResolvedValue({ runId: 'verify-run', passed: true, outcome: verifyOutcome() });
@@ -804,6 +836,156 @@ describe('runSpec verification gate', () => {
     expect(result.failure).toMatchObject({ step: 'verify', cause: 'verify_failed' });
     expect(result.failure?.reason).toContain('integration broke the build');
     expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+  });
+
+  it('runs runtime verification before review and sends its evidence to review', async () => {
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      runtime: {
+        up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [],
+      },
+    });
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.verdict).toBe('SHIP');
+    expect(runRuntimeVerification).toHaveBeenCalledOnce();
+    expect(calls.indexOf('test')).toBeLessThan(calls.indexOf('review'));
+    expect(inputs.review[0]).toContain('검증 증거 요약');
+    expect(inputs.review[0]).toContain('healthcheck: PASS');
+  });
+
+  it('routes runtime verification failure back to planner with observed evidence', async () => {
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      runtime: {
+        up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [],
+      },
+    });
+    runRuntimeVerification
+      .mockResolvedValueOnce({
+        runId: 'runtime-verify-fail', passed: false, cancelled: false, blocked: false,
+        output: 'runtime failed', feedback: 'HTTP 500 observed', evidenceSummary: '- healthcheck: FAIL (HTTP 500)',
+        records: [{ stage: 'healthcheck', status: 'FAIL' }],
+      } as any)
+      .mockResolvedValueOnce({
+        runId: 'runtime-verify-pass', passed: true, cancelled: false, blocked: false,
+        output: 'runtime passed', feedback: '', evidenceSummary: '- healthcheck: PASS (HTTP 200)',
+        records: [{ stage: 'healthcheck', status: 'PASS' }],
+      } as any);
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 2 });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.routeCount).toBe(1);
+    expect(inputs.planner[1]).toContain('HTTP 500 observed');
+    expect(calls.filter(step => step === 'planner')).toHaveLength(2);
+  });
+
+  it('defers dynamic-team review until after runtime verification and includes evidence', async () => {
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | build\n2. review | check\nEND.\nTEAM_PLAN:\n' +
+        JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] }) +
+        '\nEND_TEAM_PLAN.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [{ taskId: 'impl', agent: 'scaffold', status: 'DONE', output: 'implemented' }],
+      deferredReviews: [{ id: 'review', agent: 'review', input: '검토', dependsOn: ['impl'] }],
+      failed: false,
+    });
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      runtime: {
+        up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [],
+      },
+    });
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.verdict).toBe('SHIP');
+    expect(executeTeam).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ deferReview: true }));
+    expect(runRuntimeVerification).toHaveBeenCalledOnce();
+    expect(inputs.review[0]).toContain('healthcheck: PASS');
+  });
+
+  it('keeps the existing dynamic-team execution when no project gates are configured', async () => {
+    loadProjectConfig.mockReturnValue(undefined);
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | build\n2. review | check\nEND.\nTEAM_PLAN:\n' +
+        JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] }) +
+        '\nEND_TEAM_PLAN.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [
+        { taskId: 'impl', agent: 'scaffold', status: 'DONE', output: 'implemented' },
+        { taskId: 'review', agent: 'review', status: 'DONE', output: '[VERDICT: SHIP]' },
+      ],
+      failed: false,
+    });
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.verdict).toBe('SHIP');
+    expect(executeTeam).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ deferReview: false }));
+    expect(runRuntimeVerification).not.toHaveBeenCalled();
+    expect(inputs.review).toHaveLength(0);
+  });
+
+  it('does not run dynamic-team review when runtime verification fails', async () => {
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. scaffold | build\n2. review | check\nEND.\nTEAM_PLAN:\n' +
+        JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] }) +
+        '\nEND_TEAM_PLAN.',
+      tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE',
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [{ taskId: 'impl', agent: 'scaffold', status: 'DONE', output: 'implemented' }],
+      deferredReviews: [{ id: 'review', agent: 'review', input: '검토', dependsOn: ['impl'] }],
+      failed: false,
+    });
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      runtime: {
+        up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [],
+      },
+    });
+    runRuntimeVerification.mockResolvedValueOnce({
+      runId: 'runtime-verify-fail', passed: false, cancelled: false, blocked: false,
+      output: 'runtime failed', feedback: 'HTTP 500 observed', evidenceSummary: '- healthcheck: FAIL (HTTP 500)',
+      records: [{ stage: 'healthcheck', status: 'FAIL' }],
+    } as any);
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 0 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'verify_failed' });
+    expect(calls).not.toContain('review');
+    expect(inputs.review).toHaveLength(0);
+  });
+
+  it('fails immediately when the runtime verifier changes a source file', async () => {
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      runtime: {
+        up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [],
+      },
+    });
+    runRuntimeVerification.mockResolvedValueOnce({
+      runId: 'runtime-verify-edit', passed: false, cancelled: false, blocked: false,
+      output: 'workspace changed', feedback: 'verifier modified src/main.ts', evidenceSummary: '',
+      records: [{ stage: 'verifier', status: 'FAIL', changedFiles: ['src/main.ts'] }],
+    } as any);
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'role_boundary_violation' });
+    expect(result.failure?.reason).toContain('src/main.ts');
+    expect(calls).not.toContain('review');
   });
 });
 

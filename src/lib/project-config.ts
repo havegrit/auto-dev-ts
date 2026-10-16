@@ -26,10 +26,23 @@ export interface RoleBoundaryConfig {
   ignoreGlobs: string[];
 }
 
+export interface RuntimeConfig {
+  /** 실행 중인 프로젝트 런타임을 준비·정리하는 명령. */
+  up: string;
+  down: string;
+  healthcheck: {
+    url: string;
+    timeoutMs: number;
+  };
+  /** 런타임에서 수행할 결정적 smoke/check 스크립트 경로. */
+  checks: string[];
+}
+
 export interface ProjectConfig {
   version: 1;
   verify?: VerifyConfig;
   roleBoundary?: RoleBoundaryConfig;
+  runtime?: RuntimeConfig;
 }
 
 export class ProjectConfigError extends Error {
@@ -80,14 +93,57 @@ function parseRoleBoundary(value: unknown, configPath: string): RoleBoundaryConf
   };
 }
 
+function parseRuntime(value: unknown, configPath: string): RuntimeConfig | undefined {
+  if (value === undefined) return undefined;
+  const runtime = asRecord(value);
+  if (!runtime) throw new ProjectConfigError(configPath, 'runtime must be an object');
+
+  const command = (field: 'up' | 'down'): string => {
+    const candidate = runtime[field];
+    if (typeof candidate !== 'string' || !candidate.trim()) {
+      throw new ProjectConfigError(configPath, `runtime.${field} must be a non-empty string`);
+    }
+    return candidate.trim();
+  };
+
+  const healthcheck = asRecord(runtime.healthcheck);
+  if (!healthcheck) throw new ProjectConfigError(configPath, 'runtime.healthcheck must be an object');
+  let url: URL;
+  if (typeof healthcheck.url !== 'string') {
+    throw new ProjectConfigError(configPath, 'runtime.healthcheck.url must be an HTTP(S) URL');
+  }
+  try { url = new URL(healthcheck.url); } catch {
+    throw new ProjectConfigError(configPath, 'runtime.healthcheck.url must be an HTTP(S) URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ProjectConfigError(configPath, 'runtime.healthcheck.url must use http or https');
+  }
+  if (healthcheck.timeoutMs !== undefined &&
+    (typeof healthcheck.timeoutMs !== 'number' || !Number.isFinite(healthcheck.timeoutMs) || healthcheck.timeoutMs <= 0)) {
+    throw new ProjectConfigError(configPath, 'runtime.healthcheck.timeoutMs must be a positive number');
+  }
+  const checks = parseGlobs(runtime.checks, 'runtime.checks', configPath);
+  if (checks.some((check) => check.startsWith('/') || check.split(/[\\/]/).includes('..') || /[*?\[\]]/.test(check))) {
+    throw new ProjectConfigError(configPath, 'runtime.checks entries must stay inside the project directory');
+  }
+  return {
+    up: command('up'),
+    down: command('down'),
+    healthcheck: {
+      url: url.toString(),
+      timeoutMs: healthcheck.timeoutMs === undefined ? 120_000 : Math.floor(healthcheck.timeoutMs),
+    },
+    checks,
+  };
+}
+
 /**
  * `<projectDir>/.auto-dev/project.json` 을 읽어 검증한다.
  *
  * - 파일이 없으면 `undefined` (설정 없는 프로젝트는 기존 동작 유지)
  * - 읽을 수 없거나 스키마가 틀리면 `ProjectConfigError`
  *
- * 모르는 최상위 필드는 무시한다. Phase 3 의 `runtime` 같은 후속 필드가 들어와도
- * 구버전 오케스트레이터가 run 을 깨뜨리지 않게 하기 위한 전방 호환 장치다.
+ * 모르는 최상위 필드는 무시해 이후 버전의 설정을 읽을 수 있게 한다.
  */
 export function loadProjectConfig(projectDir: string): ProjectConfig | undefined {
   const configPath = join(projectDir, PROJECT_CONFIG_PATH);
@@ -114,6 +170,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | undefined
     version: 1,
     verify: parseVerify(root.verify, configPath),
     roleBoundary: parseRoleBoundary(root.roleBoundary, configPath),
+    ...(root.runtime === undefined ? {} : { runtime: parseRuntime(root.runtime, configPath) }),
   };
 }
 

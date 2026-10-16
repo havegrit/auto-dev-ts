@@ -1,5 +1,8 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
+const { readWorkflowEvidence } = vi.hoisted(() => ({ readWorkflowEvidence: vi.fn() }));
+vi.mock('../lib/evidence.js', () => ({ readWorkflowEvidence }));
+
 vi.mock('../lib/complete.js', () => ({
   complete: vi.fn(),
   completeStream: vi.fn(),
@@ -104,6 +107,7 @@ import { claudeAuth } from '../lib/claude-auth.js';
 import { loadModelsFromCli } from '../lib/model-config.js';
 import { completeStream } from '../lib/complete.js';
 import { summarizeChatMemory } from '../lib/chat.js';
+import type { WorkflowEvidence } from '../lib/evidence.js';
 
 describe('health', () => {
   it('serves the container health endpoint without invoking providers', async () => {
@@ -112,6 +116,45 @@ describe('health', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('runtime verification evidence', () => {
+  beforeEach(() => readWorkflowEvidence.mockReset());
+
+  it('serves evidence associated with a workflow child run', async () => {
+    const evidence: WorkflowEvidence = {
+      version: 1,
+      workflowRunId: 'workflow-1',
+      records: [{
+        stage: 'healthcheck',
+        status: 'PASS',
+        timestamp: new Date().toISOString(),
+        request: { method: 'GET', url: 'http://localhost/health' },
+        response: { status: 200, ok: true, bodyTail: 'ready' },
+      }],
+    };
+    vi.mocked(getRun).mockReturnValueOnce({
+      id: 'verify-1', agent_name: 'verify', workflow_run_id: 'workflow-1', status: 'DONE',
+    } as any);
+    vi.mocked(readWorkflowEvidence).mockResolvedValueOnce(evidence);
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/verify-1/evidence'));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual(evidence);
+    expect(readWorkflowEvidence).toHaveBeenCalledWith('workflow-1');
+  });
+
+  it('does not read evidence for an unknown run', async () => {
+    vi.mocked(getRun).mockReturnValueOnce(undefined);
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/runs/missing/evidence'));
+
+    expect(res.status).toBe(404);
+    expect(readWorkflowEvidence).not.toHaveBeenCalled();
   });
 });
 

@@ -47,6 +47,8 @@ export interface TeamExecutionResult {
   tasks: TeamTaskResult[];
   failed: boolean;
   conflict?: string;
+  /** spec 워크플로우가 통합·검증을 마친 뒤 실행할 review 태스크. */
+  deferredReviews?: TeamTaskDefinition[];
 }
 
 function extractPlanText(output: string): string | undefined {
@@ -143,6 +145,8 @@ export interface TeamExecutorOptions {
   input: string;
   runOpts: AgentRunOpts;
   maxDepth?: number;
+  /** review는 DAG 실행 중 호출하지 않고 검증 게이트 뒤로 미룬다. */
+  deferReview?: boolean;
   runTask?: (agent: string, input: string, opts: AgentRunOpts) => Promise<RunResult>;
 }
 
@@ -151,17 +155,26 @@ export async function executeTeam(plan: TeamPlan, options: TeamExecutorOptions, 
   if (depth > (options.maxDepth ?? MAX_TEAM_DEPTH)) {
     return { tasks: [], failed: true, conflict: `Team depth exceeded: ${depth}` };
   }
+  const deferredDefinitions = options.deferReview ? plan.tasks.filter(task => task.agent === 'review') : [];
+  const deferredIds = new Set(deferredDefinitions.map(task => task.id));
+  if (options.deferReview && (
+    plan.tasks.some(task => task.agent !== 'review' && (task.dependsOn ?? []).some(dep => deferredIds.has(dep))) ||
+    deferredDefinitions.some(task => (task.dependsOn ?? []).some(dep => deferredIds.has(dep)))
+  )) {
+    return { tasks: [], failed: true, conflict: 'Review tasks must be terminal DAG nodes when review is deferred.' };
+  }
+  const runnableTasks = options.deferReview ? plan.tasks.filter(task => task.agent !== 'review') : plan.tasks;
   const runTask = options.runTask ?? ((agent, input, opts) => runNamedAgent(agent, input, opts));
   const results = new Map<string, TeamTaskResult>();
-  const pending = new Set(plan.tasks.map(task => task.id));
+  const pending = new Set(runnableTasks.map(task => task.id));
   const worktrees = new Map<string, string>();
   const commits: string[] = [];
   let conflict: string | undefined;
 
   try {
     while (pending.size && !conflict) {
-      const ready = plan.tasks.filter(task => pending.has(task.id) && (task.dependsOn ?? []).every(dep => results.get(dep)?.status === 'DONE'));
-      const blocked = plan.tasks.find(task => pending.has(task.id) && (task.dependsOn ?? []).some(dep => results.get(dep)?.status !== 'DONE' && !pending.has(dep)));
+      const ready = runnableTasks.filter(task => pending.has(task.id) && (task.dependsOn ?? []).every(dep => results.get(dep)?.status === 'DONE'));
+      const blocked = runnableTasks.find(task => pending.has(task.id) && (task.dependsOn ?? []).some(dep => results.get(dep)?.status !== 'DONE' && !pending.has(dep)));
       if (!ready.length) {
         if (blocked) {
           results.set(blocked.id, { taskId: blocked.id, agent: blocked.agent, status: 'BLOCKED', output: 'Dependency failed.' });
@@ -188,6 +201,7 @@ export async function executeTeam(plan: TeamPlan, options: TeamExecutorOptions, 
               input: `${prompt}\n\n## 상위 에이전트 결과\n${run.output}`,
               runOpts: { ...options.runOpts, cwd: taskCwd },
               maxDepth: options.maxDepth,
+              deferReview: options.deferReview,
               runTask,
             }, depth + 1);
             if (result.childTeam.failed) result.status = 'FAILED';
@@ -237,5 +251,25 @@ export async function executeTeam(plan: TeamPlan, options: TeamExecutorOptions, 
   } finally {
     await Promise.all([...worktrees.values()].map(path => removeWorktree(options.cwd, path)));
   }
-  return { tasks: [...results.values()], failed: Boolean(conflict || [...results.values()].some(result => result.status !== 'DONE')), conflict };
+  const tasks = [...results.values()];
+  const deferredReviews = options.deferReview
+    ? [
+      ...deferredDefinitions.map(task => ({
+        ...task,
+        input: `${options.input}\n\n## 팀 작업\n${task.input}${(task.dependsOn ?? []).map(dep => `\n\n## ${dep} 결과\n${results.get(dep)?.output ?? ''}`).join('')}`,
+      })),
+      ...tasks.flatMap(task => (task.childTeam?.deferredReviews ?? []).map(review => ({
+        ...review,
+        id: `${task.taskId}--${review.id}`,
+        dependsOn: undefined,
+        input: `${options.input}\n\n## 중첩 팀 review\n${review.input}`,
+      }))),
+    ]
+    : undefined;
+  return {
+    tasks,
+    failed: Boolean(conflict || tasks.some(result => result.status !== 'DONE')),
+    conflict,
+    ...(deferredReviews?.length ? { deferredReviews } : {}),
+  };
 }

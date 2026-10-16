@@ -17,6 +17,7 @@ export type AgentRunOpts = {
   cwd?: string;
   deliveryIntent?: 'ci' | 'cd';
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 };
 
 export function decorateCicdInput(input: string, deliveryIntent: 'ci' | 'cd' = 'ci'): string {
@@ -37,10 +38,10 @@ function buildOptions(name: string, input: string, opts: AgentRunOpts) {
   const system = loadPrompt(spec.promptFile);
   const deliveryIntent = opts.deliveryIntent ?? 'ci';
   const decoratedInput = name === 'cicd' ? decorateCicdInput(input, deliveryIntent) : input;
-  const usesProjectContext = ['clarifier', 'planner', 'scaffold', 'test', 'review'].includes(name);
+  const usesProjectContext = ['clarifier', 'planner', 'scaffold', 'test', 'review', 'verifier'].includes(name);
   const projectContext = usesProjectContext
     ? buildProjectContext(opts.cwd ?? defaultWorkspaceDir(), {
-      includeInstructions: name !== 'clarifier',
+      includeInstructions: name !== 'clarifier' && name !== 'verifier',
       // Claude Agent SDK는 기본 project 설정 소스에서 cwd의 CLAUDE.md를 이미 읽는다.
       claudeMdLoadedBySdk: modelConfig.getProviderForAgent(name) === 'anthropic',
     })

@@ -56,7 +56,7 @@ function tail(buffer: string): string {
 export function runVerify(
   projectDir: string,
   config: VerifyConfig,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
 ): Promise<VerifyOutcome> {
   const start = Date.now();
 
@@ -69,7 +69,7 @@ export function runVerify(
     const child = spawn('bash', ['-c', config.command], {
       cwd: projectDir,
       detached: true,
-      env: process.env,
+      env: opts.env ? { ...process.env, ...opts.env } : process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

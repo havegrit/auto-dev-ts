@@ -36,4 +36,6 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
   'atomic-commit': { promptFile: 'atomic-commit.system.md', tools: ['Read', 'Bash'] },
   // 동적 팀 merge conflict 전용 내부 에이전트. 일반 agent picker에는 노출하지 않는다.
   integrator: { promptFile: 'integrator.system.md', tools: ['Read', 'Write', 'Bash'] },
+  // 실제 런타임 동작을 독립적으로 관찰한다. PLAN 단계가 배정하지 않는다.
+  verifier: { promptFile: 'verifier.system.md', tools: ['Read', 'Bash'] },
 };

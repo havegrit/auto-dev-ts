@@ -51,17 +51,55 @@ describe('loadProjectConfig', () => {
     expect(loadProjectConfig(dir)?.verify?.timeoutMs).toBe(DEFAULT_VERIFY_TIMEOUT_MS);
   });
 
-  it('ignores unknown fields so later phases can extend the schema', () => {
+  it('parses a runtime verification config', () => {
     writeConfig(JSON.stringify({
       version: 1,
       verify: { command: 'npm test' },
-      runtime: { up: 'docker compose up -d' },
+      runtime: {
+        up: 'docker compose up -d --wait',
+        down: 'docker compose down -v',
+        healthcheck: { url: 'http://localhost:8080/health', timeoutMs: 30000 },
+        checks: ['.auto-dev/checks/smoke.sh'],
+      },
     }));
 
     const config = loadProjectConfig(dir);
 
     expect(config?.verify?.command).toBe('npm test');
-    expect(config).not.toHaveProperty('runtime');
+    expect(config?.runtime).toEqual({
+      up: 'docker compose up -d --wait',
+      down: 'docker compose down -v',
+      healthcheck: { url: 'http://localhost:8080/health', timeoutMs: 30000 },
+      checks: ['.auto-dev/checks/smoke.sh'],
+    });
+  });
+
+  it('applies the runtime healthcheck timeout default and ignores future top-level fields', () => {
+    writeConfig(JSON.stringify({
+      version: 1,
+      runtime: {
+        up: 'docker compose up -d',
+        down: 'docker compose down',
+        healthcheck: { url: 'https://localhost/health' },
+        checks: [],
+      },
+      future: { flag: true },
+    }));
+
+    expect(loadProjectConfig(dir)?.runtime?.healthcheck.timeoutMs).toBe(120_000);
+  });
+
+  it.each([
+    ['missing down command', { up: 'up', healthcheck: { url: 'http://localhost' }, checks: [] }, /runtime\.down/],
+    ['invalid healthcheck URL', { up: 'up', down: 'down', healthcheck: { url: 'file:///tmp/x' }, checks: [] }, /runtime\.healthcheck\.url/],
+    ['invalid healthcheck timeout', { up: 'up', down: 'down', healthcheck: { url: 'http://localhost', timeoutMs: 0 }, checks: [] }, /runtime\.healthcheck\.timeoutMs/],
+    ['invalid checks list', { up: 'up', down: 'down', healthcheck: { url: 'http://localhost' }, checks: [4] }, /runtime\.checks/],
+    ['check path traversal', { up: 'up', down: 'down', healthcheck: { url: 'http://localhost' }, checks: ['../outside.sh'] }, /stay inside/],
+    ['check glob instead of script path', { up: 'up', down: 'down', healthcheck: { url: 'http://localhost' }, checks: ['checks/*.sh'] }, /stay inside/],
+  ])('rejects %s', (_label, runtime, pattern) => {
+    writeConfig(JSON.stringify({ version: 1, runtime }));
+
+    expect(() => loadProjectConfig(dir)).toThrow(pattern as RegExp);
   });
 
   it('fails loudly with the config path when the JSON is malformed', () => {

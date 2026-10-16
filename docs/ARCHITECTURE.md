@@ -269,6 +269,7 @@ export const costGuard = {
 | **scaffold** | `Read, Write, Bash` | ✅ | **애플리케이션 소스 코드를 구현하는 유일한 에이전트** |
 | test | `Read, Write, Bash` | ✅ (테스트 코드 한정) | 테스트 코드만. 프로덕션 소스 수정 금지 (버그는 보고만) |
 | review | `Read` | ❌ | 없음 — 읽기 전용. blocker/high 도 수정안 제시만 |
+| verifier | `Read, Bash` | ❌ (사후 검사) | 내부 단계. 실행 중인 서비스 동작을 관찰하고 증거를 보고 |
 | cicd | `Read, Write` | ✅ (설정 파일 한정) | 파이프라인/Docker/배포 설정 파일만. 앱 소스 구현 금지 |
 | checking-docs-before-commit | `Read, Write, Bash` | ✅ (문서 한정) | 성공 후 전역 스킬 지침으로 문서 stale 여부 점검·갱신. stage/commit 금지 |
 | atomic-commit | `Read, Bash` | ❌ | 성공 후 spec 관련 hunk만 atomic commit. push/history rewrite/변경 폐기 금지 |
@@ -281,6 +282,8 @@ export const costGuard = {
 - **cicd 는 CI/CD 설정 파일(YAML/Dockerfile 등) 작성만** 허용된다. 이는 앱 "코드 구현"이
   아닌 인프라 설정으로 간주한다. 앱 소스 변경이 필요하면 scaffold 로 넘긴다.
 - review/planner/clarifier 는 `Write` 권한 자체가 없어 물리적으로 파일을 쓸 수 없다.
+- `verifier`는 `AGENT_ORDER` 밖의 내부 단계다. 새 실행 세션에서 `Read`, `Bash`를 쓰고,
+  실행 전후 workspace 스냅샷으로 Bash를 통한 파일 변경을 탐지한다.
 - 두 commit 후처리 에이전트는 `AGENT_ORDER` 밖의 내부 단계다. 일반 agent picker에는
   노출하지 않으며, core workflow 전체 성공 뒤에만 순서대로 호출한다.
 
@@ -290,7 +293,7 @@ export const costGuard = {
 대상 역할의 입력에 `## Project context` 절로 붙인다. `planner`, `scaffold`, `test`,
 `review` 는 `<cwd>/AGENTS.md` 가 있으면 이를 우선 사용하고,
 `<cwd>/.auto-dev/feature-map.md` 도 함께 읽는다. `clarifier` 의 명시적 context 절에는
-feature map만 넣는다.
+feature map만 넣는다. 내부 `verifier` 도 실제 동작 확인을 위해 feature map만 받는다.
 
 두 파일의 합계는 UTF-8 기준 16 KiB 로 제한한다. 초과하면 경계가 깨지지 않게 자르고
 프롬프트에 잘림 표시를 붙인다. 파일이 없으면 빈 context 절을 만들지 않는다. review의
@@ -427,6 +430,11 @@ while cursor < len(STEP_ORDER):
     if step == 'test' and parseTests == PASS and project has verify:
         if verify exit != 0: cursor = index('planner'); pendingFeedback = verify tail; continue
 
+    # runtime 설정이 있으면 up → healthcheck → checks → verifier → down 순서 (§6.2.2)
+    if step == 'test' and parseTests == PASS and project has runtime:
+        runRuntimeVerification()
+        if failed: cursor = index('planner'); pendingFeedback = evidence; continue
+
     # review: NEEDS-WORK + [ROUTE: ...] 이면 되돌린다. SHIP → cicd 진행, BLOCKED → 종료
     if step == 'review':
         if verdict == SHIP: cursor += 1; continue
@@ -493,8 +501,8 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
 ### 6.2.1 결정적 검증 게이트 (verify)
 
 통과 판정의 근거를 LLM 의 자기 보고에서 **오케스트레이터가 직접 관찰한 종료 코드**로
-옮기는 장치다. 대상 프로젝트가 `<projectDir>/.auto-dev/project.json` 에 검증 방법을
-선언했을 때만 동작하고, 선언이 없으면 workflow 는 이전과 완전히 동일하게 흐른다.
+옮기는 장치다. 대상 프로젝트가 `<projectDir>/.auto-dev/project.json` 에 `verify` 를
+선언했을 때만 이 게이트가 동작한다. 런타임 설정은 §6.2.2 에서 별도로 다룬다.
 
 ```json
 {
@@ -530,7 +538,7 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
 
 라우트 예산이 소진되면 `failure.cause = 'verify_failed'`, `failure.step = 'verify'` 로
 종료한다. 동적 팀(TEAM_PLAN) 경로도 통합이 끝난 뒤 같은 게이트를 통과해야 하며, DAG 안의
-review 태스크가 `SHIP` 을 선언했더라도 verify 가 실패하면 workflow 는 `FAILED` 다.
+review 태스크는 `verify` 또는 `runtime` 게이트가 설정된 경우 게이트 뒤에 실행한다.
 
 **역할 경계 사후 검사** (`src/lib/role-boundary.ts`)
 
@@ -553,6 +561,47 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 
 **프롬프트 주입**: `verify` 가 선언되어 있으면 scaffold·test 입력에 `## 검증 명령` 절이
 붙는다. test 프롬프트는 "PASS 를 선언하기 전에 같은 명령을 직접 실행하라" 를 명시한다.
+
+### 6.2.2 실제 런타임 검증
+
+`runtime` 설정은 HTTP 응답과 독립 verifier의 관찰까지 포함해 통과 여부를 정한다.
+
+```json
+{
+  "version": 1,
+  "runtime": {
+    "up": "docker compose up -d --wait",
+    "down": "docker compose down -v",
+    "healthcheck": { "url": "http://localhost:8080/actuator/health", "timeoutMs": 120000 },
+    "checks": [".auto-dev/checks/smoke.sh"]
+  }
+}
+```
+
+- `src/lib/project-config.ts`가 `runtime.up/down`, HTTP(S) healthcheck URL과 제한 시간,
+  프로젝트 밖으로 벗어나지 않는 상대 `checks` 경로를 검증한다. healthcheck 제한 시간은
+  기본 120초다. 셸 명령은 기본 15분 제한으로 실행한다.
+- `src/workflows/runtime-gate.ts`가 `[TESTS: PASS]`와 Phase 1 `verify` 종료 코드 0 뒤에
+  런타임을 시작하고 healthcheck를 재시도한 다음 각 check 스크립트를 실행한다. 결정적
+  단계 중 하나라도 실패하면 verifier를 호출하지 않고 증거를 planner에 전달한다.
+- 이후 새 `verifier` run은 `Read`, `Bash`만 사용해 스펙과 feature-map을 바탕으로 서비스에
+  실제 요청·조회한다. `[VERIFY: PASS]`만 통과 신호다. `FAIL`, 마커 누락, 실행 실패는
+  planner로 피드백한다. `[VERIFY: BLOCKED]`는 workflow를 BLOCKED로 끝낸다.
+- verifier 직전·직후 `snapshotWorkspace()`를 비교한다. 변경 파일이 있으면
+  `role_boundary_violation`으로 실패시키고 파일은 되돌리지 않는다. git 저장소가 아니면
+  검사를 건너뛰고 경고 이벤트를 남긴다.
+- `down`은 성공·실패·취소와 관계없이 `finally`에서 실행한다. cleanup은 취소 신호와
+  분리해 취소 중에도 프로세스를 띄우며, 종료 코드가 0이 아니면 검증 실패로 처리한다.
+- 각 실행은 `COMPOSE_PROJECT_NAME=autodev-<workflowRunId 앞 8자리>`를 runtime 명령과
+  verifier 도구에 전달한다. Compose project name은 서비스·네트워크·볼륨 이름을 분리하지만
+  published 호스트 포트는 분리하지 않는다. 병렬 실행 시 `ports: ["${WEB_PORT:-8080}:8080"]`
+  처럼 포트를 변수화하고 각 run에 고유한 사용 가능 포트를 설정해야 한다.
+- `src/lib/evidence.ts`가 request/response, check·up/down 출력 꼬리, verifier report를
+  `data/evidence/<workflowRunId>/evidence.json`에 저장한다. review 입력에도 증거 요약을
+  전달한다. `GET /api/runs/:id/evidence`와 workflow 상세의 접이식 증거 섹션으로 열람한다.
+  SQLite 스키마 변경은 없다.
+- `AGENT_ORDER`와 planner의 `PLAN:` 계약은 바꾸지 않는다. verifier는
+  `AGENT_SPECS`에 내부 agent로 등록하고 일반 단계 선택 목록에는 노출하지 않는다.
 
 ### 6.3 Java 버전 대비 미구현 항목
 
@@ -602,7 +651,8 @@ Java 버전 대비 제거된 컬럼:
 ```
 data/
 ├── auto-dev.db          # SQLite (gitignore)
-└── workspace/           # 에이전트 cwd (gitignore)
+├── workspace/           # 에이전트 cwd (gitignore)
+└── evidence/            # runtime 관찰 결과 (gitignore), workflow id별 evidence.json
 
 <project>/docs/plan/<slug>.md   # spec 세션마다 누적 기록: 원본 스펙 + 의사결정 + 플랜
 ```
@@ -651,6 +701,7 @@ data/
 | `POST` | `/api/chat/memory` | 오래된 대화를 주제별 Markdown 기억으로 압축해 반환. 서버 영속화 없음 |
 | `GET` | `/api/runs?units=N` | 최근 실행 유닛 N개 (parent + children 묶음, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/evidence` | 런타임 검증 요청·응답·출력·verifier 증거 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 workflow/agent 취소. 부모 취소는 현재 child provider까지 전파 |
 | `GET` | `/api/runs/:id/children` | 워크플로우 하위 실행 목록 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 (추천 답안 포함) |
@@ -864,11 +915,16 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `<projectDir>/.auto-dev/project.json` | `version` | 필수. 현재 `1` 만 유효 |
 | | `verify.command` | 결정적 검증 명령. 종료 코드 0 이 유일한 통과 신호 |
 | | `verify.timeoutMs` | 기본 `900000` (15분) |
+| | `runtime.up` / `runtime.down` | 런타임 기동·종료 셸 명령 |
+| | `runtime.healthcheck.url` | 준비 완료를 확인할 HTTP(S) URL |
+| | `runtime.healthcheck.timeoutMs` | 기본 `120000` (2분) |
+| | `runtime.checks` | 프로젝트 안의 상대 check 스크립트 경로 목록 |
 | | `roleBoundary.testGlobs` | test 단계가 수정해도 되는 경로. 비면 역할 경계 검사 생략 |
 | | `roleBoundary.ignoreGlobs` | 오탐 제외 경로 |
 
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
+`runtime` 이 있으면 실제 동작 검증 게이트도 활성화된다 (§6.2.2).
 
 프로젝트 지식은 별도 `<projectDir>/.auto-dev/feature-map.md` 에 둔다. 에이전트별 주입
 범위와 크기 제한은 §5.0.1 을 따른다.
@@ -912,6 +968,7 @@ auto-dev-ts/
 │   ├── cicd.system.md
 │   ├── planner.system.md
 │   ├── clarifier.system.md
+│   ├── verifier.system.md
 │   ├── checking-docs-before-commit.system.md
 │   └── atomic-commit.system.md
 ├── src/
@@ -929,6 +986,7 @@ auto-dev-ts/
 │   ├── workflows/
 │   │   ├── spec.ts                   # SpecWorkflow 파이프라인
 │   │   ├── verify-gate.ts            # 결정적 검증 단계 실행 + agent_run 기록 (§6.2.1)
+│   │   ├── runtime-gate.ts           # 런타임 기동·동작 검증·정리 (§6.2.2)
 │   │   ├── post-success-commit.ts    # docs skill → atomic commit 성공 후처리
 │   │   ├── spec-session.ts           # clarifier 답변 재개 + plan 문서 기록
 │   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
@@ -959,7 +1017,8 @@ auto-dev-ts/
 │   │   ├── circuit-breaker.ts        # rate-limit 회로차단기 (§10.2)
 │   │   ├── run-events.ts             # SSE 이벤트 emitter (실행별)
 │   │   ├── workspace.ts              # 프로젝트명 → cwd 해석 (경로 탈출 차단)
-│   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2.1)
+│   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2)
+│   │   ├── evidence.ts               # workflow runtime 증거 파일 읽기·쓰기 (§6.2.2)
 │   │   ├── verify.ts                 # 검증 명령 실행 + 프로세스 그룹 정리 (§6.2.1)
 │   │   ├── role-boundary.ts          # test 단계 역할 경계 사후 검사 (§6.2.1)
 │   │   ├── prompt.ts                 # loadPrompt() — 파일 캐시
@@ -974,7 +1033,7 @@ auto-dev-ts/
     └── workspace/
 ```
 
-대략 **TypeScript 70 파일(테스트 제외) / HTML 1 파일 / 프롬프트 13 파일**.
+대략 **TypeScript 73 파일(테스트 제외) / HTML 1 파일 / 프롬프트 14 파일**.
 
 ---
 

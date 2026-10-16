@@ -18,6 +18,7 @@ export const anthropicAgentRunner: AgentRunner = {
           permissionMode: 'bypassPermissions',
           stderr: cli.onStderr,
           cwd: req.cwd,
+          ...(req.env ? { env: req.env } : {}),
           model: req.model,
           abortController: req.abortController,
           ...(req.effort !== undefined ? { effort: req.effort } : {}),

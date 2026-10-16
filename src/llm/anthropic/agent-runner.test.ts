@@ -43,6 +43,14 @@ describe('anthropicAgentRunner', () => {
     expect(opts.agents).toEqual({ lens: {} });
   });
 
+  it('passes run-specific environment variables to the Claude Code process', async () => {
+    queryMock.mockReturnValue(asyncGen([{ type: 'result', subtype: 'success', result: 'ok', usage: {} }]));
+
+    await anthropicAgentRunner.run({ ...req, env: { ...process.env, COMPOSE_PROJECT_NAME: 'autodev-test' } }, () => {});
+
+    expect(queryMock.mock.calls[0][0].options.env).toMatchObject({ COMPOSE_PROJECT_NAME: 'autodev-test' });
+  });
+
   it('returns a no_result error outcome when the stream ends without a result', async () => {
     queryMock.mockReturnValue(asyncGen([
       { type: 'assistant', message: { content: [] } },

@@ -28,7 +28,7 @@ function makeProject(): string {
   return dir;
 }
 
-function capturedOptions(): { prompt: string; subagents?: Record<string, { prompt: string }> } {
+function capturedOptions(): { prompt: string; tools?: string[]; env?: NodeJS.ProcessEnv; subagents?: Record<string, { prompt: string }> } {
   return agentRun.mock.calls.at(-1)?.[0];
 }
 
@@ -131,5 +131,20 @@ describe('runNamedAgent project context', () => {
     await runNamedAgent('planner', 'task sentinel', { cwd: dir });
 
     expect(capturedOptions().prompt).toContain('claude instructions sentinel');
+  });
+
+  it('gives verifier the feature map and runtime environment with Read and Bash only', async () => {
+    const dir = makeProject();
+    mkdirSync(join(dir, '.auto-dev'));
+    writeFileSync(join(dir, 'AGENTS.md'), 'must not enter verifier context');
+    writeFileSync(join(dir, '.auto-dev', 'feature-map.md'), 'verifier runtime map');
+
+    await runNamedAgent('verifier', 'behavior spec', { cwd: dir, env: { COMPOSE_PROJECT_NAME: 'autodev-test' } });
+
+    const options = capturedOptions();
+    expect(options.tools).toEqual(['Read', 'Bash']);
+    expect(options.prompt).toContain('verifier runtime map');
+    expect(options.prompt).not.toContain('must not enter verifier context');
+    expect(options.env).toEqual({ COMPOSE_PROJECT_NAME: 'autodev-test' });
   });
 });

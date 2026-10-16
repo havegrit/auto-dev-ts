@@ -16,6 +16,7 @@ import { defaultWorkspaceDir } from '../lib/workspace.js';
 import { loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
 import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
+import { runRuntimeVerification } from './runtime-gate.js';
 import { emitRunEvent } from '../lib/run-events.js';
 
 export interface SpecOptions {
@@ -231,12 +232,20 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   let clarification: ClarificationResult | undefined;
   let routeCount = 0;
   let failure: SpecResult['failure'];
+  let runtimeEvidenceSummary = '';
 
   // 구현/테스트 단계는 최종 판정 기준이 되는 명령을 미리 알아야 한다.
   const verifyNotice = projectConfig?.verify
     ? `\n\n## 검증 명령 (오케스트레이터가 직접 실행한다)\n` +
       `- \`${projectConfig.verify.command}\`\n` +
       `- 이 명령의 종료 코드가 최종 판정이다. PASS 를 선언하기 전에 같은 명령을 직접 실행해 0 을 확인하라.`
+    : '';
+  const runtimeNotice = projectConfig?.runtime
+    ? `\n\n## 런타임 검증 설정 (오케스트레이터 소유)\n` +
+      `- 기동: \`${projectConfig.runtime.up}\`\n` +
+      `- 상태 확인: GET \`${projectConfig.runtime.healthcheck.url}\`\n` +
+      `- 결정적 확인: ${projectConfig.runtime.checks.map((check) => `\`${check}\``).join(', ') || '(없음)'}\n` +
+      `- 오케스트레이터가 런타임을 기동해 결정적 확인과 독립 verifier를 실행한다.`
     : '';
 
   // planner·clarifier 는 원본 스펙을, 그 외 단계는 planner 산출물(plan)을 입력으로 받는다.
@@ -251,8 +260,11 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     if (step === 'clarifier' && autoQaLines.length > 0) {
       baseline = `${baseline}\n\n## 이전 Q&A (사용자 의사결정)\n${autoQaLines.join('\n')}`;
     }
-    const body = pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
-    if (step === 'scaffold' || step === 'test') return `${body}${verifyNotice}`;
+    let body = pendingFeedback ? `${baseline}\n\n${pendingFeedback}` : baseline;
+    if (step === 'review' && runtimeEvidenceSummary) {
+      body += `\n\n## 검증 증거 요약\n${runtimeEvidenceSummary}`;
+    }
+    if (step === 'scaffold' || step === 'test') return `${body}${verifyNotice}${runtimeNotice}`;
     if (step !== 'cicd') return body;
     // cicd receives only its own planner assignment. Passing the entire PLAN
     // makes it see scaffold/test/review work and causes it to reject the run
@@ -270,6 +282,12 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     pendingFeedback = feedbackBlock(fromStep, output);
     const targetIndex = STEP_ORDER.indexOf(target);
     for (const staleStep of STEP_ORDER.slice(targetIndex)) delete results[staleStep];
+    if (target === 'planner') {
+      for (const key of Object.keys(results)) {
+        if (!(STEP_ORDER as readonly string[]).includes(key)) delete results[key];
+      }
+      runtimeEvidenceSummary = '';
+    }
     // verify 는 STEP_ORDER 밖의 내부 단계라 위 루프가 지우지 못한다.
     delete results[VERIFY_AGENT_NAME];
     cursor = targetIndex;
@@ -424,10 +442,11 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       const teamPlan = parseTeamPlan(r.output);
       if (teamPlan) {
         const team = await executeTeam(teamPlan, {
-          cwd: opts.cwd ?? process.env.AUTO_DEV_WORKSPACE_ROOT ?? process.cwd(),
+          cwd: projectDir,
           input: clarifiedSpec,
           runOpts,
           maxDepth: 2,
+          deferReview: Boolean(projectConfig?.verify || projectConfig?.runtime),
         });
         for (const task of team.tasks) {
           results[task.taskId] = {
@@ -436,8 +455,8 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             status: task.status,
           };
         }
-        // 통합이 끝난 뒤 결정적 검증을 통과해야 한다. DAG 안의 review 태스크가 SHIP 을
-        // 선언했더라도 verify 가 실패하면 workflow 를 통과시키지 않는다.
+        // 동적 팀의 review는 DAG 실행 중 호출하지 않는다. 통합된 결과가 결정적·런타임
+        // 검증을 통과한 뒤에만 별도 review 태스크를 실행한다.
         if (!team.failed && projectConfig?.verify && !opts.signal?.aborted) {
           const gate = await runVerifyStep({
             projectDir,
@@ -452,31 +471,107 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             durationMs: gate.outcome.durationMs,
             status: gate.passed ? 'DONE' : 'FAILED',
           };
+          if (gate.outcome.cancelled) {
+            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team };
+          }
           if (!gate.passed) {
+            const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
             return {
-              workflowRunId,
-              steps: results,
-              totalDurationMs: Date.now() - start,
-              verdict: gate.outcome.cancelled ? 'CANCELLED' : 'FAILED',
-              planOutput,
-              routeCount,
-              team,
-              failure: gate.outcome.cancelled ? undefined : {
-                step: VERIFY_AGENT_NAME,
-                status: 'FAILED',
-                cause: 'verify_failed',
-                reason: verifyFeedbackBody(projectConfig.verify, gate.outcome),
-                routeAvailable: false,
-              },
+              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+              failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: feedback, route: 'planner', routeAvailable: false },
+            };
+          }
+          runtimeEvidenceSummary = `- deterministic verify: PASS (exit 0, ${gate.outcome.durationMs}ms)` +
+            (gate.outcome.outputTail ? `\n  ${gate.outcome.outputTail}` : '');
+        }
+
+        if (!team.failed && projectConfig?.runtime && !opts.signal?.aborted) {
+          const runtimeGate = await runRuntimeVerification({
+            projectDir,
+            runtime: projectConfig.runtime,
+            workflowRunId,
+            specContent: clarifiedSpec,
+            specSessionId: opts.specSessionId,
+            triggerSource: runOpts.triggerSource,
+            signal: opts.signal,
+            runOpts,
+          });
+          results[VERIFY_AGENT_NAME] = {
+            runId: runtimeGate.runId,
+            durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
+            status: runtimeGate.passed ? 'DONE' : 'FAILED',
+          };
+          runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
+          if (runtimeGate.cancelled) {
+            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team };
+          }
+          if (runtimeGate.blocked) {
+            return {
+              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'BLOCKED', planOutput, routeCount, team,
+              failure: { step: VERIFY_AGENT_NAME, status: 'BLOCKED', cause: 'agent_stopped', reason: runtimeGate.feedback, routeAvailable: false },
+            };
+          }
+          if (!runtimeGate.passed) {
+            const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
+            if (roleBoundaryViolation) {
+              return {
+                workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+                failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation', reason: runtimeGate.feedback, routeAvailable: false },
+              };
+            }
+            if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
+            return {
+              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+              failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: runtimeGate.feedback, route: 'planner', routeAvailable: false },
             };
           }
         }
 
-        const reviewTask = team.tasks.find(task => task.agent === 'review');
+        if (!team.failed && !opts.signal?.aborted) {
+          for (const task of team.deferredReviews ?? []) {
+            const reviewInput = `${task.input}\n\n## 검증 증거 요약\n${runtimeEvidenceSummary || '(런타임 검증 설정 없음)'}`;
+            const r = await review(reviewInput, { ...runOpts, cwd: projectDir });
+            const reviewTask = { taskId: task.id, agent: task.agent, run: r, status: r.status, output: r.output };
+            team.tasks.push(reviewTask);
+            results[task.id] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
+            if (r.status !== 'DONE') {
+              team.failed = true;
+              team.conflict ??= `Team review failed: ${task.id}`;
+            }
+          }
+        }
+
+        const reviewTasks = team.tasks.filter(task => task.agent === 'review');
+        const blockedReview = reviewTasks.find(task => task.run?.status === 'BLOCKED' || task.run?.status === 'CANCELLED');
+        const reviewVerdict = reviewTasks.some(task => parseVerdict(task.output) === 'NEEDS-WORK')
+          ? 'NEEDS-WORK'
+          : blockedReview ? 'BLOCKED' : reviewTasks.map(task => parseVerdict(task.output)).find(Boolean);
         const verdict = team.failed
           ? 'FAILED'
-          : reviewTask ? (parseVerdict(reviewTask.output) ?? 'SHIP') : 'SHIP';
-        if (!team.failed && !opts.signal?.aborted) {
+          : reviewVerdict ?? 'SHIP';
+        if (!team.failed && verdict === 'NEEDS-WORK') {
+          const reviewTask = reviewTasks.find(task => parseVerdict(task.output) === 'NEEDS-WORK')!;
+          const route = parseRoute(reviewTask.output) ?? 'planner';
+          if (routeTo(route, 'review', reviewTask.output)) continue;
+          return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            failure: routeFailure(route, 'review', reviewTask.output),
+          };
+        }
+        if (!team.failed && verdict === 'BLOCKED') {
+          const reviewTask = reviewTasks.find(task => parseVerdict(task.output) === 'BLOCKED');
+          return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            failure: {
+              step: reviewTask?.taskId ?? 'review',
+              status: 'BLOCKED',
+              cause: 'agent_stopped',
+              reason: reviewTask?.output || 'The dynamic team review was blocked.',
+              routeAvailable: false,
+            },
+          };
+        }
+        if (!team.failed && verdict === 'SHIP' && !opts.signal?.aborted) {
           void commitSuccessfulSpec({
             specContent: baseSpec,
             clarifiedSpec,
@@ -500,7 +595,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           routeCount,
           team,
           failure: team.failed ? {
-            step: reviewTask?.taskId ?? team.tasks.find(task => task.status !== 'DONE')?.taskId ?? 'team',
+            step: team.tasks.find(task => task.status !== 'DONE')?.taskId ?? 'team',
             status: 'FAILED',
             cause: 'agent_stopped',
             reason: team.conflict ?? team.tasks.find(task => task.status !== 'DONE')?.error ?? 'Dynamic team failed.',
@@ -568,6 +663,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           verdict = 'CANCELLED';
           break;
         }
+        if (gate.passed) {
+          runtimeEvidenceSummary = `- deterministic verify: PASS (exit 0, ${gate.outcome.durationMs}ms)` +
+            (gate.outcome.outputTail ? `\n  ${gate.outcome.outputTail}` : '');
+        }
         if (!gate.passed) {
           const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
           if (routeTo('planner', 'verify', feedback)) continue;
@@ -588,6 +687,65 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           ts: new Date().toISOString(),
           data: 'verify_not_configured',
         });
+      }
+
+      if (projectConfig?.runtime) {
+        const runtimeGate = await runRuntimeVerification({
+          projectDir,
+          runtime: projectConfig.runtime,
+          workflowRunId,
+          specContent: clarifiedSpec,
+          specSessionId: opts.specSessionId,
+          triggerSource: runOpts.triggerSource,
+          signal: opts.signal,
+          runOpts,
+        });
+        results[VERIFY_AGENT_NAME] = {
+          runId: runtimeGate.runId,
+          durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
+          status: runtimeGate.passed ? 'DONE' : 'FAILED',
+        };
+        runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
+        if (runtimeGate.cancelled) {
+          verdict = 'CANCELLED';
+          break;
+        }
+        if (runtimeGate.blocked) {
+          verdict = 'BLOCKED';
+          failure = {
+            step: VERIFY_AGENT_NAME,
+            status: 'BLOCKED',
+            cause: 'agent_stopped',
+            reason: runtimeGate.feedback,
+            routeAvailable: false,
+          };
+          break;
+        }
+        if (!runtimeGate.passed) {
+          const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
+          if (roleBoundaryViolation) {
+            verdict = 'FAILED';
+            failure = {
+              step: VERIFY_AGENT_NAME,
+              status: 'FAILED',
+              cause: 'role_boundary_violation',
+              reason: runtimeGate.feedback,
+              routeAvailable: false,
+            };
+            break;
+          }
+          if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
+          verdict = 'FAILED';
+          failure = {
+            step: VERIFY_AGENT_NAME,
+            status: 'FAILED',
+            cause: 'verify_failed',
+            reason: runtimeGate.feedback,
+            route: 'planner',
+            routeAvailable: false,
+          };
+          break;
+        }
       }
     }
 

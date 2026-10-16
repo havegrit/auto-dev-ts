@@ -6,6 +6,8 @@ export interface AgentRunRequest {
   subagents?: Record<string, unknown>;
   model: string;
   effort?: string;
+  /** 도구 프로세스에 덧붙일 실행별 환경 변수. */
+  env?: NodeJS.ProcessEnv;
   /** generic은 Codex 공통 결과 계약을 추가하고, raw는 agent 고유 출력 계약을 보존한다. */
   resultMode?: 'generic' | 'raw';
   /** provider 실행과 하위 프로세스를 실제 중단하는 controller. */

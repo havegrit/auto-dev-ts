@@ -40,6 +40,17 @@ describe('runVerify', () => {
     expect(outcome.outputTail).toContain(dir.split('/').pop()!);
   });
 
+  it('adds run-specific environment variables without dropping the inherited PATH', async () => {
+    const outcome = await runVerify(
+      dir,
+      { command: 'printf "%s:%s" "$AUTODEV_TEST_VALUE" "${PATH:+set}"', timeoutMs: 5000 },
+      { env: { AUTODEV_TEST_VALUE: 'runtime' } },
+    );
+
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.outputTail).toBe('runtime:set');
+  });
+
   it('keeps only the last lines of a long output', async () => {
     const outcome = await runVerify(dir, { command: 'seq 1 1000', timeoutMs: 10000 });
 

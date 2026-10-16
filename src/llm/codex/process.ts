@@ -5,6 +5,7 @@ export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ExecResult {
@@ -34,6 +35,7 @@ export const execStream: ExecStream = (command, args, options, onStdoutLine) => 
     cwd: options.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
+    env: options.env,
   });
   let stdout = '';
   let stderr = '';

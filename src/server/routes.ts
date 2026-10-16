@@ -14,6 +14,7 @@ import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpe
 import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
+import { readWorkflowEvidence } from '../lib/evidence.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
 import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
@@ -478,6 +479,18 @@ export function createRoutes(): Hono {
 
   app.get('/api/runs/:id/events/history', (c) => {
     return c.json({ events: getRunEvents(c.req.param('id')) });
+  });
+
+  app.get('/api/runs/:id/evidence', async (c) => {
+    const run = getRun(c.req.param('id'));
+    if (!run) return c.json({ error: 'Not found' }, 404);
+    const workflowRunId = run.workflow_run_id ?? (run.agent_name === 'spec' ? run.id : undefined);
+    if (!workflowRunId) return c.json({ version: 1, workflowRunId: null, records: [] });
+    try {
+      return c.json(await readWorkflowEvidence(workflowRunId) ?? { version: 1, workflowRunId, records: [] });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.get('/api/runs/:id', (c) => {

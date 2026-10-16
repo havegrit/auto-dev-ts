@@ -117,6 +117,18 @@ describe('codexAgentRunner', () => {
     expect(calls[0].options.signal).toBe(abortController.signal);
   });
 
+  it('passes run-specific environment variables to the Codex subprocess', async () => {
+    const { exec, calls } = fakeExec([]);
+    const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });
+
+    await runner.run(
+      { prompt: 'p', cwd: '/repo', tools: ['Read', 'Bash'], model: 'gpt-5', env: { COMPOSE_PROJECT_NAME: 'autodev-test' } },
+      () => {},
+    );
+
+    expect(calls[0].options.env).toEqual({ COMPOSE_PROJECT_NAME: 'autodev-test' });
+  });
+
   it('maps codex process failures to an error outcome instead of throwing', async () => {
     const { exec } = fakeExec([], { exitCode: 124, stderr: 'timed out' });
     const runner = createCodexAgentRunner({ exec, collectChangedFiles: async () => [] });

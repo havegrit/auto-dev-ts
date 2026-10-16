@@ -43,4 +43,49 @@ describe('dynamic team plans', () => {
     expect(order[3]).toBe('end:test');
     expect(order[4]).toBe('start:review');
   });
+
+  it('returns review tasks without running them when review is deferred', async () => {
+    const runTask = vi.fn(async (agent: string) => ({
+      runId: agent,
+      output: `${agent} done`,
+      tokensIn: 0,
+      tokensOut: 0,
+      durationMs: 1,
+      status: 'DONE' as const,
+    }));
+    const result = await executeTeam({
+      version: 1,
+      tasks: [
+        { id: 'impl', agent: 'scaffold', input: '구현', writes: false },
+        { id: 'review', agent: 'review', input: '검토', dependsOn: ['impl'] },
+      ],
+    }, {
+      cwd: '/tmp',
+      input: '기능 스펙',
+      runOpts: {},
+      deferReview: true,
+      runTask,
+    });
+
+    expect(result.failed).toBe(false);
+    expect(runTask).toHaveBeenCalledOnce();
+    expect(runTask.mock.calls[0][0]).toBe('scaffold');
+    expect(result.deferredReviews).toEqual([expect.objectContaining({
+      id: 'review',
+      input: expect.stringContaining('## impl 결과\nscaffold done'),
+    })]);
+  });
+
+  it('rejects a deferred review that is not a terminal task', async () => {
+    const result = await executeTeam({
+      version: 1,
+      tasks: [
+        { id: 'review', agent: 'review', input: '검토' },
+        { id: 'impl', agent: 'scaffold', input: '구현', dependsOn: ['review'] },
+      ],
+    }, { cwd: '/tmp', input: '기능 스펙', runOpts: {}, deferReview: true });
+
+    expect(result.failed).toBe(true);
+    expect(result.conflict).toContain('terminal DAG nodes');
+  });
 });

@@ -181,6 +181,12 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 {
   "version": 1,
   "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "runtime": {
+    "up": "docker compose up -d --wait",
+    "down": "docker compose down -v",
+    "healthcheck": { "url": "http://localhost:8080/actuator/health", "timeoutMs": 120000 },
+    "checks": [".auto-dev/checks/smoke.sh"]
+  },
   "roleBoundary": {
     "testGlobs": ["src/test/**", "**/*.test.ts"],
     "ignoreGlobs": []
@@ -193,13 +199,19 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 - Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
 - Without this file every gate is inactive and the workflow behaves exactly as before. If the file exists but its schema is wrong, the run fails immediately.
 
+When `runtime` is configured, a `[TESTS: PASS]` run continues through the `verify` command, runtime startup, HTTP healthcheck, deterministic scripts, and a fresh `verifier` session before review. Any startup, healthcheck, check, or behavior-verification failure is recorded with evidence and routed back to the planner. Runtime `down` runs from `finally`, including on cancellation. The orchestrator sets `COMPOSE_PROJECT_NAME=autodev-<workflow id prefix>` for runtime commands and verifier tools.
+
+Runtime observations are stored in `data/evidence/<workflowRunId>/evidence.json`. The workflow detail view and `GET /api/runs/:id/evidence` expose request/response summaries, command output tails, and the verifier report. Compose project names isolate container resources; published host ports still need a project-specific variable, for example `ports: ["${WEB_PORT:-8080}:8080"]`.
+
+The internal `verifier` gets `Read` and `Bash` in a new run, plus the feature map. It checks the running behavior and reports `[VERIFY: PASS]`, `[VERIFY: FAIL]`, or `[VERIFY: BLOCKED]`. A workspace snapshot detects verifier edits and fails the gate without reverting them.
+
 ### Project context
 
 Agents use target-repository knowledge when it is available:
 
 - `AGENTS.md` supplies project-specific working rules. If it is absent, Anthropic runs use the `CLAUDE.md` already loaded by the Claude Agent SDK; other providers receive that file in the prompt.
 - `.auto-dev/feature-map.md` describes how to run the service, exercise endpoints, inspect data, and follow package boundaries.
-- Planner, scaffold, test, and review receive both sources. Clarifier's added context section contains only the feature map. Review lenses receive the same context as the review agent.
+- Planner, scaffold, test, and review receive both sources. Clarifier and the runtime verifier receive only the feature map in their added context. Review lenses receive the same context as the review agent.
 - Combined context is capped at 16 KiB. Oversized content is truncated with a marker; missing files are skipped.
 - Anthropic's SDK may still load `CLAUDE.md` by its default project-memory behavior, including for clarifier; auto-dev avoids adding the same file to the prompt a second time.
 
@@ -216,6 +228,7 @@ Start from [`docs/templates/feature-map.md`](docs/templates/feature-map.md).
 - Stage-based agent/workflow submission with project, model, effort, and repair-limit settings
 - Spec submission with text and multiple reference-context files together (any extension; 2 MB per file, 10 MB total; binaries are passed by path)
 - Workflow details, per-agent navigation, failure reasons, and token breakdowns
+- Runtime verification evidence, including healthcheck responses, check output, and verifier report
 - AI chat for general questions and read-only project Q&A; chat history remains in browser `localStorage`
 - Project context is filtered server-side to README and safe text files within the project
 
@@ -243,6 +256,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/chat/memory` | Compress client-supplied conversation into topic-grouped Markdown memory; server does not persist it |
 | `GET` | `/api/runs` | Recent runs (`?units=` top-level units; returns `{ rows, hasMore }`) |
 | `GET` | `/api/runs/:id` | Single run detail |
+| `GET` | `/api/runs/:id/evidence` | Runtime verification request/response and verifier evidence |
 | `POST` | `/api/runs/:id/cancel` | Force-stop a running workflow or agent process |
 | `GET` | `/api/runs/:id/clarification` | Pending clarifier questions for a stopped spec run |
 | `POST` | `/api/runs/:id/answers` | Resume a clarified spec run with `{ answers }` (no spec re-entry) |

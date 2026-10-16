@@ -178,6 +178,12 @@ clarifier → planner → scaffold → test → review → cicd
 {
   "version": 1,
   "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "runtime": {
+    "up": "docker compose up -d --wait",
+    "down": "docker compose down -v",
+    "healthcheck": { "url": "http://localhost:8080/actuator/health", "timeoutMs": 120000 },
+    "checks": [".auto-dev/checks/smoke.sh"]
+  },
   "roleBoundary": {
     "testGlobs": ["src/test/**", "**/*.test.ts"],
     "ignoreGlobs": []
@@ -190,13 +196,19 @@ clarifier → planner → scaffold → test → review → cicd
 - `roleBoundary.testGlobs`를 선언하면 test 단계 전후의 파일 내용 해시를 비교해, 테스트 경로 밖의 파일을 수정한 경우 `role_boundary_violation`으로 실패시킵니다 (되돌리지 않고 보고만 합니다).
 - 이 파일이 없으면 모든 게이트가 비활성이고 workflow는 이전과 완전히 동일하게 동작합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
 
+`runtime`을 설정하면 `[TESTS: PASS]` 뒤에 `verify` 명령, 런타임 기동, HTTP healthcheck, 결정적 스크립트, 새 verifier 세션 순서로 실행한 뒤 review로 진행합니다. 기동·healthcheck·check·동작 검증이 실패하면 증거를 붙여 planner로 되돌립니다. 취소를 포함한 모든 경로에서 `finally`가 runtime `down`을 실행합니다. 오케스트레이터는 런타임 명령과 verifier 도구에 `COMPOSE_PROJECT_NAME=autodev-<workflow ID 앞부분>`을 전달합니다.
+
+런타임 관찰 결과는 `data/evidence/<workflowRunId>/evidence.json`에 저장합니다. workflow 상세 화면과 `GET /api/runs/:id/evidence`에서 요청·응답 요약, 명령 출력 꼬리, verifier 보고서를 볼 수 있습니다. Compose 프로젝트 이름은 컨테이너 자원을 분리하지만 호스트 포트는 공유되므로 프로젝트별 변수로 지정해야 합니다. 예: `ports: ["${WEB_PORT:-8080}:8080"]`.
+
+내부 `verifier`는 새 실행에서 `Read`, `Bash`를 받고 feature map을 참고합니다. 실제 동작을 확인한 뒤 `[VERIFY: PASS]`, `[VERIFY: FAIL]`, `[VERIFY: BLOCKED]` 중 하나를 보고합니다. verifier의 Bash가 workspace를 수정하면 실행 전후 스냅샷으로 감지해 되돌리지 않고 실패 처리합니다.
+
 ### 대상 프로젝트 컨텍스트
 
 대상 저장소에 있는 지식을 에이전트 입력에 반영합니다.
 
 - `AGENTS.md`가 프로젝트 작업 규칙을 제공합니다. 파일이 없으면 Anthropic 실행은 Claude Agent SDK가 이미 읽는 `CLAUDE.md`를 사용하고, 다른 provider는 프롬프트에 직접 넣습니다.
 - `.auto-dev/feature-map.md`에는 서비스 실행, 엔드포인트 요청, 데이터 확인, 패키지 의존 규칙을 적습니다.
-- planner, scaffold, test, review에는 두 자료를 넣고, clarifier에 auto-dev가 추가하는 context 절에는 feature map만 넣습니다. review 렌즈도 review와 같은 컨텍스트를 받습니다.
+- planner, scaffold, test, review에는 두 자료를 넣고, clarifier와 runtime verifier에 auto-dev가 추가하는 context 절에는 feature map만 넣습니다. review 렌즈도 review와 같은 컨텍스트를 받습니다.
 - 전체 컨텍스트는 16 KiB로 제한하며, 넘으면 잘림 표시와 함께 자릅니다. 파일이 없으면 건너뜁니다.
 - Anthropic SDK는 기본 동작으로 clarifier에도 `CLAUDE.md`를 읽을 수 있으며, auto-dev는 이를 프롬프트에 중복 삽입하지 않습니다.
 
@@ -213,6 +225,7 @@ clarifier → planner → scaffold → test → review → cicd
 - 단계별 agent/workflow 제출 및 프로젝트·모델·effort·재작업 상한 설정
 - 텍스트 요청과 참고 context 파일을 함께 제출하는 spec 입력 (모든 확장자, 파일당 2MB·전체 10MB, 여러 파일; 바이너리는 경로로 전달)
 - workflow 상세, agent 이동, 실패 원인, 토큰 breakdown
+- healthcheck 응답, check 출력, verifier 보고서 등 런타임 검증 증거
 - 일반 질문과 읽기 전용 프로젝트 Q&A를 지원하는 AI 채팅; 기록은 브라우저 `localStorage`에만 저장
 - 프로젝트 문맥은 README와 프로젝트 내부의 안전한 텍스트 파일로 제한
 
@@ -240,6 +253,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/chat/memory` | 클라이언트가 보낸 대화를 주제별 Markdown 장기 기억으로 압축; 서버 저장 없음 |
 | `GET` | `/api/runs` | 최근 실행 목록 (`?units=` 최상위 유닛, `{ rows, hasMore }` 반환) |
 | `GET` | `/api/runs/:id` | 단일 실행 상세 |
+| `GET` | `/api/runs/:id/evidence` | 런타임 검증 요청·응답·출력·verifier 증거 |
 | `POST` | `/api/runs/:id/cancel` | 실행 중인 워크플로우 또는 에이전트 프로세스 강제 중단 |
 | `GET` | `/api/runs/:id/clarification` | 멈춘 spec run 의 대기 중 clarifier 질문 |
 | `POST` | `/api/runs/:id/answers` | `{ answers }` 로 spec 워크플로우 재개 (스펙 재입력 불필요) |

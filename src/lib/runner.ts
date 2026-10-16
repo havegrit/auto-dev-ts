@@ -25,6 +25,7 @@ export interface RunOptions {
   subagents?: Record<string, AgentDefinition>;
   tools?: string[];
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RunResult {
@@ -128,9 +129,10 @@ async function _execute(runId: string, opts: RunOptions): Promise<RunResult> {
         subagents: opts.subagents,
         model,
         effort,
+        ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
         // These agents expose text marker contracts parsed by runSpec. A generic
         // Codex JSON contract would override/strip PLAN, TESTS, ROUTE, and VERDICT.
-        resultMode: ['clarifier', 'planner', 'test', 'review'].includes(opts.name) ? 'raw' : 'generic',
+        resultMode: ['clarifier', 'planner', 'test', 'review', 'verifier'].includes(opts.name) ? 'raw' : 'generic',
         abortController,
       }, onEvent);
       return abortable(providerRun, abortController.signal);

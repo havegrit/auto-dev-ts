@@ -44,7 +44,7 @@ export function createCodexAgentRunner(deps: CodexAgentRunnerDeps = {}): AgentRu
       const result = await exec(
         process.env.AUTO_DEV_CODEX_COMMAND ?? 'codex',
         codexArgs(req),
-        { cwd: req.cwd, timeoutMs: timeoutMs(), signal: req.abortController?.signal },
+        { cwd: req.cwd, timeoutMs: timeoutMs(), signal: req.abortController?.signal, env: req.env },
         (line) => {
           for (const event of foldCodexLine(line, state)) onEvent(event);
         },
