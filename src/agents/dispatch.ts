@@ -1,6 +1,9 @@
 import { runAgent, runAgentBackground, type RunResult } from '../lib/runner.js';
 import { loadPrompt } from '../lib/prompt.js';
+import { defaultWorkspaceDir } from '../lib/workspace.js';
+import { modelConfig } from '../lib/model-config.js';
 import { AGENT_SPECS } from './specs.js';
+import { buildProjectContext } from './project-context.js';
 
 const OUTPUT_STYLE_RULE = [
   '출력은 한글로 짧게 작성한다. 불필요한 설명과 내부 사고 과정은 출력하지 않는다.',
@@ -34,11 +37,26 @@ function buildOptions(name: string, input: string, opts: AgentRunOpts) {
   const system = loadPrompt(spec.promptFile);
   const deliveryIntent = opts.deliveryIntent ?? 'ci';
   const decoratedInput = name === 'cicd' ? decorateCicdInput(input, deliveryIntent) : input;
+  const usesProjectContext = ['clarifier', 'planner', 'scaffold', 'test', 'review'].includes(name);
+  const projectContext = usesProjectContext
+    ? buildProjectContext(opts.cwd ?? defaultWorkspaceDir(), {
+      includeInstructions: name !== 'clarifier',
+      // Claude Agent SDK는 기본 project 설정 소스에서 cwd의 CLAUDE.md를 이미 읽는다.
+      claudeMdLoadedBySdk: modelConfig.getProviderForAgent(name) === 'anthropic',
+    })
+    : '';
+  const subagents = projectContext && spec.subagents
+    ? Object.fromEntries(Object.entries(spec.subagents).map(([lensName, lens]) => [lensName, {
+      ...lens,
+      prompt: `${lens.prompt}\n\n${projectContext}`,
+    }]))
+    : spec.subagents;
+
   return {
     name,
-    prompt: `${OUTPUT_STYLE_RULE}\n\n${system}\n\n---\n\n${decoratedInput}`,
+    prompt: `${OUTPUT_STYLE_RULE}\n\n${system}\n\n---\n\n${projectContext ? `${projectContext}\n\n` : ''}${decoratedInput}`,
     tools: spec.tools,
-    subagents: spec.subagents,
+    subagents,
     ...opts,
   };
 }

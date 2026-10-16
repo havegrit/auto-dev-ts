@@ -21,7 +21,7 @@ Claude Agent SDK 기반 개발 자동화 오케스트레이터. TypeScript ESM, 
 | `src/workflows/team.ts` | TEAM_PLAN DAG, 워크트리 병렬 실행, integrator |
 | `src/workflows/from-issue.ts` | 이슈 → 스펙 변환 후 `runSpec` 호출 |
 | `src/agents/specs.ts` | `AGENT_ORDER`, `AGENT_SPECS` — 역할 경계의 단일 진실 공급원 |
-| `src/agents/dispatch.ts` `buildOptions()` | 프롬프트 조립: `OUTPUT_STYLE_RULE + system + --- + input` |
+| `src/agents/dispatch.ts` `buildOptions()` / `project-context.ts` | 프롬프트 조립 + 프로젝트 컨텍스트(16 KiB 상한) |
 | `src/agents/review/lenses.ts` | review 병렬 렌즈 서브에이전트 |
 | `src/llm/` | 프로바이더 seam (`anthropic` / `codex` / `openai`), `registry.ts` |
 | `src/lib/workspace.ts` | `resolveProjectDir()`, `listProjects()`, `defaultWorkspaceDir()` |

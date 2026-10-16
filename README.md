@@ -193,6 +193,18 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 - Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
 - Without this file every gate is inactive and the workflow behaves exactly as before. If the file exists but its schema is wrong, the run fails immediately.
 
+### Project context
+
+Agents use target-repository knowledge when it is available:
+
+- `AGENTS.md` supplies project-specific working rules. If it is absent, Anthropic runs use the `CLAUDE.md` already loaded by the Claude Agent SDK; other providers receive that file in the prompt.
+- `.auto-dev/feature-map.md` describes how to run the service, exercise endpoints, inspect data, and follow package boundaries.
+- Planner, scaffold, test, and review receive both sources. Clarifier's added context section contains only the feature map. Review lenses receive the same context as the review agent.
+- Combined context is capped at 16 KiB. Oversized content is truncated with a marker; missing files are skipped.
+- Anthropic's SDK may still load `CLAUDE.md` by its default project-memory behavior, including for clarifier; auto-dev avoids adding the same file to the prompt a second time.
+
+Start from [`docs/templates/feature-map.md`](docs/templates/feature-map.md).
+
 ## Dashboard
 
 `./run serve` starts an HTTP server (default `http://127.0.0.1:8080`) with:

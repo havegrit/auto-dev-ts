@@ -284,6 +284,26 @@ export const costGuard = {
 - 두 commit 후처리 에이전트는 `AGENT_ORDER` 밖의 내부 단계다. 일반 agent picker에는
   노출하지 않으며, core workflow 전체 성공 뒤에만 순서대로 호출한다.
 
+### 5.0.1 대상 프로젝트 컨텍스트
+
+`src/agents/dispatch.ts` 의 `buildOptions()` 는 프로젝트 작업 규칙과 feature map을
+대상 역할의 입력에 `## Project context` 절로 붙인다. `planner`, `scaffold`, `test`,
+`review` 는 `<cwd>/AGENTS.md` 가 있으면 이를 우선 사용하고,
+`<cwd>/.auto-dev/feature-map.md` 도 함께 읽는다. `clarifier` 의 명시적 context 절에는
+feature map만 넣는다.
+
+두 파일의 합계는 UTF-8 기준 16 KiB 로 제한한다. 초과하면 경계가 깨지지 않게 자르고
+프롬프트에 잘림 표시를 붙인다. 파일이 없으면 빈 context 절을 만들지 않는다. review의
+네 렌즈에도 같은 context를 넣는다. feature map 작성 예시는
+[`docs/templates/feature-map.md`](templates/feature-map.md) 참고.
+
+Claude Agent SDK는 `settingSources` 를 별도로 지정하지 않으면 기본 소스를 읽으며,
+`project` 소스가 cwd의 `CLAUDE.md`를 로드한다. 그래서 Anthropic 실행에서는 이 파일을
+프롬프트에 중복 삽입하지 않는다. `AGENTS.md`가 없고 SDK가 이를 자동 로드하지 않는
+provider에서는 `CLAUDE.md`를 명시적으로 넣는다.
+Anthropic 실행의 clarifier도 SDK 기본 동작으로 `CLAUDE.md`를 읽을 수 있지만,
+auto-dev가 추가하는 context 절에는 넣지 않는다.
+
 ### 5.1 clarifier
 
 - **입력**: 스펙 전문 + 이전 Q&A (선택)
@@ -850,6 +870,9 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
 
+프로젝트 지식은 별도 `<projectDir>/.auto-dev/feature-map.md` 에 둔다. 에이전트별 주입
+범위와 크기 제한은 §5.0.1 을 따른다.
+
 ---
 
 ## 13. 프로젝트 레이아웃
@@ -863,6 +886,8 @@ auto-dev-ts/
 ├── CLAUDE.md                         # 이 저장소에서 일하는 에이전트용 작업 규칙
 ├── docs/
 │   ├── ARCHITECTURE.md               ← 본 문서
+│   ├── templates/
+│   │   └── feature-map.md            # 대상 백엔드 프로젝트 지식 템플릿
 │   └── plans/
 │       └── verification-roadmap.md   # 검증 중심 개선 로드맵 (Phase 0~7)
 ├── deploy/systemd/
