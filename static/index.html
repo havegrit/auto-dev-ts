@@ -415,6 +415,16 @@
     </div>
   </div>
 
+  <!-- 반복 지적에서 규칙화 후보 -->
+  <div class="card" id="rule-candidates-card">
+    <div class="section-title">
+      <span>규칙화 후보 <span style="font-size:0.72rem;font-weight:400">최근 14일 · 프로젝트별 상위 5개</span></span>
+      <button class="refresh" onclick="loadStats()">새로고침</button>
+    </div>
+    <div id="rule-candidates" style="display:grid;gap:0.75rem"></div>
+    <div style="margin-top:0.75rem;color:#8b949e;font-size:0.72rem">후보를 확인한 뒤 대상 저장소의 AGENTS.md 또는 테스트·정적 분석 규칙으로 승격하세요.</div>
+  </div>
+
   <!-- 최근 실행 -->
   <div class="card">
     <div class="section-title">
@@ -1247,10 +1257,11 @@
     }
 
     async function loadStats() {
-      const [statusRes, statsRes, runsPage] = await Promise.all([
+      const [statusRes, statsRes, runsPage, candidatesRes] = await Promise.all([
         fetch('/api/status').then(r => r.json()),
         fetch('/api/stats').then(r => r.json()),
         fetch(`/api/runs?units=${loadedUnits}`).then(r => r.json()),
+        fetch('/api/review-findings/candidates').then(r => r.json()).catch(() => ({ candidates: [] })),
       ]);
       const runsRes = runsPage.rows ?? [];
       hasMoreRuns = !!runsPage.hasMore;
@@ -1281,7 +1292,36 @@
       agentsEl.innerHTML = (statusRes.agents ?? []).map(a => `<span class="badge">${a}</span>`).join('');
 
       renderRuns(runsRes);
+      renderRuleCandidates(candidatesRes.candidates ?? []);
       loadingMore = false;
+    }
+
+    function renderRuleCandidates(candidates) {
+      const root = document.getElementById('rule-candidates');
+      if (!Array.isArray(candidates) || candidates.length === 0) {
+        root.innerHTML = '<div style="color:#8b949e;font-size:0.8rem">최근 14일에 반복된 지적이 없습니다.</div>';
+        return;
+      }
+      const projects = new Map();
+      for (const candidate of candidates) {
+        const rows = projects.get(candidate.project) ?? [];
+        rows.push(candidate);
+        projects.set(candidate.project, rows);
+      }
+      root.innerHTML = [...projects.entries()].map(([project, rows]) => `
+        <section style="border:1px solid #30363d;border-radius:6px;padding:0.65rem 0.75rem;background:#0d1117">
+          <div style="font-size:0.78rem;font-weight:600;margin-bottom:0.45rem">${escapeHtml(project === '.' ? '워크스페이스 루트' : project)}</div>
+          <div style="display:grid;gap:0.45rem">
+            ${rows.map(row => `
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.25rem 0.6rem;align-items:start">
+                <div style="font-size:0.78rem;overflow-wrap:anywhere">${escapeHtml(row.rule_hint)}</div>
+                <span class="detail-chip">${Number(row.count)}회</span>
+                <div style="font-size:0.68rem;color:#8b949e">${escapeHtml(row.category)}${row.sample_file ? ` · ${escapeHtml(row.sample_file)}` : ''}</div>
+              </div>
+            `).join('')}
+          </div>
+        </section>
+      `).join('');
     }
 
     async function loadMoreRuns() {

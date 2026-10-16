@@ -101,3 +101,20 @@ or
 
 The orchestrator parses these two lines. With `NEEDS-WORK` plus `[ROUTE: ...]`,
 it sends the full response back to that stage for rework.
+
+## 기계 판독 findings (필수)
+
+최종 verdict 마커 앞에 다음 블록을 정확히 한 번 출력한다. 승격할 만한 구체적 지적이
+없으면 빈 배열을 쓴다. `rule_hint`는 반복 시 대상 저장소의 AGENTS.md 또는 하드 규칙으로
+옮길 수 있는 짧고 재사용 가능한 규칙으로 작성한다. `category`는 `layering`, `security`,
+`correctness`, `performance`, `style`, `verify`, `role-boundary`처럼 짧은 소문자 분류를 쓴다.
+
+```text
+FINDINGS_JSON:
+[{"severity":"high","category":"layering","rule_hint":"controller에서 repository 직접 호출 금지","file":"src/main/java/..."}]
+END_FINDINGS.
+```
+
+필드 `severity`는 `blocker`, `high`, `medium`, `low` 중 하나다. `category`와 `rule_hint`는
+필수 문자열이며, `file`은 경로 문자열 또는 `null`이다. 기존 `[VERDICT: ...]`와
+`[ROUTE: ...]` 출력 계약은 그대로 유지한다.

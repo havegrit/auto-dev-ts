@@ -208,6 +208,10 @@ clarifier → planner → scaffold → test → review → cicd
 
 재현 실패를 관찰한 뒤 planner/scaffold 수정 루프를 시작합니다. 수정 후 같은 명령이 통과해야 하며, 이후 설정된 verify/runtime 게이트와 review를 진행합니다. 그 외 이슈 타입은 기존 SpecWorkflow를 따릅니다.
 
+### 리뷰 지적과 규칙화 후보
+
+review 프롬프트는 기존 verdict 마커 앞에 `FINDINGS_JSON` 블록을 출력합니다. 유효한 지적은 `review_finding`에 저장하고, 블록이 없거나 파싱에 실패하면 run은 계속 진행하며 경고 이벤트만 남깁니다. verify 실패와 역할 경계 위반도 같은 테이블에 기록합니다. 일일 브리핑과 대시보드는 최근 14일 `category + rule_hint` 빈도를 프로젝트별로 보여줍니다. 후보는 사람이 검토한 뒤 대상 저장소의 `AGENTS.md` 또는 테스트·정적 분석 하드 규칙으로 승격합니다.
+
 ### 대상 프로젝트 컨텍스트
 
 대상 저장소에 있는 지식을 에이전트 입력에 반영합니다.
@@ -267,6 +271,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/runs/:id/resume-last` | 마지막으로 실행된 워크플로우 단계부터 재개 |
 | `GET` | `/api/runs/:id/events` | SSE — 실행 중 라이브 이벤트 |
 | `GET` | `/api/runs/:id/events/history` | 실행 이력에 저장된 이벤트 기록 |
+| `GET` | `/api/review-findings/candidates` | 최근 14일 리뷰·검증 규칙화 후보를 프로젝트별로 조회 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
 | `GET`/`POST` | `/api/config` | 모델/fallback/에이전트별 모델/effort 조회·변경 + 프로젝트 목록 |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |

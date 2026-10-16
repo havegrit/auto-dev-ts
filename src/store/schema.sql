@@ -31,3 +31,17 @@ CREATE TABLE IF NOT EXISTS agent_run_event (
   FOREIGN KEY(run_id) REFERENCES agent_run(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_run_event_run ON agent_run_event(run_id, id);
+
+CREATE TABLE IF NOT EXISTS review_finding (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  category TEXT NOT NULL,
+  rule_hint TEXT NOT NULL,
+  file TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_finding_project_created
+  ON review_finding(project, created_at DESC);

@@ -14,6 +14,7 @@ import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpe
 import type { ClarificationRound } from '../workflows/clarification.js';
 import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
+import { getReviewFindingCandidates } from '../store/review-findings.js';
 import { readWorkflowEvidence } from '../lib/evidence.js';
 import { costGuard } from '../lib/cost-guard.js';
 import { circuitBreaker } from '../lib/circuit-breaker.js';
@@ -584,6 +585,11 @@ export function createRoutes(): Hono {
 
   app.get('/api/stats', (c) => {
     return c.json(getStats());
+  });
+
+  app.get('/api/review-findings/candidates', (c) => {
+    const project = c.req.query('project')?.trim() || undefined;
+    return c.json({ candidates: getReviewFindingCandidates(project) });
   });
 
   app.get('/api/config', (c) => {

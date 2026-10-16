@@ -113,8 +113,13 @@ const { runRuntimeVerification } = vi.hoisted(() => ({
     records: [{ stage: 'healthcheck', status: 'PASS' }],
   })),
 }));
+const { projectFindingKey, recordOperationalFinding } = vi.hoisted(() => ({
+  projectFindingKey: vi.fn(() => 'demo'),
+  recordOperationalFinding: vi.fn(),
+}));
 
 vi.mock('../lib/run-events.js', () => ({ emitRunEvent, closeEmitter: vi.fn(), getOrCreateEmitter: vi.fn() }));
+vi.mock('../lib/review-findings.js', () => ({ projectFindingKey, recordOperationalFinding }));
 
 vi.mock('../lib/project-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/project-config.js')>()),
@@ -139,6 +144,11 @@ vi.mock('./team.js', async (importOriginal) => ({
 }));
 
 import { runSpec, workflowOutput, workflowRunStatus } from './spec.js';
+
+beforeEach(() => {
+  projectFindingKey.mockReturnValue('demo');
+  recordOperationalFinding.mockClear();
+});
 
 describe('runSpec clarification gate', () => {
   beforeEach(() => {
@@ -753,6 +763,9 @@ describe('runSpec verification gate', () => {
 
     expect(result.verdict).toBe('FAILED');
     expect(result.failure).toMatchObject({ step: 'verify', cause: 'verify_failed', route: 'planner', routeAvailable: false });
+    expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'verify', project: 'demo', ruleHint: 'verify command failed: ./gradlew check',
+    }));
     expect(calls).not.toContain('review');
     expect(commitSuccessfulSpec).not.toHaveBeenCalled();
   });
@@ -1030,6 +1043,9 @@ describe('runSpec verification gate', () => {
     expect(result.failure).toMatchObject({ step: 'verify', cause: 'role_boundary_violation' });
     expect(result.failure?.reason).toContain('src/main.ts');
     expect(calls).not.toContain('review');
+    expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'role-boundary', file: 'src/main.ts', project: 'demo',
+    }));
   });
 });
 
@@ -1071,6 +1087,9 @@ describe('runSpec role boundary check', () => {
     expect(result.steps.test.status).toBe('FAILED');
     expect(calls).not.toContain('review');
     expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+    expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'role-boundary', file: 'src/lib/a.ts', project: 'demo',
+    }));
   });
 
   it('allows the test step to create and edit test files', async () => {

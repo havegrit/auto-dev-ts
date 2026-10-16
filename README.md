@@ -211,6 +211,10 @@ An issue whose type is exactly `BUG` (case-insensitive) starts in repro mode. Th
 
 After a failing repro is observed, the issue moves to `IN_PROGRESS` and the planner/scaffold fix loop starts. The same command must pass after the fix, before the configured verify/runtime gates and review. Other issue types keep the existing spec workflow.
 
+### Review findings and rule candidates
+
+The review prompt emits one `FINDINGS_JSON` block before its existing verdict markers. Valid findings are stored in `review_finding`; a malformed or missing block adds a warning event and does not fail the run. Verify failures and role-boundary violations use the same table. The daily briefing and dashboard show the most frequent `category + rule_hint` pairs from the last 14 days, grouped by project. Promote a candidate to the target repository's `AGENTS.md` or a hard test/static-analysis rule only after human review.
+
 ### Project context
 
 Agents use target-repository knowledge when it is available:
@@ -270,6 +274,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `POST` | `/api/runs/:id/resume-last` | Resume a spec run from the last executed workflow step |
 | `GET` | `/api/runs/:id/events` | SSE — live events for a running job |
 | `GET` | `/api/runs/:id/events/history` | Persisted event history for a run |
+| `GET` | `/api/review-findings/candidates` | Project-grouped review and verification rule candidates from the last 14 days |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
 | `GET`/`POST` | `/api/config` | Get/set model, fallback, per-agent models & effort + project list |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |

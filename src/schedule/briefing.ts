@@ -2,6 +2,8 @@ import cron from 'node-cron';
 import { review } from '../agents/review/index.js';
 import { log } from '../lib/logger.js';
 import { getIssueTracker } from '../integrations/issue-tracker/index.js';
+import { getReviewFindingCandidates } from '../store/review-findings.js';
+import { formatReviewFindingCandidates } from '../lib/review-findings.js';
 
 const ENABLED = process.env.AUTO_DEV_WORKLOG_BRIEFING_ENABLED === 'true';
 const CRON_EXPR = process.env.AUTO_DEV_WORKLOG_BRIEFING_CRON ?? '0 9 * * *';
@@ -38,11 +40,22 @@ export function startBriefingSchedule(): void {
         log.warn({ schedule: 'briefing', err: msg }, 'Failed to fetch issues');
       }
 
+      let ruleCandidateSummary = '(최근 14일 반복 지적 없음)';
+      try {
+        ruleCandidateSummary = formatReviewFindingCandidates(getReviewFindingCandidates(undefined, 3));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ schedule: 'briefing', err: msg }, 'Failed to fetch review finding candidates');
+      }
+
       const prompt = [
         '오늘의 워크로그 브리핑.',
         '',
         '할당된 이슈:',
         issueSummary,
+        '',
+        '최근 14일 규칙화 후보:',
+        ruleCandidateSummary,
         '',
         worklog ? `워크로그:\n${worklog}` : '',
         '',

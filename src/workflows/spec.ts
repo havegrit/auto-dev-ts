@@ -17,6 +17,7 @@ import { DEFAULT_VERIFY_TIMEOUT_MS, loadProjectConfig, roleBoundaryEnabled } fro
 import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
 import { runRuntimeVerification } from './runtime-gate.js';
+import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
 import { emitRunEvent } from '../lib/run-events.js';
 
 export interface SpecOptions {
@@ -206,6 +207,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
   // 설정이 깨져 있으면 loadProjectConfig 가 던져서 run 을 실패시킨다.
   const projectDir = opts.cwd ?? defaultWorkspaceDir();
   const projectConfig = loadProjectConfig(projectDir);
+  const findingProject = projectFindingKey(projectDir);
   const boundaryConfig = roleBoundaryEnabled(projectConfig) ? projectConfig.roleBoundary : undefined;
 
   // skip 모드에서 추천 답안으로 자동 답변한 라운드와, 다음 clarifier 입력에 실을 Q&A 라인.
@@ -379,6 +381,17 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           ? findRoleBoundaryViolations(boundaryBefore, boundaryAfter, boundaryConfig)
           : [];
         if (violations.length > 0) {
+          for (const file of violations) {
+            recordOperationalFinding({
+              runId: r.runId,
+              workflowRunId,
+              project: findingProject,
+              severity: 'high',
+              category: 'role-boundary',
+              ruleHint: 'test agent must not modify files outside configured test paths',
+              file,
+            });
+          }
           verdict = 'FAILED';
           results[step] = { runId: r.runId, durationMs: r.durationMs, status: 'FAILED' };
           failure = {
@@ -482,6 +495,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team };
           }
           if (!gate.passed) {
+            recordOperationalFinding({
+              runId: gate.runId,
+              workflowRunId,
+              project: findingProject,
+              severity: 'high',
+              category: 'verify',
+              ruleHint: `verify command failed: ${projectConfig.verify.command}`,
+            });
             const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
@@ -521,11 +542,31 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           if (!runtimeGate.passed) {
             const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
             if (roleBoundaryViolation) {
+              for (const file of runtimeGate.records.filter(record => record.stage === 'verifier').flatMap(record => record.changedFiles ?? [])) {
+                recordOperationalFinding({
+                  runId: runtimeGate.runId,
+                  workflowRunId,
+                  project: findingProject,
+                  severity: 'high',
+                  category: 'role-boundary',
+                  ruleHint: 'runtime verifier must not modify workspace files',
+                  file,
+                });
+              }
               return {
                 workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
                 failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation', reason: runtimeGate.feedback, routeAvailable: false },
               };
             }
+            const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
+            recordOperationalFinding({
+              runId: runtimeGate.runId,
+              workflowRunId,
+              project: findingProject,
+              severity: 'high',
+              category: 'verify',
+              ruleHint: `runtime verification failed at ${failedStage}`,
+            });
             if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
@@ -662,6 +703,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
           break;
         }
         if (!repro.passed) {
+          recordOperationalFinding({
+            runId: repro.runId,
+            workflowRunId,
+            project: findingProject,
+            severity: 'high',
+            category: 'verify',
+            ruleHint: `bug reproduction command failed after fix: ${opts.reproCommand}`,
+          });
           const feedback = [
             '수정 후에도 동일한 버그 재현 명령이 통과하지 못했다. 출력과 종료 코드를 근거로 구현을 수정하라.',
             '',
@@ -724,6 +773,14 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             (gate.outcome.outputTail ? `\n  ${gate.outcome.outputTail}` : '');
         }
         if (!gate.passed) {
+          recordOperationalFinding({
+            runId: gate.runId,
+            workflowRunId,
+            project: findingProject,
+            severity: 'high',
+            category: 'verify',
+            ruleHint: `verify command failed: ${projectConfig.verify.command}`,
+          });
           const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
           if (routeTo('planner', 'verify', feedback)) continue;
           verdict = 'FAILED';
@@ -780,6 +837,17 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
         if (!runtimeGate.passed) {
           const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
           if (roleBoundaryViolation) {
+            for (const file of runtimeGate.records.filter(record => record.stage === 'verifier').flatMap(record => record.changedFiles ?? [])) {
+              recordOperationalFinding({
+                runId: runtimeGate.runId,
+                workflowRunId,
+                project: findingProject,
+                severity: 'high',
+                category: 'role-boundary',
+                ruleHint: 'runtime verifier must not modify workspace files',
+                file,
+              });
+            }
             verdict = 'FAILED';
             failure = {
               step: VERIFY_AGENT_NAME,
@@ -790,6 +858,15 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             };
             break;
           }
+          const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
+          recordOperationalFinding({
+            runId: runtimeGate.runId,
+            workflowRunId,
+            project: findingProject,
+            severity: 'high',
+            category: 'verify',
+            ruleHint: `runtime verification failed at ${failedStage}`,
+          });
           if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
           verdict = 'FAILED';
           failure = {

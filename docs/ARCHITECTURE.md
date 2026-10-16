@@ -621,6 +621,20 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - 버그 이슈에는 `agent_name='spec'` 부모 run을 만들어 사전 재현 테스트와 명령 결과를
   대시보드 상세의 자식 실행으로 연결한다. 일반 이슈 경로는 기존 흐름을 유지한다.
 
+### 6.2.4 review findings와 학습 후보
+
+- `prompts/review.system.md`는 기존 verdict/route 계약 앞에 `FINDINGS_JSON` 블록을
+  요구한다. `src/lib/review-findings.ts`가 severity/category/rule_hint/file을 검증하며,
+  파싱 또는 저장 실패는 review run의 `warn` 이벤트로만 남긴다.
+- Findings와 오케스트레이터가 관찰한 `verify`, `role-boundary` 실패는
+  `review_finding` 테이블에 저장한다. `src/store/schema.sql`의 `CREATE TABLE IF NOT EXISTS`가
+  기존 DB에도 테이블을 추가하므로 별도 ALTER 마이그레이션은 필요 없다.
+- `getReviewFindingCandidates()`는 최근 14일을 `project + category + rule_hint`로 집계하고
+  프로젝트별 빈도 상위 5개를 반환한다. `/api/review-findings/candidates`가 대시보드에
+  제공하고 `briefing.ts`가 일일 브리핑에 포함한다.
+- 승격은 자동 적용하지 않는다. 사람이 후보를 검토해 대상 저장소의 `AGENTS.md` 또는
+  ArchUnit/Checkstyle/CI 검사 같은 하드 규칙으로 옮긴다.
+
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |
@@ -662,7 +676,8 @@ CREATE TABLE agent_run (
 Java 버전 대비 제거된 컬럼:
 - `cost_usd` — 구독 플랜이므로 per-call 비용 없음
 
-`review_finding` 테이블 (구조화 finding 영속화) 미구현 — Java 버전의 multi-lens JSON dedup 파싱 생략으로 불필요.
+`review_finding` 테이블은 §6.2.4의 review finding 및 검증 실패 기록에 사용한다.
+Java 버전의 multi-lens JSON dedup 파싱은 별도로 구현하지 않는다.
 
 ### 7.2 파일 산출물
 
@@ -854,6 +869,8 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `[TESTS: FAIL]` (대상 비활성/예산 소진) | test | 원인을 기록하고 즉시 실패 종료 |
 | `[TESTS: BLOCKED]` | test | 차단 원인을 기록하고 즉시 실패 종료 |
 
+- review의 `FINDINGS_JSON` 블록은 제어 마커가 아니다. verdict/route 앞에서 파싱해
+  `review_finding`에 저장하며, 블록 오류는 경고 이벤트만 남긴다 (§6.2.4).
 - 라우팅은 `maxRoutes`(`--iterations`, 기본 4, 최대 10) 와 `safetyCap` 으로 이중 제한해 무한
   루프를 막는다.
 - 테스트 코드 오류는 test 에이전트가 자기 실행 안에서 직접 수정하므로 라우팅 대상이

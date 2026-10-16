@@ -58,6 +58,9 @@ vi.mock('../store/runs.js', () => ({
 vi.mock('../store/run-events.js', () => ({
   getRunEvents: vi.fn(() => []),
 }));
+vi.mock('../store/review-findings.js', () => ({
+  getReviewFindingCandidates: vi.fn(() => []),
+}));
 vi.mock('../lib/cost-guard.js', () => ({
   costGuard: { stats: vi.fn(() => ({ limit: null })) },
 }));
@@ -103,6 +106,7 @@ import { runSpec } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, resumeLastSpecStep } from '../workflows/spec-session.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
 import { getRun, getRunWithSessionTotals, updateRun } from '../store/runs.js';
+import { getReviewFindingCandidates } from '../store/review-findings.js';
 import { claudeAuth } from '../lib/claude-auth.js';
 import { loadModelsFromCli } from '../lib/model-config.js';
 import { completeStream } from '../lib/complete.js';
@@ -155,6 +159,27 @@ describe('runtime verification evidence', () => {
 
     expect(res.status).toBe(404);
     expect(readWorkflowEvidence).not.toHaveBeenCalled();
+  });
+});
+
+describe('review finding candidates', () => {
+  it('serves project-scoped rule candidates for the dashboard', async () => {
+    vi.mocked(getReviewFindingCandidates).mockReturnValueOnce([{
+      project: 'demo',
+      category: 'layering',
+      rule_hint: 'controller에서 repository 직접 호출 금지',
+      count: 3,
+      first_seen: '2026-10-01T00:00:00.000Z',
+      last_seen: '2026-10-15T00:00:00.000Z',
+      sample_file: 'src/controller.ts',
+    }]);
+    const app = createRoutes();
+
+    const res = await app.fetch(new Request('http://localhost/api/review-findings/candidates?project=demo'));
+
+    expect(res.status).toBe(200);
+    expect(getReviewFindingCandidates).toHaveBeenCalledWith('demo');
+    await expect(res.json()).resolves.toEqual({ candidates: [expect.objectContaining({ project: 'demo', count: 3 })] });
   });
 });
 

@@ -5,6 +5,7 @@ import { DEFAULT_VERIFY_TIMEOUT_MS, loadProjectConfig } from '../lib/project-con
 import { findRoleBoundaryViolations, snapshotWorkspace } from '../lib/role-boundary.js';
 import { defaultWorkspaceDir } from '../lib/workspace.js';
 import { emitRunEvent } from '../lib/run-events.js';
+import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
 import { insertRun, updateRun } from '../store/runs.js';
 import { runSpec, workflowOutput, workflowRunStatus, type SpecResult } from './spec.js';
 import { runVerifyStep } from './verify-gate.js';
@@ -88,6 +89,17 @@ async function prepareBugReproduction(
         ignoreGlobs: projectConfig?.roleBoundary?.ignoreGlobs ?? [],
       });
       if (changedFiles.length) {
+        for (const file of changedFiles) {
+          recordOperationalFinding({
+            runId: testRun.runId,
+            workflowRunId,
+            project: projectFindingKey(projectDir),
+            severity: 'high',
+            category: 'role-boundary',
+            ruleHint: 'bug reproduction test agent must not modify files outside test paths',
+            file,
+          });
+        }
         return {
           confirmed: false,
           cause: 'role_boundary_violation',
@@ -133,6 +145,14 @@ async function prepareBugReproduction(
     return { confirmed: false, cause: 'repro_timeout', report: `재현 명령이 제한 시간 안에 끝나지 않았다: ${command}` };
   }
   if (baseline.outcome.exitCode === 0) {
+    recordOperationalFinding({
+      runId: baseline.runId,
+      workflowRunId,
+      project: projectFindingKey(projectDir),
+      severity: 'high',
+      category: 'verify',
+      ruleHint: `bug reproduction command did not fail: ${command}`,
+    });
     return {
       confirmed: false,
       cause: 'not_reproduced',
@@ -140,6 +160,14 @@ async function prepareBugReproduction(
     };
   }
   if (!baseline.passed) {
+    recordOperationalFinding({
+      runId: baseline.runId,
+      workflowRunId,
+      project: projectFindingKey(projectDir),
+      severity: 'high',
+      category: 'verify',
+      ruleHint: `bug reproduction command could not confirm failure: ${command}`,
+    });
     return {
       confirmed: false,
       cause: 'repro_command_failed',
