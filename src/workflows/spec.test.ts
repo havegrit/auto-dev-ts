@@ -315,6 +315,33 @@ describe('runSpec clarification gate', () => {
     expect(commitSuccessfulSpec).toHaveBeenCalledOnce();
   });
 
+  it('does not schedule post-success commits for eval workflows', async () => {
+    clarifierResult = {
+      runId: 'clarifier-run',
+      output: JSON.stringify({ ready: true, summary: '명확한 스펙', questions: [] }),
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 10,
+      status: 'DONE',
+    };
+    plannerResult = {
+      runId: 'planner-run',
+      output: 'PLAN:\n1. review | verify the narrowly scoped change\nEND.',
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 10,
+      status: 'DONE',
+    };
+
+    const result = await runSpec('좁은 범위의 요청', {
+      steps: new Set(['clarifier', 'planner', 'review']),
+      triggerSource: 'eval',
+    });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(commitSuccessfulSpec).not.toHaveBeenCalled();
+  });
+
   it('includes the review output when a requested planner route cannot be taken', async () => {
     clarifierResult = {
       runId: 'clarifier-run',

@@ -90,6 +90,10 @@ docker compose --profile prod up -d auto-dev-prod
 # 특정 단계만 실행
 ./run spec path/to/spec.md --steps scaffold,test,review
 
+# 기본 평가 케이스 실행 / 모델 비교
+./run eval
+./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-5.5
+
 # 현황 및 통계
 ./run status
 
@@ -169,6 +173,10 @@ clarifier → planner → scaffold → test → review → cicd
 `clarifier`가 요구사항이 아직 구현 가능한 수준이 아니라고 판단하면 planner/scaffold로 넘어가지 않고 추천 답안을 포함한 질문을 반환한 뒤 멈춥니다. 대시보드에서는 그 질문에 바로 답하면 **스펙을 다시 입력하지 않고** 재개됩니다 — 답변이 원본 스펙과 합쳐져 연결된 새 run으로 진행되며, clarifier가 또 물으면 반복됩니다. 각 spec 세션은 `<project>/docs/plan/<slug>.md`에 plan 문서(원본 스펙 + 의사결정 히스토리 + planner 산출물)를 누적 기록합니다. 리뷰 단계에서 `[VERDICT: SHIP]` 마커가 확인되면 파이프라인이 조기 종료됩니다. 마지막 `cicd` 단계는 planner가 명시적인 CI/CD 작업을 할당할 때만 실행되며, 기본은 CI이고 배포 요청이 명시된 경우에만 CD 산출물을 만듭니다. `--steps`로 실행할 단계를 지정하거나, `--iterations`로 review/test 재작업 라우팅 상한(기본 4, 최대 10)을 설정할 수 있습니다.
 
 활성 workflow 단계가 성공적으로 끝나면 내부 후처리 에이전트 두 개가 고정 순서로 백그라운드 실행됩니다. `checking-docs-before-commit`이 오래된 문서를 점검·갱신한 뒤, `atomic-commit`이 해당 spec에 속한 파일 또는 hunk만 stage하고 검증된 atomic commit을 생성합니다. 전역 스킬 지침은 `~/.codex/skills`, 이어서 `~/.claude/skills`에서 읽으며 `AUTO_DEV_SKILLS_ROOT`로 루트를 덮어쓸 수 있습니다. clarifier 응답 대기, 실패·취소, 안전 상한으로 미완료된 workflow는 커밋하지 않습니다. 후처리 실행은 spec workflow와 분리되며 spec 완료 상태를 바꾸지 않고, 실패는 별도 로그로 기록합니다.
+
+### auto-dev 자체 평가
+
+`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성됩니다. fixture를 임시 workspace에 복사해 `triggerSource: eval`로 `runSpec`을 실행하고, 기존 일일 실행 한도를 지킵니다. 기대 verdict와 checks 스크립트 종료 코드를 함께 판정합니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. 결과에는 라우트 수, 토큰, 시간, 검증 출력과 직전 실행 대비 통과·회귀가 기록되며 `data/evals/<timestamp>.json`에 저장됩니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
 
 ### 결정적 검증 게이트
 
@@ -312,6 +320,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 ```
 auto-dev-ts/
 ├── prompts/          각 에이전트 시스템 프롬프트 (Markdown)
+├── evals/            고정 평가 케이스와 대상 프로젝트 fixture
 ├── deploy/systemd/   SSH와 독립된 user service 템플릿
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          운영 스크립트 (비-root 런처 + user service 설치)
@@ -319,7 +328,7 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리
 │   │   └── review/   멀티 렌즈 리뷰 오케스트레이터 + 렌즈 정의
-│   ├── workflows/    SpecWorkflow + 검증 게이트 + 이슈 기반 워크플로우
+│   ├── workflows/    SpecWorkflow + 검증 게이트 + 이슈·eval 워크플로우
 │   ├── llm/          LLM 프로바이더 seam (registry + anthropic/codex 구현)
 │   ├── integrations/ issue-tracker 클라이언트 + OpenClaw Telegram 알림
 │   ├── store/        SQLite 스키마 + CRUD

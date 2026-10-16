@@ -1,0 +1,6 @@
+{
+  "tags": ["spring-boot", "postgres", "bug-repro", "maven"],
+  "expectedResult": "SHIP",
+  "timeoutMs": 300000,
+  "reproCommand": "mvn -q test -Dtest=UserServiceTest"
+}

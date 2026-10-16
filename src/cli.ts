@@ -86,6 +86,25 @@ program.command('spec <file>')
     console.log(JSON.stringify(result, null, 2));
   });
 
+program.command('eval')
+  .description('고정 fixture로 auto-dev spec workflow 평가')
+  .option('--case <id>', '평가할 case ID (미지정 시 전체)')
+  .option('--models <ids>', '비교할 모델 ID 목록 (쉼표 구분)')
+  .action(async (options: { case?: string; models?: string }) => {
+    try {
+      const { formatEvalSummary, runEval } = await import('./workflows/eval.js');
+      const result = await runEval({
+        caseId: options.case,
+        models: options.models?.split(',').map((model) => model.trim()).filter(Boolean),
+      });
+      console.log(formatEvalSummary(result.artifact, result.file));
+      if (result.artifact.summary.failed > 0 || result.artifact.summary.skipped > 0) process.exitCode = 1;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+  });
+
 program.command('issues')
   .description('이슈 트래커에서 열린 이슈 목록 조회')
   .action(async () => {

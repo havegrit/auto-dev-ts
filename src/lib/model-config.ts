@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getModelCatalog } from '../llm/registry.js';
 import { appConfig, type RuntimeConfig } from './app-config.js';
 import { log } from './logger.js';
@@ -31,6 +32,7 @@ let currentEffort = DEFAULT_EFFORT;
 let fallbackModel = storedConfig.fallbackModel ?? process.env.AUTO_DEV_FALLBACK_MODEL;
 let agentModels: Record<string, string> = storedConfig.agentModels ?? {};
 let loadedFromCli = false;
+const scopedAgentModels = new AsyncLocalStorage<Record<string, string>>();
 
 // 역할별 기본값: 비용이 큰 판단/구현은 상위 모델, 단순 분류/설정은 경량 모델 우선.
 const AGENT_MODEL_PREFERENCES: Record<string, string[]> = {
@@ -83,7 +85,8 @@ function supportsAgentRuns(spec: ModelSpec): boolean {
 }
 
 function resolveModelSpec(agentName?: string): ModelSpec {
-  const agentModel = agentName ? agentModels[agentName] ?? process.env[envKeyForAgent(agentName)] : undefined;
+  const scopedModel = agentName ? scopedAgentModels.getStore()?.[agentName] : undefined;
+  const agentModel = agentName ? scopedModel ?? agentModels[agentName] ?? process.env[envKeyForAgent(agentName)] : undefined;
   const preferred = agentName ? preferredModel(agentName)?.id : undefined;
   const candidates = agentModel !== undefined
     ? [agentModel, preferred, fallbackModel, currentModel]
@@ -145,6 +148,16 @@ export async function loadModelsFromCli(): Promise<void> {
   }
 }
 
+/** 실행 단위 모델 오버라이드를 비동기 호출 트리 안에서만 적용한다. */
+export function withAgentModelOverrides<T>(
+  overrides: Record<string, string> | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  return overrides && Object.keys(overrides).length > 0
+    ? scopedAgentModels.run({ ...overrides }, run)
+    : run();
+}
+
 export const modelConfig = {
   getModel(): string { return currentModel; },
   getProvider(): string | undefined { return resolveModelSpec().provider; },
@@ -169,6 +182,11 @@ export const modelConfig = {
 
   getEffortOptionForModelId(modelId: string): string | undefined {
     return effortForModel(resolveModelSpecById(modelId).id);
+  },
+
+  hasRunnableModel(modelId: string): boolean {
+    const spec = availableModel(modelId);
+    return Boolean(spec && supportsAgentRuns(spec));
   },
 
   isLoadedFromCli(): boolean { return loadedFromCli; },

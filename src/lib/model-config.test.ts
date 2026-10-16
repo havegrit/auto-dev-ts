@@ -117,4 +117,25 @@ describe('modelConfig model resolution', () => {
     expect(modelConfig.getEffort()).toBe('low');
     expect(modelConfig.stats().fallbackModel).toBe('anthropic:fallback-model');
   });
+
+  it('keeps model overrides isolated to concurrent async runs', async () => {
+    const { loadModelsFromCli, modelConfig, withAgentModelOverrides } = await freshConfig();
+    await loadModelsFromCli();
+
+    const [fallbackRun, globalRun] = await Promise.all([
+      withAgentModelOverrides({ scaffold: 'anthropic:fallback-model' }, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return modelConfig.getModelIdForAgent('scaffold');
+      }),
+      withAgentModelOverrides({ scaffold: 'anthropic:global-model' }, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return modelConfig.getModelIdForAgent('scaffold');
+      }),
+    ]);
+
+    expect(fallbackRun).toBe('anthropic:fallback-model');
+    expect(globalRun).toBe('anthropic:global-model');
+    expect(modelConfig.getModelIdForAgent('scaffold')).toBe('codex-cli:fast-model');
+    expect(modelConfig.hasRunnableModel('openai-compatible:deepseek-v4')).toBe(false);
+  });
 });

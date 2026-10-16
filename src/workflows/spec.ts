@@ -19,6 +19,7 @@ import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-g
 import { runRuntimeVerification } from './runtime-gate.js';
 import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
 import { emitRunEvent } from '../lib/run-events.js';
+import { withAgentModelOverrides } from '../lib/model-config.js';
 
 export interface SpecOptions {
   steps?: Set<string>;
@@ -43,10 +44,14 @@ export interface SpecOptions {
   initialFeedback?: string;
   /** 버그 모드에서 수정 전후에 동일하게 실행할 재현 명령. */
   reproCommand?: string;
+  /** 재현 명령 제한 시간. 미지정 시 verify 기본 제한 시간을 쓴다. */
+  reproTimeoutMs?: number;
   /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
   deliveryIntent?: 'ci' | 'cd';
   /** 부모 workflow 취소를 현재 실행 중인 child agent에 전달한다. */
   signal?: AbortSignal;
+  /** eval 모델 매트릭스를 위한 실행 단위 역할별 모델 ID 오버라이드. */
+  agentModels?: Record<string, string>;
 }
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
@@ -187,7 +192,7 @@ function assignedPlanSteps(planOutput: string | undefined, agent: string): strin
   return lines.filter(line => new RegExp(`^\\s*\\d+\\.\\s*${agent}\\s*\\|`, 'i').test(line));
 }
 
-export async function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
+async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
   const workflowRunId = opts.workflowRunId ?? randomUUID();
   const stepsFilter = opts.steps ?? new Set<string>(STEP_ORDER);
   const configuredMaxRoutes = opts.maxRoutes ?? opts.iterations ?? DEFAULT_MAX_ROUTES;
@@ -619,7 +624,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
             },
           };
         }
-        if (!team.failed && verdict === 'SHIP' && !opts.signal?.aborted) {
+        if (!team.failed && verdict === 'SHIP' && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
           void commitSuccessfulSpec({
             specContent: baseSpec,
             clarifiedSpec,
@@ -685,7 +690,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
       if (opts.reproCommand) {
         const repro = await runVerifyStep({
           projectDir,
-          verify: { command: opts.reproCommand, timeoutMs: DEFAULT_VERIFY_TIMEOUT_MS },
+          verify: { command: opts.reproCommand, timeoutMs: opts.reproTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS },
           workflowRunId,
           specSessionId: opts.specSessionId,
           triggerSource: runOpts.triggerSource,
@@ -907,7 +912,7 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
 
   // Clarification wait, failure, cancellation, and safety-cap exits are not successful specs.
   // Only a fully traversed workflow may audit docs and create commits.
-  if (cursor >= STEP_ORDER.length && executed > 0 && !failure && !clarification && !opts.signal?.aborted) {
+  if (cursor >= STEP_ORDER.length && executed > 0 && !failure && !clarification && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
     // 문서 점검/커밋은 핵심 spec 결과와 무관한 후처리다. 별도 실행으로 넘겨
     // spec children/status를 오염시키지 않고, review 통과 뒤 백그라운드에서 수행한다.
     void commitSuccessfulSpec({
@@ -936,6 +941,10 @@ export async function runSpec(specContent: string, opts: SpecOptions = {}): Prom
     autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
     failure,
   };
+}
+
+export function runSpec(specContent: string, opts: SpecOptions = {}): Promise<SpecResult> {
+  return withAgentModelOverrides(opts.agentModels, () => runSpecInternal(specContent, opts));
 }
 
 export function workflowRunStatus(result: Pick<SpecResult, 'verdict'>): 'DONE' | 'FAILED' {

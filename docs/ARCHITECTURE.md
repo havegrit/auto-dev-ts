@@ -635,6 +635,30 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - 승격은 자동 적용하지 않는다. 사람이 후보를 검토해 대상 저장소의 `AGENTS.md` 또는
   ArchUnit/Checkstyle/CI 검사 같은 하드 규칙으로 옮긴다.
 
+### 6.2.5 auto-dev 자체 평가
+
+- `./run eval [--case <id>] [--models id1,id2]`는 `src/workflows/eval.ts`가
+  `evals/cases/<id>/`의 `spec.md`, fixture, `checks.sh`, `meta.json`을 읽어 실행한다.
+  fixture는 OS 임시 디렉터리에 복사되고 평가가 끝나면 삭제된다.
+- 각 case/model 실행은 `agent_run`의 `agent_name='eval'`, `trigger_source='eval'` 행으로
+  기록되며, 하위 agent는 같은 workflow ID에 묶인다. `costGuard.allow()`가 거부하면
+  `BLOCKED`로 기록하고 해당 실행을 건너뛴다.
+- `--models`는 요청한 runnable model ID를 AGENT_ORDER의 각 역할과 내부 verifier에
+  실행 단위로 적용한다. `AsyncLocalStorage`로 비동기 호출 트리 안에서만 해석하므로
+  동시 평가 사이에 섞이거나 전역 `agentModels` 설정을 변경하지 않는다. 옵션이 없으면
+  현재 역할별 모델 구성을 고정해 실행하고 결과에 기록한다.
+- `meta.json`의 `expectedResult`는 `SHIP` 또는 `CLARIFICATION`이다. 선택적인
+  `reproCommand`가 있으면 fixture 초기 상태에서 먼저 실패하는지 확인한 뒤, `runSpec`이
+  동일 명령의 수정 후 통과를 요구한다. `timeoutMs`는 case 전체 제한 시간이며 `runSpec`과
+  셸 명령에 전달된다. `checks.sh`에는 verdict와 route count가 환경변수로 전달되며,
+  예상 verdict와 스크립트 종료 코드가 모두 맞아야 통과다.
+- 결과 JSON은 `data/evals/<timestamp>.json`에 원자적으로 저장한다. 직전 결과와 같은
+  case/model 키를 비교해 통과 상태가 바뀐 회귀·개선을 요약하며 route count, 토큰,
+  duration, 검증 출력도 보관한다. eval은 성공 후 문서 점검/자동 커밋을 실행하지 않는다.
+- 기본 케이스는 작은 TypeScript 회귀, Spring Boot/PostgreSQL 이메일 버그 재현, 모호한
+  결제 스펙 clarification이다. 외부 Maven 의존성을 받는 Spring 케이스를 포함해 모든
+  명령은 fixture에서 실행된다. 자동 CI 기준선/PR 차단은 이 Phase 범위가 아니다.
+
 ### 6.3 Java 버전 대비 미구현 항목
 
 | 기능 | Java | TypeScript |
@@ -971,6 +995,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 ```
 auto-dev-ts/
 ├── run                               # 실행 wrapper (tsx src/cli.ts "$@")
+├── evals/cases/                      # spec + fixture + checks + expected result
 ├── package.json / tsconfig.json
 ├── .env.example
 ├── README.md / README.ko.md
@@ -1007,7 +1032,7 @@ auto-dev-ts/
 │   ├── checking-docs-before-commit.system.md
 │   └── atomic-commit.system.md
 ├── src/
-│   ├── cli.ts                        # Commander CLI 진입점 (12 서브커맨드)
+│   ├── cli.ts                        # Commander CLI 진입점 (13 서브커맨드)
 │   ├── agents/
 │   │   ├── index.ts                  # 레지스트리 + getAgent / listAgents
 │   │   ├── scaffold.ts
@@ -1020,6 +1045,7 @@ auto-dev-ts/
 │   │       └── lenses.ts             # 4개 서브에이전트 선언
 │   ├── workflows/
 │   │   ├── spec.ts                   # SpecWorkflow 파이프라인
+│   │   ├── eval.ts                   # fixture 평가·모델 매트릭스·기준선 비교 (§6.2.5)
 │   │   ├── verify-gate.ts            # 결정적 검증 단계 실행 + agent_run 기록 (§6.2.1)
 │   │   ├── runtime-gate.ts           # 런타임 기동·동작 검증·정리 (§6.2.2)
 │   │   ├── post-success-commit.ts    # docs skill → atomic commit 성공 후처리
@@ -1296,6 +1322,7 @@ Bun 으로 런타임 교체도 가능.
     ModelCatalog 인터페이스 + registry + anthropic 구현) 뒤로 격리. `AUTO_DEV_PROVIDER`
     로 프로바이더 선택. 인증/과금 방식 교체 가능
 15. **문서 동기화** — 본 문서를 현재 구현에 맞춰 갱신 ← 현재
+16. **자체 eval** — fixture 기반 모델 매트릭스 실행, 일일 한도 준수, 결과와 회귀 비교
 
 ---
 

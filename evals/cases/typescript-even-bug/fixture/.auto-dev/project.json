@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "verify": {
+    "command": "npm test",
+    "timeoutMs": 120000
+  },
+  "roleBoundary": {
+    "testGlobs": ["tests/**", "**/*.test.ts", "**/*.test.mjs"],
+    "ignoreGlobs": []
+  }
+}

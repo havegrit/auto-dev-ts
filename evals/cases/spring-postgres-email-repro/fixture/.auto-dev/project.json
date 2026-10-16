@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "verify": {
+    "command": "mvn -q test",
+    "timeoutMs": 300000
+  },
+  "runtime": {
+    "up": "docker compose up -d --build --wait",
+    "down": "docker compose down -v",
+    "healthcheck": {
+      "url": "http://127.0.0.1:18080/actuator/health",
+      "timeoutMs": 120000
+    },
+    "checks": [".auto-dev/checks/smoke.sh"]
+  }
+}

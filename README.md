@@ -92,6 +92,10 @@ Input can be an inline string or a file path — auto-dev detects automatically.
 # Run specific steps only
 ./run spec path/to/spec.md --steps scaffold,test,review
 
+# Run the built-in evaluation cases
+./run eval
+./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-5.5
+
 # Status & stats
 ./run status
 
@@ -172,6 +176,10 @@ clarifier → planner → scaffold → test → review → cicd
 If `clarifier` determines the requirements are not ready, the pipeline stops before planning/implementation and returns concrete questions with recommendations. From the dashboard you can answer those questions inline and resume **without re-entering the spec** — the answers are merged with the original spec into a new linked run (this loops if the clarifier asks again). Each spec session also writes an accumulating plan document to `<project>/docs/plan/<slug>.md` (original spec + decision history + planner output). The review step checks for a `[VERDICT: SHIP]` marker; if present, the pipeline exits early. The final `cicd` step runs only when the planner assigns explicit CI/CD work; it is CI-first, and CD artifacts are generated only when deployment is explicitly requested. Pass `--steps` to run a subset, or `--iterations` to set the review/test repair-route limit (default 4, maximum 10).
 
 After the enabled workflow stages finish successfully, two internal post-success agents run in the background in a fixed order: `checking-docs-before-commit` audits and updates stale documentation, then `atomic-commit` stages only spec-related files or hunks and creates verified atomic commits. They load the globally installed skill instructions from `~/.codex/skills` or `~/.claude/skills` (override the skill root with `AUTO_DEV_SKILLS_ROOT`). Clarification waits, failed/cancelled workflows, and incomplete safety-limit exits never commit. Post-success runs are separate from the spec workflow and do not change its completed status; failures are logged independently.
+
+### Auto-dev evaluation
+
+`./run eval` runs every `evals/cases/<case-id>/` fixture; use `--case <id>` to select one or `--models id1,id2` to run a model matrix. Each case has `spec.md`, `fixture/`, `checks.sh`, and `meta.json`. The evaluator copies the fixture into a temporary workspace, runs `runSpec` with `triggerSource: eval`, applies the normal daily run limit, then checks the expected verdict and script exit code. Model overrides are isolated to each asynchronous workflow and do not change saved settings. Results include route count, token usage, duration, check output, and pass/fail changes against the previous run in `data/evals/<timestamp>.json`. Eval runs do not schedule post-success commits. The Spring/PostgreSQL case requires Maven, Docker Compose, and dependency access; the TypeScript case requires Node.js 24.
 
 ### Deterministic verification gate
 
@@ -319,6 +327,7 @@ Configuration can be changed from the dashboard settings panel. Runtime changes 
 ```
 auto-dev-ts/
 ├── prompts/          System prompts for each agent (Markdown)
+├── evals/            Fixed evaluation cases and target-project fixtures
 ├── deploy/systemd/   User-service template independent of SSH sessions
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          Ops scripts (non-root launcher + user-service installer)
@@ -326,7 +335,7 @@ auto-dev-ts/
 ├── src/
 │   ├── agents/       Agent implementations + registry
 │   │   └── review/   Multi-lens review orchestrator + lens definitions
-│   ├── workflows/    SpecWorkflow + verification gate + issue-driven workflow
+│   ├── workflows/    SpecWorkflow + verification gates + issue and eval workflows
 │   ├── llm/          LLM provider seam (registry + anthropic/codex impls)
 │   ├── integrations/ issue-tracker client + OpenClaw Telegram notifications
 │   ├── store/        SQLite schema + CRUD

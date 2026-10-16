@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: eval
+      POSTGRES_USER: eval
+      POSTGRES_PASSWORD: eval
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eval -d eval"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  app:
+    build: .
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/eval
+      DATABASE_USERNAME: eval
+      DATABASE_PASSWORD: eval
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-18080}:8080"
+
+volumes:
+  postgres-data:
