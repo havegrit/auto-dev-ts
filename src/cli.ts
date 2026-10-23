@@ -80,7 +80,8 @@ program.command('spec <file>')
   .option('--steps <steps>', '실행할 단계 (쉼표 구분)', '')
   .option('--iterations <n>', '피드백 재작업(planner/clarifier 라우팅) 허용 횟수', '4')
   .option('--project <project>', '프로젝트명 또는 경로')
-  .action(async (file: string, options: { steps: string; iterations: string; project?: string }) => {
+  .option('--allow-test-regression', '의도된 테스트 수 감소를 허용하고 run/PR에 기록')
+  .action(async (file: string, options: { steps: string; iterations: string; project?: string; allowTestRegression?: boolean }) => {
     const content = readFileSync(file, 'utf-8');
     const steps = options.steps ? new Set(options.steps.split(',').map(s => s.trim())) : undefined;
     const iterations = Number(options.iterations);
@@ -92,6 +93,7 @@ program.command('spec <file>')
         cwd,
         steps,
         iterations,
+        allowTestRegression: options.allowTestRegression,
         triggerSource: 'cli',
         triggerDetail: 'cli:spec',
       });
@@ -99,7 +101,7 @@ program.command('spec <file>')
       console.log(JSON.stringify(getRun(session.runId), null, 2));
       return;
     }
-    const result = await runSpec(content, { steps, iterations, triggerSource: 'cli', cwd });
+    const result = await runSpec(content, { steps, iterations, allowTestRegression: options.allowTestRegression, triggerSource: 'cli', cwd });
     console.log(JSON.stringify(result, null, 2));
   });
 

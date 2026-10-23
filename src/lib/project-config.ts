@@ -4,7 +4,8 @@ import { join } from 'node:path';
 /**
  * 대상 프로젝트가 자기 검증 방법을 선언하는 파일.
  *
- * 이 파일이 없으면 모든 게이트가 비활성화되고 workflow는 기존과 동일하게 동작한다.
+ * 이 파일이 없으면 프로젝트 설정 기반 verify/runtime 게이트는 비활성화된다.
+ * 기본 보호 경로와 테스트 무결성 검사는 설정 없이도 동작한다.
  * 파일이 있는데 내용이 잘못되면 조용히 무시하지 않고 run을 실패시킨다 —
  * "검증한다고 선언했지만 실제로는 검증되지 않는" 상태가 가장 위험하기 때문이다.
  */
@@ -17,6 +18,10 @@ export interface VerifyConfig {
   /** bash -c 로 실행할 검증 명령. 종료 코드 0 이 유일한 통과 신호다. */
   command: string;
   timeoutMs: number;
+  /** planner 전에 기준선 검증을 실행한다. */
+  baseline?: boolean;
+  /** JUnit XML 실행 수를 기준선과 비교한다. */
+  report?: { format: 'junit-xml'; paths: string[] };
 }
 
 export interface RoleBoundaryConfig {
@@ -24,6 +29,11 @@ export interface RoleBoundaryConfig {
   testGlobs: string[];
   /** 오탐으로 판정된 경로 glob (생성물, 캐시 등). */
   ignoreGlobs: string[];
+}
+
+export interface ProtectConfig {
+  /** 가드 설정과 검증 스크립트는 기본 목록을 포함해 수정할 수 없다. */
+  globs: string[];
 }
 
 export interface RuntimeConfig {
@@ -56,6 +66,7 @@ export interface ProjectConfig {
   version: 1;
   verify?: VerifyConfig;
   roleBoundary?: RoleBoundaryConfig;
+  protect?: ProtectConfig;
   runtime?: RuntimeConfig;
   workflow?: WorkflowConfig;
   delivery?: DeliveryConfig;
@@ -93,9 +104,29 @@ function parseVerify(value: unknown, configPath: string): VerifyConfig | undefin
     (typeof verify.timeoutMs !== 'number' || !Number.isFinite(verify.timeoutMs) || verify.timeoutMs <= 0)) {
     throw new ProjectConfigError(configPath, 'verify.timeoutMs must be a positive number');
   }
+  if (verify.baseline !== undefined && typeof verify.baseline !== 'boolean') {
+    throw new ProjectConfigError(configPath, 'verify.baseline must be a boolean');
+  }
+  let report: VerifyConfig['report'];
+  if (verify.report !== undefined) {
+    const candidate = asRecord(verify.report);
+    if (!candidate || candidate.format !== 'junit-xml') {
+      throw new ProjectConfigError(configPath, 'verify.report.format must be junit-xml');
+    }
+    const paths = parseGlobs(candidate.paths, 'verify.report.paths', configPath);
+    if (paths.length === 0 || paths.some((path) => path.startsWith('/') || path.split(/[\\/]/).includes('..'))) {
+      throw new ProjectConfigError(configPath, 'verify.report.paths must contain project-relative paths without ..');
+    }
+    if (verify.baseline !== true) {
+      throw new ProjectConfigError(configPath, 'verify.report requires verify.baseline=true');
+    }
+    report = { format: 'junit-xml', paths };
+  }
   return {
     command: verify.command.trim(),
     timeoutMs: verify.timeoutMs === undefined ? DEFAULT_VERIFY_TIMEOUT_MS : Math.floor(verify.timeoutMs),
+    ...(verify.baseline === true ? { baseline: true } : {}),
+    ...(report ? { report } : {}),
   };
 }
 
@@ -107,6 +138,13 @@ function parseRoleBoundary(value: unknown, configPath: string): RoleBoundaryConf
     testGlobs: parseGlobs(boundary.testGlobs, 'roleBoundary.testGlobs', configPath),
     ignoreGlobs: parseGlobs(boundary.ignoreGlobs, 'roleBoundary.ignoreGlobs', configPath),
   };
+}
+
+function parseProtect(value: unknown, configPath: string): ProtectConfig | undefined {
+  if (value === undefined) return undefined;
+  const protect = asRecord(value);
+  if (!protect) throw new ProjectConfigError(configPath, 'protect must be an object');
+  return { globs: parseGlobs(protect.globs, 'protect.globs', configPath) };
 }
 
 function parseRuntime(value: unknown, configPath: string): RuntimeConfig | undefined {
@@ -232,6 +270,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | undefined
     version: 1,
     verify: parseVerify(root.verify, configPath),
     roleBoundary: parseRoleBoundary(root.roleBoundary, configPath),
+    protect: parseProtect(root.protect, configPath),
     ...(root.runtime === undefined ? {} : { runtime: parseRuntime(root.runtime, configPath) }),
     ...(root.workflow === undefined ? {} : { workflow: parseWorkflow(root.workflow, configPath) }),
     ...(root.delivery === undefined ? {} : { delivery: parseDelivery(root.delivery, configPath) }),

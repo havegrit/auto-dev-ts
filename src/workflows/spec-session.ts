@@ -54,6 +54,8 @@ export interface SpecSessionOptions {
   resumeInstruction?: string;
   /** cicd 단계의 의도. 기본은 CI만, CD는 명시적으로 요청된 경우에만. */
   deliveryIntent?: 'ci' | 'cd';
+  /** 의도된 테스트 수 감소를 허용한다. 보호 경로 검사는 계속 적용된다. */
+  allowTestRegression?: boolean;
 }
 
 export interface SpecSessionHandle {
@@ -281,6 +283,7 @@ export function startSpecSession(spec: string, opts: SpecSessionOptions): SpecSe
     iterations: opts.iterations,
     autoClarify: opts.autoClarify,
     maxClarifyRounds: opts.maxClarifyRounds,
+    allowTestRegression: opts.allowTestRegression,
     rounds: [],
   };
   return launch(state, opts);
@@ -318,6 +321,7 @@ export function resumeSpecSession(parentRunId: string, answers: Record<string, s
     iterations: prev.iterations,
     autoClarify,
     maxClarifyRounds,
+    allowTestRegression: prev.allowTestRegression,
     triggerSource: 'dashboard',
     triggerDetail: `answers:${parentRunId.slice(0, 8)}`,
   });
@@ -359,6 +363,7 @@ export function continueSpecSession(parentRunId: string, instruction: string): S
     iterations: prev.iterations,
     autoClarify: prev.autoClarify,
     maxClarifyRounds: prev.maxClarifyRounds,
+    allowTestRegression: prev.allowTestRegression,
     triggerSource: 'dashboard',
     triggerDetail: `continue:${parentRunId.slice(0, 8)}`,
   });
@@ -396,6 +401,7 @@ export function resumeLastSpecStep(parentRunId: string, instruction?: string, st
     iterations: prev.iterations,
     autoClarify: prev.autoClarify,
     maxClarifyRounds: prev.maxClarifyRounds,
+    allowTestRegression: prev.allowTestRegression,
     triggerSource: 'dashboard',
     triggerDetail: `resume:${parentRunId.slice(0, 8)}:${resume.startStep}`,
     resumeInstruction: feedback,
@@ -793,6 +799,7 @@ async function finalize(
       iterations: opts.iterations,
       autoClarify: opts.autoClarify,
       maxClarifyRounds: opts.maxClarifyRounds,
+      allowTestRegression: opts.allowTestRegression,
       initialFeedback: opts.resumeInstruction,
       deliveryIntent: opts.deliveryIntent ?? 'ci',
       triggerSource: opts.triggerSource ?? 'dashboard',
@@ -966,6 +973,7 @@ function deliveryDescription(snapshot: SpecCheckpointSnapshot): PullRequestDescr
     verifyDurationMs: snapshot.workflowState.results[VERIFY_AGENT_NAME]?.durationMs,
     verifySummary: summary,
     reviewSummary: 'Review verdict: SHIP. See workflow evidence for details.',
+    testRegressionAllowed: snapshot.options.allowTestRegression === true,
   };
 }
 

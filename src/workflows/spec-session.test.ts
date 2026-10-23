@@ -221,13 +221,16 @@ describe('startSpecSession (round 0)', () => {
       cwd: '/tmp/proj',
       steps: new Set(['clarifier', 'planner']),
       iterations: 6,
+      allowTestRegression: true,
     });
     await done;
 
     expect(stateStore.get(runId).steps).toEqual(['clarifier', 'planner']);
     expect(stateStore.get(runId).iterations).toBe(6);
+    expect(stateStore.get(runId).allowTestRegression).toBe(true);
     expect(specOptions[0].steps).toEqual(new Set(['clarifier', 'planner']));
     expect(specOptions[0].iterations).toBe(6);
+    expect(specOptions[0].allowTestRegression).toBe(true);
   });
 
   it('passes the default CI intent into the workflow', async () => {

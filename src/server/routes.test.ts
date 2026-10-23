@@ -197,7 +197,7 @@ describe('PR-mode spec entrypoint', () => {
     const response = await app.fetch(new Request('http://localhost/api/specs', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'implement PR mode', project: 'demo' }),
+      body: JSON.stringify({ content: 'implement PR mode', project: 'demo', allowTestRegression: true }),
     }));
 
     expect(response.status).toBe(202);
@@ -205,6 +205,7 @@ describe('PR-mode spec entrypoint', () => {
     expect(startSpecSession).toHaveBeenCalledWith('implement PR mode', expect.objectContaining({
       cwd: 'demo', triggerSource: 'api',
     }));
+    expect(vi.mocked(startSpecSession).mock.calls.at(-1)?.[1].allowTestRegression).toBeUndefined();
     expect(runSpec).not.toHaveBeenCalled();
   });
 });
@@ -494,6 +495,7 @@ describe('dashboard auto-clarify options', () => {
     body.set('autoClarify', 'true');
     body.set('maxClarifyRounds', '0');
     body.set('iterations', '4');
+    body.set('allowTestRegression', 'true');
 
     const app = createRoutes();
     const res = await app.fetch(new Request('http://localhost/api/submit', { method: 'POST', body }));
@@ -503,6 +505,7 @@ describe('dashboard auto-clarify options', () => {
       autoClarify: true,
       maxClarifyRounds: 0,
       iterations: 4,
+      allowTestRegression: true,
     }));
   });
 
@@ -566,7 +569,7 @@ describe('OpenClaw local bridge', () => {
     const res = await app.fetch(new Request('http://127.0.0.1/api/integrations/openclaw/specs', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: 'demo', content: 'build the feature' }),
+      body: JSON.stringify({ project: 'demo', content: 'build the feature', allowTestRegression: true }),
     }));
 
     expect(res.status).toBe(202);
@@ -577,6 +580,7 @@ describe('OpenClaw local bridge', () => {
       triggerSource: 'openclaw',
       triggerDetail: 'telegram:main',
     }));
+    expect(vi.mocked(startSpecSession).mock.calls.at(-1)?.[1].allowTestRegression).toBeUndefined();
     await expect(res.json()).resolves.toEqual({
       runId: 'telegram-run',
       type: 'workflow',

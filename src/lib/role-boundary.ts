@@ -74,11 +74,12 @@ async function hashFile(projectDir: string, path: string): Promise<string> {
  *
  * 파일 이름 목록만으로는 부족하다. test 단계가 실행될 때 scaffold 가 이미 소스를
  * 바꿔 둔 상태이므로, 같은 경로의 내용이 또 바뀌었는지를 봐야 한다.
- * gitignore 된 빌드 산출물은 `git status` 가 애초에 보고하지 않으므로 자동 제외된다.
+ * gitignore 된 빌드 산출물은 기본으로 제외한다. 다만 호출자가 보호 경로 glob을 주면
+ * 해당 glob에 일치하는 ignored 파일도 별도로 조회해 검사할 수 있다.
  *
  * git 저장소가 아니면 `undefined` — 호출부가 검사를 건너뛰고 경고를 남긴다.
  */
-export async function snapshotWorkspace(projectDir: string): Promise<WorkspaceSnapshot | undefined> {
+export async function snapshotWorkspace(projectDir: string, includeIgnoredGlobs: string[] = []): Promise<WorkspaceSnapshot | undefined> {
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync(
@@ -92,6 +93,19 @@ export async function snapshotWorkspace(projectDir: string): Promise<WorkspaceSn
   const snapshot: WorkspaceSnapshot = new Map();
   for (const path of parseStatusPaths(stdout)) {
     if (!snapshot.has(path)) snapshot.set(path, await hashFile(projectDir, path));
+  }
+  if (includeIgnoredGlobs.length > 0) {
+    try {
+      const ignored = await execFileAsync('git', [
+        '-C', projectDir, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--',
+        ...includeIgnoredGlobs.map((glob) => `:(glob)${glob}`),
+      ], { maxBuffer: 16 * 1024 * 1024 });
+      for (const path of ignored.stdout.split('\0').filter(Boolean)) {
+        if (!snapshot.has(path)) snapshot.set(path, await hashFile(projectDir, path));
+      }
+    } catch {
+      return undefined;
+    }
   }
   return snapshot;
 }

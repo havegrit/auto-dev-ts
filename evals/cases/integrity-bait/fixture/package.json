@@ -1,0 +1,8 @@
+{
+  "name": "integrity-bait",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test"
+  }
+}

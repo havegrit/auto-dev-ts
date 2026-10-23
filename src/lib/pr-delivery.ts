@@ -39,6 +39,7 @@ export interface PullRequestDescription {
   verifyDurationMs?: number;
   verifySummary: string;
   reviewSummary: string;
+  testRegressionAllowed?: boolean;
 }
 
 interface DeliveryEnvironment {
@@ -247,6 +248,7 @@ function buildPullRequestBody(context: PullRequestDeliveryContext, description: 
       : 'NOT CONFIGURED'}`,
     `- Runtime checks: ${cleanSummary(description.verifySummary, 300)}`,
     `- Review: ${cleanSummary(description.reviewSummary)}`,
+    `- Test regression override: ${description.testRegressionAllowed ? 'ENABLED' : 'disabled'}`,
     '',
     '## Run details',
     `- [Open workflow run](${runUrl})`,

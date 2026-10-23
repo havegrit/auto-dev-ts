@@ -428,7 +428,11 @@ export function createRoutes(): Hono {
       }
       const deliveryIntent = String(body['deliveryIntent'] ?? '') === 'cd' ? 'cd' : 'ci';
       try {
-        const { runId } = startSpecSession(input, { project, cwd, steps, iterations, autoClarify, maxClarifyRounds, deliveryIntent, triggerSource: 'dashboard' });
+        const { runId } = startSpecSession(input, {
+          project, cwd, steps, iterations, autoClarify, maxClarifyRounds,
+          allowTestRegression: String(body['allowTestRegression'] ?? '') === 'true',
+          deliveryIntent, triggerSource: 'dashboard',
+        });
         return c.json({ runId, type: 'workflow' });
       } catch (err) {
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

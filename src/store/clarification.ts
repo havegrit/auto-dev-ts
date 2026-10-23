@@ -28,6 +28,8 @@ export interface ClarificationState {
   autoClarify?: boolean;
   /** 자동 구체화 최대 라운드. 0이면 무제한. */
   maxClarifyRounds?: number;
+  /** 의도된 테스트 수 감소를 허용한다. run 입력 메타데이터에 저장된다. */
+  allowTestRegression?: boolean;
   rounds: ClarificationRound[];
   /** 이 run 의 planner 산출 플랜. 나중에 대시보드에서 이전 플랜을 보여주는 데 쓴다. */
   planOutput?: string;

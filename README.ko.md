@@ -230,7 +230,7 @@ clarifier → planner → scaffold → test → review → cicd
 
 ### auto-dev 자체 평가
 
-`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성됩니다. fixture를 임시 workspace에 복사해 `triggerSource: eval`로 `runSpec`을 실행하고, 기존 일일 실행 한도를 지킵니다. 기대 verdict와 checks 스크립트 종료 코드를 함께 판정합니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. 결과에는 라우트 수, 토큰, 시간, 검증 출력과 직전 실행 대비 통과·회귀가 기록되며 `data/evals/<timestamp>.json`에 저장됩니다. `meta.json`의 `autoMergeCategory`에 `docs` 또는 `dependency-patch`를 지정하면 해당 분류의 자동 머지 eval streak에 반영됩니다. 분류가 없는 일반 케이스는 streak에 포함되지 않습니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
+`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성되고 선택적으로 `oracle/`을 둘 수 있습니다. 임시 Git 기준선을 만든 뒤 `checks.sh`를 에이전트 workspace 밖에 두고 `triggerSource: eval`로 `runSpec`을 실행합니다. workflow가 끝난 뒤 `oracle/` 파일을 덮어써 채점에 사용합니다. `REJECT`는 integrity 위반이 없고 verdict가 `SHIP`이 아닌 경우에 통과합니다. 결과에는 라우트 수, 토큰, 시간, 오라클 적용 여부, 무결성 위반, 검증 출력과 직전 실행 대비 결과가 `data/evals/<timestamp>.json`에 기록됩니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. `meta.json`의 `autoMergeCategory`에 `docs` 또는 `dependency-patch`를 지정하면 해당 분류의 자동 머지 eval streak에 반영됩니다. 분류가 없는 일반 케이스는 streak에 포함되지 않습니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
 
 ### 결정적 검증 게이트
 
@@ -239,7 +239,12 @@ clarifier → planner → scaffold → test → review → cicd
 ```json
 {
   "version": 1,
-  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "verify": {
+    "command": "./gradlew check",
+    "timeoutMs": 900000,
+    "baseline": true,
+    "report": { "format": "junit-xml", "paths": ["build/test-results/test/*.xml"] }
+  },
   "runtime": {
     "up": "docker compose up -d --wait",
     "down": "docker compose down -v",
@@ -249,14 +254,17 @@ clarifier → planner → scaffold → test → review → cicd
   "roleBoundary": {
     "testGlobs": ["src/test/**", "**/*.test.ts"],
     "ignoreGlobs": []
-  }
+  },
+  "protect": { "globs": [".github/**"] }
 }
 ```
 
 - `verify.command`가 0이 아닌 코드로 끝나거나 타임아웃되면 PASS 마커를 무시하고, 출력 꼬리를 피드백으로 붙여 planner로 되돌립니다. 재작업 예산이 소진되면 `verify_failed`로 실패합니다.
 - 결과는 `agent_name='verify'` 실행 기록으로 남아 대시보드의 워크플로 상세에서 종료 코드 요약·소요 시간·출력 꼬리를 볼 수 있습니다. 대시보드에서 취소하면 프로세스 그룹 전체가 정리됩니다.
+- 기본 테스트 glob과 `.auto-dev/project.json`, `.auto-dev/checks/**`, `.auto-dev/rules.json` 보호는 설정 파일 없이도 적용됩니다. `protect.globs`는 경로를 추가하며 기본 보호 경로를 제거할 수 없습니다. skip/focus 마커, 테스트 파일 삭제, JUnit 테스트 수 약화는 `integrity` finding으로 기록하고 planner로 라우팅합니다. 무결성 검사를 위해 Git 작업 트리가 필요하며, 없으면 `integrity_unavailable`로 `BLOCKED` 처리합니다.
+- `verify.baseline: true`는 planner 전에 verify를 실행해 기준선이 실패하면 `baseline_red`로 중단합니다. `verify.report`는 최신 JUnit 리포트의 `tests`, `skipped`, `failures`, `errors`를 기준선과 비교합니다. 오래된 리포트는 경고 후 비교를 생략하고, report 설정에는 `baseline: true`가 필요합니다.
 - `roleBoundary.testGlobs`를 선언하면 test 단계 전후의 파일 내용 해시를 비교해, 테스트 경로 밖의 파일을 수정한 경우 `role_boundary_violation`으로 실패시킵니다 (되돌리지 않고 보고만 합니다).
-- 이 파일이 없으면 프로젝트 설정 verify/runtime 게이트는 비활성이고 일반 workflow는 이전처럼 동작합니다. 버그 이슈는 아래 재현 우선 흐름을 사용하며, 역할 경계 설정이 없으면 기본 테스트 파일 glob을 적용합니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
+- 이 파일이 없으면 프로젝트 설정 verify/runtime 게이트는 비활성이고 기본 무결성 보호만 동작합니다. 의도적으로 테스트를 줄일 때는 `./run spec request.md --allow-test-regression` 또는 대시보드 체크박스를 사용합니다. 실행 이벤트와 PR 본문에 남으며 보호 경로 검사는 계속 적용됩니다. 파일이 있는데 스키마가 틀리면 run이 즉시 실패합니다.
 
 대시보드 실행은 `"workflow": { "resumeOnRestart": true }`로 재시작 체크포인트를 별도
 opt-in할 수 있습니다. 시작 시 Git 작업 트리가 깨끗해야 합니다. 완료된 결과는 재사용하고

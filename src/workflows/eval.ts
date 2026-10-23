@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -11,7 +12,7 @@ import { runVerify, verifyPassed, type VerifyOutcome } from '../lib/verify.js';
 import { getRunsByWorkflowId, insertRun, updateRun } from '../store/runs.js';
 import { runSpec, type SpecResult } from './spec.js';
 
-export type EvalExpectedResult = 'SHIP' | 'CLARIFICATION';
+export type EvalExpectedResult = 'SHIP' | 'CLARIFICATION' | 'REJECT';
 
 export interface EvalCaseMeta {
   tags?: string[];
@@ -39,6 +40,8 @@ export interface EvalCaseResult {
   agentModels?: Record<string, string>;
   pass: boolean;
   expectedResult: EvalExpectedResult;
+  oracleApplied: boolean;
+  integrityViolations: number;
   verdict?: string;
   routeCount: number;
   tokensIn: number;
@@ -51,7 +54,7 @@ export interface EvalCaseResult {
 }
 
 export interface EvalArtifact {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   startedAt: string;
   finishedAt: string;
   baselineFile?: string;
@@ -80,6 +83,7 @@ interface LoadedEvalCase {
   meta: EvalCaseMeta;
   fixtureDir: string;
   checksPath: string;
+  oracleDir: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -88,7 +92,8 @@ const MODEL_ROLES = [...new Set([...AGENT_ORDER, 'verifier'])];
 function normalizeExpectedResult(value: EvalCaseMeta['expectedResult']): EvalExpectedResult {
   if (value === 'SHIP') return 'SHIP';
   if (value === 'CLARIFICATION' || value === 'NEEDS-CLARIFICATION') return 'CLARIFICATION';
-  throw new Error(`Invalid expectedResult: ${String(value)} (expected SHIP or CLARIFICATION)`);
+  if (value === 'REJECT') return 'REJECT';
+  throw new Error(`Invalid expectedResult: ${String(value)} (expected SHIP, CLARIFICATION, or REJECT)`);
 }
 
 function validateCaseId(id: string): void {
@@ -131,7 +136,9 @@ async function loadEvalCase(casesDir: string, id: string): Promise<LoadedEvalCas
   const checksStat = await stat(checksPath).catch(() => undefined);
   if (!checksStat?.isFile()) throw new Error(`Eval case ${id} is missing checks.sh`);
   const fixtureStat = await stat(fixtureDir).catch(() => undefined);
-  return { id, spec, meta, fixtureDir: fixtureStat?.isDirectory() ? fixtureDir : '', checksPath };
+  const oracleDir = join(dir, 'oracle');
+  const oracleStat = await stat(oracleDir).catch(() => undefined);
+  return { id, spec, meta, fixtureDir: fixtureStat?.isDirectory() ? fixtureDir : '', checksPath, oracleDir: oracleStat?.isDirectory() ? oracleDir : '' };
 }
 
 function asCheckResult(outcome: VerifyOutcome): EvalCheckResult {
@@ -145,7 +152,23 @@ function asCheckResult(outcome: VerifyOutcome): EvalCheckResult {
 
 function expectedVerdictMatches(expected: EvalExpectedResult, verdict: string | undefined): boolean {
   if (expected === 'SHIP') return verdict === 'SHIP';
-  return verdict === 'NEEDS-CLARIFICATION' || verdict === 'CLARIFICATION';
+  if (expected === 'CLARIFICATION') return verdict === 'NEEDS-CLARIFICATION' || verdict === 'CLARIFICATION';
+  return verdict !== undefined && verdict !== 'SHIP';
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function initializeFixtureGit(projectDir: string): void {
+  execFileSync('git', ['init', '--quiet'], { cwd: projectDir, stdio: 'ignore' });
+  execFileSync('git', ['add', '--all'], { cwd: projectDir, stdio: 'ignore' });
+  execFileSync('git', [
+    '-c', 'user.name=auto-dev eval',
+    '-c', 'user.email=auto-dev-eval@example.invalid',
+    '-c', 'commit.gpgsign=false',
+    'commit', '--quiet', '--allow-empty', '-m', 'eval fixture baseline',
+  ], { cwd: projectDir, stdio: 'ignore' });
 }
 
 function modelOverrides(model: string | undefined): Record<string, string> | undefined {
@@ -200,6 +223,8 @@ async function runCase(
     agentModels: overrides,
     pass: false,
     expectedResult: normalizeExpectedResult(testCase.meta.expectedResult),
+    oracleApplied: false,
+    integrityViolations: 0,
     routeCount: 0,
     tokensIn: 0,
     tokensOut: 0,
@@ -226,7 +251,7 @@ async function runCase(
   const projectDir = await mkdtemp(join(tempRoot, `auto-dev-eval-${testCase.id}-`));
   try {
     if (testCase.fixtureDir) await cp(testCase.fixtureDir, projectDir, { recursive: true, force: true });
-    await cp(testCase.checksPath, join(projectDir, 'checks.sh'));
+    initializeFixtureGit(projectDir);
     const projectConfig = loadProjectConfig(projectDir);
     const effectiveModels = { ...modelConfig.getAgentModels(), ...(overrides ?? {}) };
     base.policyFingerprint = autoMergePolicyFingerprint(projectConfig, effectiveModels, {
@@ -270,6 +295,7 @@ async function runCase(
     base.tokensIn = usage.tokensIn;
     base.tokensOut = usage.tokensOut;
     base.durationMs = specResult.totalDurationMs;
+    base.integrityViolations = specResult.integrityViolations ?? 0;
 
     if (workflowSignal.aborted) {
       base.verdict = 'CANCELLED';
@@ -284,9 +310,13 @@ async function runCase(
       return base;
     }
 
+    if (testCase.oracleDir) {
+      await cp(testCase.oracleDir, projectDir, { recursive: true, force: true });
+      base.oracleApplied = true;
+    }
     const check = remainingMs() > 0
       ? await runVerify(projectDir, {
-        command: 'bash checks.sh',
+        command: `bash ${shellQuote(testCase.checksPath)}`,
         timeoutMs: Math.max(1, remainingMs()),
       }, {
         env: {
@@ -295,6 +325,7 @@ async function runCase(
           AUTO_DEV_EVAL_EXPECTED: base.expectedResult,
           AUTO_DEV_EVAL_VERDICT: specResult.verdict ?? '',
           AUTO_DEV_EVAL_ROUTE_COUNT: String(base.routeCount),
+          AUTO_DEV_EVAL_INTEGRITY_VIOLATIONS: String(base.integrityViolations),
         },
       })
       : {
@@ -306,11 +337,14 @@ async function runCase(
       };
     base.checks = asCheckResult(check);
     base.durationMs = Date.now() - started;
-    base.pass = expectedVerdictMatches(base.expectedResult, specResult.verdict) && verifyPassed(check);
+    base.pass = expectedVerdictMatches(base.expectedResult, specResult.verdict) &&
+      base.integrityViolations === 0 && verifyPassed(check);
     if (!base.pass) {
       base.failure = !expectedVerdictMatches(base.expectedResult, specResult.verdict)
         ? `Expected ${base.expectedResult}, got ${specResult.verdict ?? 'no verdict'}.`
-        : `checks.sh ${check.timedOut ? 'timed out' : `exited ${check.exitCode ?? 'with a signal'}`}.`;
+        : base.integrityViolations > 0
+          ? `Workflow observed ${base.integrityViolations} integrity violation(s).`
+          : `checks.sh ${check.timedOut ? 'timed out' : `exited ${check.exitCode ?? 'with a signal'}`}.`;
     }
     updateRun(workflowRunId, {
       output: `verdict=${base.verdict ?? 'none'} expected=${base.expectedResult} checks=${check.exitCode ?? 'signal'} pass=${base.pass}`,
@@ -383,7 +417,7 @@ export async function runEval(opts: RunEvalOptions = {}): Promise<{ file: string
   const comparison = compareWithBaseline(results, previous?.artifact);
   const finishedAt = new Date().toISOString();
   const artifact: EvalArtifact = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     startedAt,
     finishedAt,
     baselineFile: previous?.file,

@@ -418,15 +418,15 @@ while cursor < len(STEP_ORDER):
         if invalid PLAN contract: verdict = BLOCKED; break
         planOutput = result.output
 
-    # test 직후: 역할 경계 사후 검사 (테스트 경로 밖 변경 = 즉시 실패)
-    if step == 'test' and roleBoundary violated: verdict = FAILED; break
+    # 파일 쓰기 단계 직후: 보호 경로·테스트 무결성 검사
+    if step in {scaffold, test, cicd} and integrity violated: route planner or fail
 
     # test: 소스 코드 오류로 판정된 FAIL 만 되돌린다 (테스트 코드 오류는 test 가 직접 수정)
     if step == 'test' and missing [TESTS: ...]: verdict = BLOCKED; break
     if step == 'test' and parseTests == FAIL and [ROUTE: planner|clarifier]:
         cursor = index(route); pendingFeedback = result; continue
 
-    # test PASS: 오케스트레이터가 verify 명령을 직접 실행해 확정한다 (§6.2.1)
+    # verify 전후 보호 경로·테스트 무결성을 검사하고 종료 코드로 확정한다 (§6.2.1)
     if step == 'test' and parseTests == PASS and project has verify:
         if verify exit != 0: cursor = index('planner'); pendingFeedback = verify tail; continue
 
@@ -507,11 +507,17 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
 ```json
 {
   "version": 1,
-  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "verify": {
+    "command": "./gradlew check",
+    "timeoutMs": 900000,
+    "baseline": true,
+    "report": { "format": "junit-xml", "paths": ["build/test-results/test/*.xml"] }
+  },
   "roleBoundary": {
     "testGlobs": ["src/test/**", "**/*.test.ts"],
     "ignoreGlobs": []
-  }
+  },
+  "protect": { "globs": [".github/**"] }
 }
 ```
 
@@ -525,6 +531,33 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
   `agent_name='verify'` 행으로 기록하므로 대시보드 워크플로 상세가 기존 자식 단계 렌더링
   그대로 종료 코드 요약·소요 시간·출력 꼬리를 보여준다. **스키마 변경은 없다.**
   run id 로 `registerRunCancellation` 에 등록하므로 대시보드의 run 취소로도 중단된다.
+- `verify.baseline: true` 는 clarifier 이후 planner 전에 같은 명령을 실행한다. 실패하면
+  에이전트를 호출하지 않고 `BLOCKED / baseline_red` 로 끝낸다. 버그 모드에는 적용하지 않는다.
+- `verify.report` 는 `baseline: true`와 함께 설정하는 opt-in JUnit XML 비교다. 기준선과
+  최종 verify의 `tests`, `skipped`, `failures`, `errors`를 합산한다. 테스트 수 감소,
+  skipped 증가, 실패·오류가 있으면 무결성 위반으로 planner에 라우팅한다. mtime이 verify
+  시작보다 오래된 보고서는 경고를 남기고 비교를 생략한다. XML은 새 의존성 없이 파싱한다.
+
+**보호 경로와 테스트 무결성** (`src/lib/test-integrity.ts`)
+
+- 기본 보호 glob은 `.auto-dev/project.json`, `.auto-dev/checks/**`, `.auto-dev/rules.json`이다.
+  `protect.globs`는 목록을 추가할 뿐 기본 보호 경로를 비활성화할 수 없다. 보호 파일은 Git
+  상태와 별도로 지정 glob에 해당하는 ignored 파일도 해시한다.
+- 기본 테스트 glob은 `tests/**`, `src/test/**`, `__tests__/**`, `*.test.*`, `*.spec.*`,
+  `*Test.java`, `*Tests.java`, `test_*.py`, `*_test.py` 계열이다. 프로젝트별
+  `roleBoundary.testGlobs`는 기본 목록에 추가된다.
+- clarifier 뒤 planner 전에 HEAD SHA, dirty 테스트 파일, 보호/테스트 경로의 내용 해시를
+  기록한다. scaffold/test/cicd 같은 쓰기 단계 뒤와 verify 직전·직후 검사한다. HEAD 대비
+  skip/focus 마커 증가와 기존 테스트 파일 삭제를 찾고, 한 단계 안에서 새로 만든 테스트가
+  삭제되는 경우도 해시 스냅샷으로 찾는다. 시작 때 dirty였던 테스트는 경고 후 해당 파일의
+  비교를 생략한다.
+- 보호 경로 변경과 테스트 약화는 `review_finding.category='integrity'`에 기록하고 planner로
+  라우팅한다. 라우트가 없으면 각각 `protected_path_modified`, `test_regression`으로 실패한다.
+  되돌리지는 않는다. Git worktree/HEAD를 확인할 수 없으면 `integrity_unavailable`로
+  `BLOCKED` 처리한다. `.auto-dev/project.json`이 없어도 기본 무결성 검사는 동작한다.
+- 의도된 테스트 감소는 `./run spec <file> --allow-test-regression` 또는 대시보드 체크박스로
+  허용한다. 이 옵션은 테스트 skip/삭제 및 JUnit 테스트 수/skipped 수 감소 검사를 우회하지만
+  보호 경로와 JUnit failures/errors 검사는 유지한다. 사용 사실은 run 이벤트와 PR 본문에 남긴다.
 
 **판정 표**
 
@@ -538,7 +571,7 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
 
 라우트 예산이 소진되면 `failure.cause = 'verify_failed'`, `failure.step = 'verify'` 로
 종료한다. 동적 팀(TEAM_PLAN) 경로도 통합이 끝난 뒤 같은 게이트를 통과해야 하며, DAG 안의
-review 태스크는 `verify` 또는 `runtime` 게이트가 설정된 경우 게이트 뒤에 실행한다.
+  review 태스크는 설정된 verify/runtime 게이트와 무관하게 통합 및 무결성 검사 뒤에 실행한다.
 
 **역할 경계 사후 검사** (`src/lib/role-boundary.ts`)
 
@@ -554,8 +587,9 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 
 - 위반 파일을 되돌리지 않고 보고만 한다 — 워크스페이스를 임의로 수정하면 사람이 원인을
   추적할 근거가 사라진다.
-- `.git` 이 없으면 검사를 건너뛰고 `role_boundary_skipped` 경고 이벤트를 남긴다.
-- gitignore 된 빌드 산출물은 `git status` 가 보고하지 않으므로 자동 제외된다. 그 외
+- 역할 경계 검사는 여전히 `roleBoundary.testGlobs` opt-in이다. 무결성 baseline을 설정할 수
+  없는 비-Git workspace는 workflow 시작 단계에서 막힌다.
+- gitignore 된 빌드 산출물은 기본으로 제외하되, 보호 glob과 일치하면 별도로 검사한다. 그 외
   오탐은 `ignoreGlobs` 로 처리한다.
 - `testGlobs` 가 비어 있으면 판정 기준이 없으므로 검사를 수행하지 않는다.
 
@@ -610,7 +644,8 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   `TASK | BUG | IDEA | FOLLOWUP`이며, 런타임 타입 값은 별도 enum으로 강제하지 않는다.
 - 첫 test 실행은 테스트 파일만 작성하도록 지시하고 `[REPRO: <command>]`를 파싱한다.
   실행 전후 workspace 해시를 비교해 설정된 `testGlobs` 또는 기본 테스트 경로 밖 변경을
-  `role_boundary_violation`으로 막는다. git이 없으면 기존 역할 경계 검사와 같이 경고 후 생략한다.
+  `role_boundary_violation`으로 막는다. 재현 전 검사는 기존처럼 생략할 수 있지만, 후속
+  workflow는 Git 무결성 기준선을 만들 수 없으면 `integrity_unavailable`로 막힌다.
 - Phase 1 verify 실행기를 재사용해 명령을 프로젝트 디렉터리에서 실행한다. 수정 전 종료 코드가
   0이면 `BLOCKED`, `not_reproduced`로 보고하고 이슈 상태를 바꾸지 않는다. 비정상 종료를
   관찰한 경우에만 이슈를 `IN_PROGRESS`로 바꿔 planner부터 시작한다.
@@ -639,7 +674,10 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 
 - `./run eval [--case <id>] [--models id1,id2]`는 `src/workflows/eval.ts`가
   `evals/cases/<id>/`의 `spec.md`, fixture, `checks.sh`, `meta.json`을 읽어 실행한다.
-  fixture는 OS 임시 디렉터리에 복사되고 평가가 끝나면 삭제된다.
+  fixture는 OS 임시 디렉터리에 복사해 임시 Git 기준선을 만든 뒤 평가가 끝나면 삭제한다.
+  `checks.sh`는 케이스 디렉터리의 절대 경로로 호출하고 프로젝트 workspace에는 복사하지 않는다.
+  선택적인 `oracle/`은 workflow 종료 뒤 workspace 위에 덮어써서 평가 스크립트가 신뢰할
+  테스트를 사용할 수 있게 한다.
 - 각 case/model 실행은 `agent_run`의 `agent_name='eval'`, `trigger_source='eval'` 행으로
   기록되며, 하위 agent는 같은 workflow ID에 묶인다. `costGuard.allow()`가 거부하면
   `BLOCKED`로 기록하고 해당 실행을 건너뛴다.
@@ -647,7 +685,11 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   실행 단위로 적용한다. `AsyncLocalStorage`로 비동기 호출 트리 안에서만 해석하므로
   동시 평가 사이에 섞이거나 전역 `agentModels` 설정을 변경하지 않는다. 옵션이 없으면
   현재 역할별 모델 구성을 고정해 실행하고 결과에 기록한다.
-- `meta.json`의 `expectedResult`는 `SHIP` 또는 `CLARIFICATION`이다. 선택적인
+- `meta.json`의 `expectedResult`는 `SHIP`, `CLARIFICATION`, `REJECT`다. `REJECT`는 최종
+  verdict가 `SHIP`이 아니고 무결성 위반이 0건일 때만 체크 스크립트가 판정할 수 있다.
+  eval 자체도 무결성 위반이 있으면 checks 결과와 관계없이 실패한다. 결과에는
+  `oracleApplied`, `integrityViolations` 필드를 기록한다. checks script에는 integrity violation
+  수를 포함해 verdict와 route count를 환경변수로 전달한다. 선택적인
   `reproCommand`가 있으면 fixture 초기 상태에서 먼저 실패하는지 확인한 뒤, `runSpec`이
   동일 명령의 수정 후 통과를 요구한다. `timeoutMs`는 case 전체 제한 시간이며 `runSpec`과
   셸 명령에 전달된다. `checks.sh`에는 verdict와 route count가 환경변수로 전달되며,
@@ -656,7 +698,7 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   case/model 키를 비교해 통과 상태가 바뀐 회귀·개선을 요약하며 route count, 토큰,
   duration, 검증 출력도 보관한다. eval은 성공 후 문서 점검/자동 커밋을 실행하지 않는다.
 - 기본 케이스는 작은 TypeScript 회귀, Spring Boot/PostgreSQL 이메일 버그 재현, 모호한
-  결제 스펙 clarification이다. 외부 Maven 의존성을 받는 Spring 케이스를 포함해 모든
+  결제 스펙 clarification, 무결성 유혹 거절이다. 외부 Maven 의존성을 받는 Spring 케이스를 포함해 모든
   명령은 fixture에서 실행된다. 자동 CI 기준선/PR 차단은 이 Phase 범위가 아니다.
 
 ### 6.2.6 재시작 체크포인트
@@ -1084,12 +1126,15 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `<projectDir>/.auto-dev/project.json` | `version` | 필수. 현재 `1` 만 유효 |
 | | `verify.command` | 결정적 검증 명령. 종료 코드 0 이 유일한 통과 신호 |
 | | `verify.timeoutMs` | 기본 `900000` (15분) |
+| | `verify.baseline` | planner 전 검증 기준선 실행 opt-in |
+| | `verify.report.format` / `verify.report.paths` | 기준선/최종 JUnit XML 리포트 비교 설정. `baseline: true` 필요 |
 | | `runtime.up` / `runtime.down` | 런타임 기동·종료 셸 명령 |
 | | `runtime.healthcheck.url` | 준비 완료를 확인할 HTTP(S) URL |
 | | `runtime.healthcheck.timeoutMs` | 기본 `120000` (2분) |
 | | `runtime.checks` | 프로젝트 안의 상대 check 스크립트 경로 목록 |
 | | `roleBoundary.testGlobs` | test 단계가 수정해도 되는 경로. 비면 역할 경계 검사 생략 |
 | | `roleBoundary.ignoreGlobs` | 오탐 제외 경로 |
+| | `protect.globs` | 기본 보호 경로에 추가할 경로 glob |
 | | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
 | | `delivery.mode` | `local` (기본) 또는 `pull-request`; PR은 자동 checkpoint/worktree 사용 |
 | | `delivery.baseBranch` | PR base branch. 생략하면 GitHub 저장소 기본 브랜치 |
@@ -1097,8 +1142,8 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `delivery.autoMerge.requestMerge` | GitHub `--auto` 요청에 대한 별도 프로젝트 opt-in. `enabled`도 true여야 함 |
 | `data/config.json` | `autoMergeEnabled` | 대시보드의 서버 전역 kill switch. 기본 false |
 
-파일이 없으면 모든 게이트가 비활성이고 workflow 는 기존과 동일하게 동작한다. 파일이 있는데
-스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
+파일이 없어도 기본 protected/test integrity 검사는 동작한다. project config 기반 verify/runtime
+게이트는 비활성이다. 파일이 있는데 스키마가 틀리면 run 이 즉시 실패한다. 자세한 동작은 §6.2.1.
 `runtime` 이 있으면 실제 동작 검증 게이트도 활성화된다 (§6.2.2).
 `delivery.mode: "pull-request"`는 GitHub 인증 및 외부 접근 제어 확인을 요구한다 (§6.2.7).
 
@@ -1200,6 +1245,7 @@ auto-dev-ts/
 │   │   ├── run-events.ts             # SSE 이벤트 emitter (실행별)
 │   │   ├── workspace.ts              # 프로젝트명 → cwd 해석 (경로 탈출 차단)
 │   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2)
+│   │   ├── test-integrity.ts         # 보호 경로·테스트 약화·JUnit 기준선 검사 (§6.2.1)
 │   │   ├── pr-delivery.ts            # run 전용 PR worktree와 idempotent 전달 (§6.2.7)
 │   │   ├── evidence.ts               # workflow runtime 증거 파일 읽기·쓰기 (§6.2.2)
 │   │   ├── verify.ts                 # 검증 명령 실행 + 프로세스 그룹 정리 (§6.2.1)

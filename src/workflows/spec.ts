@@ -4,7 +4,7 @@ import { test } from '../agents/test.js';
 import { cicd } from '../agents/cicd.js';
 import { planner } from '../agents/planner.js';
 import { clarifier } from '../agents/clarifier.js';
-import { AGENT_ORDER } from '../agents/specs.js';
+import { AGENT_ORDER, AGENT_SPECS } from '../agents/specs.js';
 import { decorateCicdInput } from '../agents/dispatch.js';
 import { randomUUID } from 'crypto';
 import type { RunResult } from '../lib/runner.js';
@@ -15,6 +15,17 @@ import { executeTeam, parseTeamPlan, type TeamExecutionResult } from './team.js'
 import { defaultWorkspaceDir } from '../lib/workspace.js';
 import { DEFAULT_VERIFY_TIMEOUT_MS, loadProjectConfig, roleBoundaryEnabled } from '../lib/project-config.js';
 import { findRoleBoundaryViolations, snapshotWorkspace, workspaceHeadSha } from '../lib/role-boundary.js';
+import {
+  BUILTIN_PROTECTED_GLOBS,
+  captureTestIntegrityBaseline,
+  effectiveTestGlobs,
+  findProtectedPathChanges,
+  findTestIntegrityViolations,
+  junitRegressionReasons,
+  readJUnitReport,
+  type JUnitCounts,
+  type TestIntegrityBaseline,
+} from '../lib/test-integrity.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
 import { runRuntimeVerification } from './runtime-gate.js';
 import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
@@ -59,6 +70,8 @@ export interface SpecOptions {
   signal?: AbortSignal;
   /** eval 모델 매트릭스를 위한 실행 단위 역할별 모델 ID 오버라이드. */
   agentModels?: Record<string, string>;
+  /** 의도된 테스트 수 감소를 허용한다. 보호 경로와 eval 오라클 검사는 우회하지 않는다. */
+  allowTestRegression?: boolean;
   /** dashboard spec 재시작용 상태 저장. 일반 workflow 호출은 지정하지 않는다. */
   checkpoint?: {
     initialState?: PersistedSpecCheckpointState;
@@ -91,6 +104,8 @@ export interface SpecResult {
   planOutput?: string;
   /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
   routeCount?: number;
+  /** workflow 중 관찰한 무결성 또는 검증자 역할 경계 위반 경로 수. */
+  integrityViolations?: number;
   /** skip 모드에서 추천 답안으로 자동 답변한 clarifier 라운드들 (히스토리 편입용). */
   autoClarifyRounds?: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }>;
   /** 실행을 멈춘 단계와 실제 에이전트 출력. 부모 spec 요약에 표시한다. */
@@ -99,7 +114,8 @@ export interface SpecResult {
     status: string;
     reason: string;
     cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable'
-      | 'verify_failed' | 'role_boundary_violation' | 'reproduction_failed';
+      | 'verify_failed' | 'role_boundary_violation' | 'reproduction_failed' | 'protected_path_modified'
+      | 'test_regression' | 'baseline_red' | 'integrity_unavailable' | 'junit_report_unavailable';
     route?: string;
     routeAvailable: boolean;
   };
@@ -128,6 +144,8 @@ export interface PersistedSpecCheckpointState {
   beforeSnapshot?: Record<string, string>;
   beforeHeadSha?: string;
   recoveryReason?: string;
+  integrityBaseline?: TestIntegrityBaseline;
+  integrityViolationCount?: number;
 }
 
 export const STEP_ORDER = AGENT_ORDER;
@@ -264,6 +282,10 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   }
   const findingProject = projectFindingKey(projectDir);
   const boundaryConfig = roleBoundaryEnabled(projectConfig) ? projectConfig.roleBoundary : undefined;
+  const testGlobs = effectiveTestGlobs(projectConfig?.roleBoundary?.testGlobs ?? []);
+  const protectedGlobs = [...new Set([...BUILTIN_PROTECTED_GLOBS, ...(projectConfig?.protect?.globs ?? [])])];
+  let integrityBaseline = checkpointState?.integrityBaseline;
+  let integrityViolationCount = checkpointState?.integrityViolationCount ?? 0;
 
   // skip 모드에서 추천 답안으로 자동 답변한 라운드와, 다음 clarifier 입력에 실을 Q&A 라인.
   const autoClarifyRounds: Array<{ questions: ClarificationQuestion[]; answers: Record<string, string> }> =
@@ -396,13 +418,15 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       autoClarifyRounds: autoClarifyRounds.map(round => ({ questions: round.questions, answers: { ...round.answers } })),
       autoQaLines: [...autoQaLines],
       initialFeedbackApplied,
+      integrityBaseline,
+      integrityViolationCount,
       ...extra,
     });
   };
   const checkpointActionIntent = async (action: string, step: string, input?: string): Promise<void> => {
     if (!opts.checkpoint) return;
     const [workspaceSnapshot, headSha] = await Promise.all([
-      snapshotWorkspace(projectDir),
+      snapshotWorkspace(projectDir, [...testGlobs, ...protectedGlobs]),
       workspaceHeadSha(projectDir),
     ]);
     publishCheckpoint({
@@ -414,6 +438,254 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       beforeSnapshot: workspaceSnapshot ? Object.fromEntries(workspaceSnapshot) : undefined,
       beforeHeadSha: headSha,
     });
+  };
+  const initializeIntegrityBaseline = async (): Promise<{
+    cause?: NonNullable<SpecResult['failure']>['cause'];
+    reason?: string;
+    cancelled?: boolean;
+    routed?: boolean;
+  }> => {
+    if (integrityBaseline) return {};
+    if (checkpointState && cursor > STEP_ORDER.indexOf('scaffold')) {
+      return {
+        cause: 'integrity_unavailable',
+        reason: 'Checkpoint has no integrity baseline although a file-writing step already ran; restart the workflow from the beginning.',
+      };
+    }
+    try {
+      integrityBaseline = await captureTestIntegrityBaseline(projectDir, testGlobs, protectedGlobs);
+    } catch (err) {
+      return {
+        cause: 'integrity_unavailable',
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (integrityBaseline.dirtyTestPaths.length > 0) {
+      emitRunEvent(workflowRunId, {
+        type: 'warn',
+        ts: new Date().toISOString(),
+        data: `test_integrity_skipped_dirty_at_start: ${integrityBaseline.dirtyTestPaths.join(', ')}`.slice(0, 2_000),
+      });
+    }
+    if (opts.allowTestRegression) {
+      emitRunEvent(workflowRunId, {
+        type: 'warn',
+        ts: new Date().toISOString(),
+        data: 'allow_test_regression: true (test-count/skip/deletion checks are waived; protected paths remain enforced)',
+      });
+    }
+
+    if (projectConfig?.verify?.baseline && !opts.reproCommand) {
+      await checkpointActionIntent('verify', 'verify-baseline', projectConfig.verify.command);
+      const verifyStartedAt = Date.now();
+      const baseline = await runVerifyStep({
+        projectDir,
+        verify: projectConfig.verify,
+        workflowRunId,
+        specSessionId: opts.specSessionId,
+        triggerSource: runOpts.triggerSource,
+        triggerDetail: 'baseline-verification',
+        signal: opts.signal,
+      });
+      results['verify-baseline'] = {
+        runId: baseline.runId,
+        durationMs: baseline.outcome.durationMs,
+        status: baseline.outcome.cancelled ? 'CANCELLED' : baseline.passed ? 'DONE' : 'BLOCKED',
+      };
+      if (baseline.outcome.cancelled) return { cancelled: true };
+      const changes = await inspectIntegrity();
+      if (changes && routeIntegrityIssue(changes, baseline.runId, 'verify-baseline') === 'routed') {
+        publishCheckpoint({ integrityBaseline, integrityViolationCount });
+        return { routed: true };
+      }
+      if (changes) {
+        return {
+          cause: changes.kind === 'protected' ? 'protected_path_modified' : 'test_regression',
+          reason: `Baseline verification modified guarded files: ${changes.paths.join(', ')}`,
+        };
+      }
+      if (!baseline.passed) {
+        return {
+          cause: 'baseline_red',
+          reason: `Baseline verification failed before planner execution. ${verifyFeedbackBody(projectConfig.verify, baseline.outcome)}`,
+        };
+      }
+      if (projectConfig.verify.report) {
+        try {
+          const report = await readJUnitReport(projectDir, projectConfig.verify.report, verifyStartedAt);
+          if (report.stalePaths.length > 0) {
+            emitRunEvent(baseline.runId, {
+              type: 'warn',
+              ts: new Date().toISOString(),
+              data: `junit_report_stale: ${report.stalePaths.join(', ')}`.slice(0, 1_000),
+            });
+          } else if (report.counts) {
+            integrityBaseline = { ...integrityBaseline, junitCounts: report.counts };
+            if (report.counts.failures > 0 || report.counts.errors > 0) {
+              return {
+                cause: 'baseline_red',
+                reason: `Baseline JUnit report contains failures/errors: ${report.counts.failures}/${report.counts.errors}.`,
+              };
+            }
+          }
+        } catch (err) {
+          return {
+            cause: 'junit_report_unavailable',
+            reason: `Baseline JUnit report could not be read: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+    }
+    publishCheckpoint({ integrityBaseline });
+    return {};
+  };
+  const inspectIntegrity = async (
+    beforeTest?: Record<string, string>,
+    afterTest?: Awaited<ReturnType<typeof snapshotWorkspace>>,
+  ): Promise<{ kind: 'protected' | 'test'; paths: string[] } | undefined> => {
+    if (!integrityBaseline) throw new Error('integrity_unavailable: workflow baseline was not captured');
+    const protectedChanges = await findProtectedPathChanges(projectDir, integrityBaseline, protectedGlobs);
+    if (protectedChanges.length > 0) return { kind: 'protected', paths: protectedChanges };
+    if (opts.allowTestRegression) return undefined;
+    const testChanges = await findTestIntegrityViolations(projectDir, integrityBaseline, testGlobs, beforeTest, afterTest);
+    return testChanges.length > 0 ? { kind: 'test', paths: testChanges } : undefined;
+  };
+  const routeIntegrityIssue = (
+    issue: { kind: 'protected' | 'test'; paths: string[]; reason?: string },
+    runId: string,
+    stage: string,
+    routeAllowed = true,
+  ): 'routed' | 'failed' => {
+    const protectedPath = issue.kind === 'protected';
+    const cause = protectedPath ? 'protected_path_modified' : 'test_regression';
+    const ruleHint = protectedPath ? 'protected path changed during workflow' : 'test suite was weakened during workflow';
+    integrityViolationCount += Math.max(1, issue.paths.length);
+    publishCheckpoint({ integrityViolationCount });
+    for (const file of issue.paths) {
+      recordOperationalFinding({
+        runId,
+        workflowRunId,
+        project: findingProject,
+        severity: 'high',
+        category: 'integrity',
+        ruleHint,
+        file,
+      });
+    }
+    const feedback = [
+      protectedPath
+        ? '가드레일 설정 또는 검증 스크립트가 workflow 중 변경됐다. 이 경로는 수정하지 말고 원래 요구를 구현하라.'
+        : 'workflow 시작 기준보다 테스트가 약화됐다. 테스트 skip/focus 추가나 삭제를 되돌리고 요구사항을 구현하라.',
+      ...(issue.reason ? [`세부 사유: ${issue.reason}`] : []),
+      `감지 단계: ${stage}`,
+      ...issue.paths.map(path => `- ${path}`),
+    ].join('\n');
+    if (routeAllowed && routeTo('planner', 'role-boundary', feedback)) return 'routed';
+    const terminalStatus = routeAllowed ? 'FAILED' : 'CANCELLED';
+    verdict = terminalStatus;
+    failure = {
+      step: protectedPath ? 'integrity' : 'test-integrity',
+      status: terminalStatus,
+      cause,
+      reason: routeAllowed
+        ? `${feedback}\n\nPlanner 재작업 라우트 예산이 소진됐거나 비활성화되어 있다.`
+        : `${feedback}\n\n취소된 실행이므로 재작업을 시작하지 않았다.`,
+      route: 'planner',
+      routeAvailable: false,
+    };
+    return 'failed';
+  };
+  const checkIntegrityAtGate = async (
+    runId: string,
+    stage: string,
+    routeAllowed = true,
+  ): Promise<'ok' | 'routed' | 'failed' | 'blocked'> => {
+    try {
+      const issue = await inspectIntegrity();
+      return issue ? routeIntegrityIssue(issue, runId, stage, routeAllowed) : 'ok';
+    } catch (err) {
+      verdict = 'BLOCKED';
+      failure = {
+        step: 'integrity',
+        status: 'BLOCKED',
+        cause: 'integrity_unavailable',
+        reason: err instanceof Error ? err.message : String(err),
+        routeAvailable: false,
+      };
+      return 'blocked';
+    }
+  };
+  const recordVerifierRoleBoundary = <T extends { stage: string; changedFiles?: string[] }>(
+    runId: string,
+    records: T[],
+  ): string[] => {
+    const files = [...new Set(records
+      .filter(record => record.stage === 'verifier')
+      .flatMap(record => record.changedFiles ?? []))];
+    if (files.length === 0) return files;
+    integrityViolationCount += files.length;
+    publishCheckpoint({ integrityViolationCount });
+    for (const file of files) {
+      recordOperationalFinding({
+        runId,
+        workflowRunId,
+        project: findingProject,
+        severity: 'high',
+        category: 'role-boundary',
+        ruleHint: 'runtime verifier must not modify workspace files',
+        file,
+      });
+    }
+    return files;
+  };
+  const inspectJUnitAfterVerify = async (
+    verifyStartedAt: number,
+    runId: string,
+  ): Promise<{ kind: 'protected' | 'test'; paths: string[]; reason?: string } | 'blocked' | undefined> => {
+    if (!projectConfig?.verify?.report) return undefined;
+    try {
+      const report = await readJUnitReport(projectDir, projectConfig.verify.report, verifyStartedAt);
+      if (report.stalePaths.length > 0) {
+        emitRunEvent(runId, {
+          type: 'warn',
+          ts: new Date().toISOString(),
+          data: `junit_report_stale: ${report.stalePaths.join(', ')}`.slice(0, 1_000),
+        });
+        return undefined;
+      }
+      if (!report.counts || !integrityBaseline?.junitCounts) {
+        emitRunEvent(runId, {
+          type: 'warn',
+          ts: new Date().toISOString(),
+          data: 'junit_report_comparison_skipped: fresh baseline report was unavailable',
+        });
+        return undefined;
+      }
+      const reasons = junitRegressionReasons(integrityBaseline.junitCounts, report.counts).filter((reason) =>
+        !opts.allowTestRegression || (!reason.startsWith('test count decreased') && !reason.startsWith('skipped count increased')),
+      );
+      return reasons.length > 0
+        ? { kind: 'test', paths: projectConfig.verify.report.paths, reason: reasons.join('; ') }
+        : undefined;
+    } catch (err) {
+      verdict = 'BLOCKED';
+      failure = {
+        step: VERIFY_AGENT_NAME,
+        status: 'BLOCKED',
+        cause: 'junit_report_unavailable',
+        reason: `Configured JUnit report could not be read after verify: ${err instanceof Error ? err.message : String(err)}`,
+        routeAvailable: false,
+      };
+      recordOperationalFinding({
+        runId,
+        workflowRunId,
+        project: findingProject,
+        severity: 'high',
+        category: 'integrity',
+        ruleHint: 'configured junit report missing or invalid',
+      });
+      return 'blocked';
+    }
   };
   const commitPostSuccess = async (): Promise<void> => {
     await checkpointActionIntent('delivery', opts.deliveryContext ? 'docs-audit' : 'post-success', clarifiedSpec);
@@ -487,23 +759,69 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     }
     const step = STEP_ORDER[cursor];
     if (!stepsFilter.has(step)) { cursor++; continue; }
+    if (step !== 'clarifier' && !integrityBaseline) {
+      const baseline = await initializeIntegrityBaseline();
+      if (baseline.cancelled) {
+        verdict = 'CANCELLED';
+        break;
+      }
+      if (baseline.routed) continue;
+      if (baseline.cause) {
+        if (failure) break;
+        verdict = 'BLOCKED';
+        failure = {
+          step: baseline.cause === 'baseline_red' || baseline.cause === 'junit_report_unavailable' ? 'verify-baseline' : 'integrity',
+          status: baseline.cause === 'protected_path_modified' || baseline.cause === 'test_regression' ? 'FAILED' : 'BLOCKED',
+          cause: baseline.cause,
+          reason: baseline.reason ?? 'Workflow integrity baseline could not be established.',
+          routeAvailable: false,
+        };
+        break;
+      }
+    }
     // The planner decides whether CI/CD work exists. Do not invoke cicd for
     // ordinary application-only plans; there is no valid task for it.
     if (step === 'cicd' && planOutput?.trim() && assignedPlanSteps(planOutput, 'cicd').length === 0) {
       cursor++;
       continue;
     }
+    if (step === 'review') {
+      try {
+        const issue = await inspectIntegrity();
+        if (issue && routeIntegrityIssue(issue, results.test?.runId ?? workflowRunId, 'pre-review') === 'routed') continue;
+        if (issue) break;
+      } catch (err) {
+        verdict = 'BLOCKED';
+        failure = {
+          step: 'integrity', status: 'BLOCKED', cause: 'integrity_unavailable',
+          reason: err instanceof Error ? err.message : String(err), routeAvailable: false,
+        };
+        break;
+      }
+    }
     const isResumingAction = resumeActionPending && checkpointState?.activeAction === 'agent' && checkpointState.activeStep === step;
     if (isResumingAction) resumeActionPending = false;
     else if (++executed > safetyCap) break;
 
-    // test 에이전트도 Bash 를 가지므로 프로덕션 소스를 바꿀 수 있다. 프롬프트 금지만으로는
-    // 막히지 않으니 실행 전후 내용 해시를 비교해 사후 검사한다.
-    const boundaryBefore = step === 'test' && boundaryConfig
+    const integrityWritableStep = AGENT_SPECS[step].tools.some((tool) => tool === 'Write' || tool === 'Bash');
+    const integrityStepBefore = integrityWritableStep
       ? isResumingAction && checkpointState?.beforeSnapshot
         ? new Map(Object.entries(checkpointState.beforeSnapshot))
-        : await snapshotWorkspace(projectDir)
+        : await snapshotWorkspace(projectDir, [...testGlobs, ...protectedGlobs])
       : undefined;
+    if (integrityWritableStep && !integrityStepBefore) {
+      verdict = 'BLOCKED';
+      failure = {
+        step: 'integrity', status: 'BLOCKED', cause: 'integrity_unavailable',
+        reason: 'Git snapshot became unavailable before an agent step.', routeAvailable: false,
+      };
+      break;
+    }
+    // 파일 쓰기 단계의 테스트·보호 경로 변경을 단계 전후 내용 해시로 사후 검사한다.
+    const boundaryBefore = step === 'test' && boundaryConfig
+      ? new Map(integrityStepBefore ?? [])
+      : undefined;
+    let integrityStepAfterSnapshot: Awaited<ReturnType<typeof snapshotWorkspace>> | undefined = undefined;
 
     const input = inputFor(step);
     const isRecoveredStep = Boolean(
@@ -528,11 +846,45 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     pendingFeedback = undefined;
     results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
 
-    if (r.status === 'BLOCKED' || r.status === 'FAILED' || r.status === 'CANCELLED') {
-      verdict = r.status;
+    if (integrityWritableStep) {
+      const integrityStepAfter = await snapshotWorkspace(projectDir, [...testGlobs, ...protectedGlobs]);
+      integrityStepAfterSnapshot = integrityStepAfter;
+      if (!integrityStepAfter) {
+        verdict = 'BLOCKED';
+        failure = {
+          step: 'integrity', status: 'BLOCKED', cause: 'integrity_unavailable',
+          reason: 'Git snapshot became unavailable after an agent step.', routeAvailable: false,
+        };
+        break;
+      }
+      let issue: { kind: 'protected' | 'test'; paths: string[] } | undefined;
+      try {
+        issue = await inspectIntegrity(
+          integrityStepBefore ? Object.fromEntries(integrityStepBefore) : undefined,
+          integrityStepAfter,
+        );
+      } catch (err) {
+        verdict = 'BLOCKED';
+        failure = {
+          step: 'integrity', status: 'BLOCKED', cause: 'integrity_unavailable',
+          reason: err instanceof Error ? err.message : String(err), routeAvailable: false,
+        };
+        break;
+      }
+      if (issue) {
+        const cancelled = r.status === 'CANCELLED' || opts.signal?.aborted === true;
+        if (routeIntegrityIssue(issue, r.runId, step, !cancelled) === 'routed') continue;
+        break;
+      }
+    }
+
+    if (r.status === 'BLOCKED' || r.status === 'FAILED' || r.status === 'CANCELLED' || opts.signal?.aborted) {
+      const cancelled = r.status === 'CANCELLED' || opts.signal?.aborted === true;
+      const status = cancelled ? 'CANCELLED' : r.status;
+      verdict = status;
       failure = {
         step,
-        status: r.status,
+        status,
         cause: 'agent_stopped',
         reason: r.output.trim() || `The ${step} agent stopped without an error message.`,
         routeAvailable: false,
@@ -548,7 +900,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           data: 'role_boundary_skipped: not a git repository',
         });
       } else {
-        const boundaryAfter = await snapshotWorkspace(projectDir);
+        const boundaryAfter = integrityStepAfterSnapshot;
         const violations = boundaryAfter
           ? findRoleBoundaryViolations(boundaryBefore, boundaryAfter, boundaryConfig)
           : [];
@@ -639,7 +991,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           input: clarifiedSpec,
           runOpts,
           maxDepth: 2,
-          deferReview: Boolean(projectConfig?.verify || projectConfig?.runtime),
+          deferReview: true,
         });
         for (const task of team.tasks) {
           results[task.taskId] = {
@@ -648,10 +1000,36 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             status: task.status,
           };
         }
-        // 동적 팀의 review는 DAG 실행 중 호출하지 않는다. 통합된 결과가 결정적·런타임
-        // 검증을 통과한 뒤에만 별도 review 태스크를 실행한다.
+        // 동적 팀 review는 통합 후 무결성·결정적·런타임 검사를 통과한 뒤 실행한다.
+        try {
+          const issue = await inspectIntegrity();
+          const routeAllowed = !opts.signal?.aborted;
+          if (issue && routeIntegrityIssue(issue, workflowRunId, 'team-integration', routeAllowed) === 'routed') continue;
+          if (issue) return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
+        } catch (err) {
+          return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'BLOCKED', planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            failure: {
+              step: 'integrity', status: 'BLOCKED', cause: 'integrity_unavailable',
+              reason: err instanceof Error ? err.message : String(err), routeAvailable: false,
+            },
+          };
+        }
         if (!team.failed && projectConfig?.verify && !opts.signal?.aborted) {
+          const beforeGate = await checkIntegrityAtGate(workflowRunId, 'team-pre-verify');
+          if (beforeGate === 'routed') continue;
+          if (beforeGate !== 'ok') return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
           await checkpointActionIntent('verify', VERIFY_AGENT_NAME, projectConfig.verify.command);
+          const verifyStartedAt = Date.now();
           const gate = await runVerifyStep({
             projectDir,
             verify: projectConfig.verify,
@@ -665,8 +1043,19 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             durationMs: gate.outcome.durationMs,
             status: gate.passed ? 'DONE' : 'FAILED',
           };
-          if (gate.outcome.cancelled) {
-            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team };
+          const afterGate = await checkIntegrityAtGate(
+            gate.runId,
+            'team-post-verify',
+            !gate.outcome.cancelled && !opts.signal?.aborted,
+          );
+          if (afterGate === 'routed') continue;
+          if (afterGate !== 'ok') return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
+          if (gate.outcome.cancelled || opts.signal?.aborted) {
+            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team, integrityViolations: integrityViolationCount };
           }
           if (!gate.passed) {
             recordOperationalFinding({
@@ -680,14 +1069,36 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+              integrityViolations: integrityViolationCount,
               failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: feedback, route: 'planner', routeAvailable: false },
             };
           }
           runtimeEvidenceSummary = `- deterministic verify: PASS (exit 0, ${gate.outcome.durationMs}ms)` +
             (gate.outcome.outputTail ? `\n  ${gate.outcome.outputTail}` : '');
+          const junitIssue = await inspectJUnitAfterVerify(verifyStartedAt, gate.runId);
+          if (junitIssue === 'blocked') return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'BLOCKED', planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
+          if (junitIssue) {
+            if (routeIntegrityIssue(junitIssue, gate.runId, 'team-verify') === 'routed') continue;
+            return {
+              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+              integrityViolations: integrityViolationCount,
+              ...(failure ? { failure } : {}),
+            };
+          }
         }
 
         if (!team.failed && projectConfig?.runtime && !opts.signal?.aborted) {
+          const beforeRuntime = await checkIntegrityAtGate(workflowRunId, 'team-pre-runtime');
+          if (beforeRuntime === 'routed') continue;
+          if (beforeRuntime !== 'ok') return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
           await checkpointActionIntent('runtime', 'runtime', projectConfig.runtime.up);
           const runtimeGate = await runRuntimeVerification({
             projectDir,
@@ -705,34 +1116,39 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             status: runtimeGate.passed ? 'DONE' : 'FAILED',
           };
           runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
-          if (runtimeGate.cancelled) {
-            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team };
+          const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
+          if (verifierChanges.length > 0) {
+            return {
+              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+              integrityViolations: integrityViolationCount,
+              failure: {
+                step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation',
+                reason: `runtime verifier modified workspace files: ${verifierChanges.join(', ')}`, routeAvailable: false,
+              },
+            };
+          }
+          const afterRuntime = await checkIntegrityAtGate(
+            runtimeGate.runId,
+            'team-post-runtime',
+            !runtimeGate.cancelled && !opts.signal?.aborted,
+          );
+          if (afterRuntime === 'routed') continue;
+          if (afterRuntime !== 'ok') return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            ...(failure ? { failure } : {}),
+          };
+          if (runtimeGate.cancelled || opts.signal?.aborted) {
+            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team, integrityViolations: integrityViolationCount };
           }
           if (runtimeGate.blocked) {
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'BLOCKED', planOutput, routeCount, team,
+              integrityViolations: integrityViolationCount,
               failure: { step: VERIFY_AGENT_NAME, status: 'BLOCKED', cause: 'agent_stopped', reason: runtimeGate.feedback, routeAvailable: false },
             };
           }
           if (!runtimeGate.passed) {
-            const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
-            if (roleBoundaryViolation) {
-              for (const file of runtimeGate.records.filter(record => record.stage === 'verifier').flatMap(record => record.changedFiles ?? [])) {
-                recordOperationalFinding({
-                  runId: runtimeGate.runId,
-                  workflowRunId,
-                  project: findingProject,
-                  severity: 'high',
-                  category: 'role-boundary',
-                  ruleHint: 'runtime verifier must not modify workspace files',
-                  file,
-                });
-              }
-              return {
-                workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
-                failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation', reason: runtimeGate.feedback, routeAvailable: false },
-              };
-            }
             const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
             recordOperationalFinding({
               runId: runtimeGate.runId,
@@ -745,6 +1161,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+              integrityViolations: integrityViolationCount,
               failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: runtimeGate.feedback, route: 'planner', routeAvailable: false },
             };
           }
@@ -769,22 +1186,22 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         const reviewVerdict = reviewTasks.some(task => parseVerdict(task.output) === 'NEEDS-WORK')
           ? 'NEEDS-WORK'
           : blockedReview ? 'BLOCKED' : reviewTasks.map(task => parseVerdict(task.output)).find(Boolean);
-        const verdict = team.failed
+        const teamVerdict = team.failed
           ? 'FAILED'
           : reviewVerdict ?? 'SHIP';
-        if (!team.failed && verdict === 'NEEDS-WORK') {
+        if (!team.failed && teamVerdict === 'NEEDS-WORK') {
           const reviewTask = reviewTasks.find(task => parseVerdict(task.output) === 'NEEDS-WORK')!;
           const route = parseRoute(reviewTask.output) ?? 'planner';
           if (routeTo(route, 'review', reviewTask.output)) continue;
           return {
-            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: teamVerdict, planOutput, routeCount, team,
             failure: routeFailure(route, 'review', reviewTask.output),
           };
         }
-        if (!team.failed && verdict === 'BLOCKED') {
+        if (!team.failed && teamVerdict === 'BLOCKED') {
           const reviewTask = reviewTasks.find(task => parseVerdict(task.output) === 'BLOCKED');
           return {
-            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: teamVerdict, planOutput, routeCount, team,
             failure: {
               step: reviewTask?.taskId ?? 'review',
               status: 'BLOCKED',
@@ -794,7 +1211,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             },
           };
         }
-        if (!team.failed && verdict === 'SHIP' && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
+        if (!team.failed && teamVerdict === 'SHIP' && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
           if (opts.checkpoint) {
             try { await commitPostSuccess(); } catch (err) {
               log.error({ err: err instanceof Error ? err.message : String(err) }, 'Checkpointed dynamic-team post-success failed');
@@ -819,9 +1236,10 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           workflowRunId,
           steps: results,
           totalDurationMs: Date.now() - start,
-          verdict,
+          verdict: teamVerdict,
           planOutput,
           routeCount,
+          integrityViolations: integrityViolationCount,
           team,
           delivery: deliveryState,
           failure: team.failed ? {
@@ -933,7 +1351,11 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       // 여기부터는 tests === 'PASS'. 하지만 PASS 는 에이전트의 자기 보고다.
       // 설정이 있으면 오케스트레이터가 검증 명령을 직접 실행해 종료 코드로 확정한다.
       if (projectConfig?.verify) {
+        const beforeGate = await checkIntegrityAtGate(r.runId, 'pre-verify');
+        if (beforeGate === 'routed') continue;
+        if (beforeGate !== 'ok') break;
         await checkpointActionIntent('verify', VERIFY_AGENT_NAME, projectConfig.verify.command);
+        const verifyStartedAt = Date.now();
         const gate = await runVerifyStep({
           projectDir,
           verify: projectConfig.verify,
@@ -947,8 +1369,15 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           durationMs: gate.outcome.durationMs,
           status: gate.passed ? 'DONE' : 'FAILED',
         };
-        if (gate.outcome.cancelled) {
-          // 사용자 취소는 검증 실패가 아니다. 재작업 예산을 쓰지 않고 그대로 멈춘다.
+        // 취소 여부와 관계없이 검증 명령이 보호 파일을 바꾸지 않았는지 확인한다.
+        const afterGate = await checkIntegrityAtGate(
+          gate.runId,
+          'post-verify',
+          !gate.outcome.cancelled && !opts.signal?.aborted,
+        );
+        if (afterGate === 'routed') continue;
+        if (afterGate !== 'ok') break;
+        if (gate.outcome.cancelled || opts.signal?.aborted) {
           verdict = 'CANCELLED';
           break;
         }
@@ -978,6 +1407,12 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           };
           break;
         }
+        const junitIssue = await inspectJUnitAfterVerify(verifyStartedAt, gate.runId);
+        if (junitIssue === 'blocked') break;
+        if (junitIssue) {
+          if (routeIntegrityIssue(junitIssue, gate.runId, 'verify-junit') === 'routed') continue;
+          break;
+        }
       } else {
         emitRunEvent(r.runId, {
           type: 'warn',
@@ -987,6 +1422,9 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       }
 
       if (projectConfig?.runtime) {
+        const beforeRuntime = await checkIntegrityAtGate(r.runId, 'pre-runtime');
+        if (beforeRuntime === 'routed') continue;
+        if (beforeRuntime !== 'ok') break;
         await checkpointActionIntent('runtime', 'runtime', projectConfig.runtime.up);
         const runtimeGate = await runRuntimeVerification({
           projectDir,
@@ -1004,7 +1442,23 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           status: runtimeGate.passed ? 'DONE' : 'FAILED',
         };
         runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
-        if (runtimeGate.cancelled) {
+        const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
+        if (verifierChanges.length > 0) {
+          verdict = 'FAILED';
+          failure = {
+            step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation',
+            reason: `runtime verifier modified workspace files: ${verifierChanges.join(', ')}`, routeAvailable: false,
+          };
+          break;
+        }
+        const afterRuntime = await checkIntegrityAtGate(
+          runtimeGate.runId,
+          'post-runtime',
+          !runtimeGate.cancelled && !opts.signal?.aborted,
+        );
+        if (afterRuntime === 'routed') continue;
+        if (afterRuntime !== 'ok') break;
+        if (runtimeGate.cancelled || opts.signal?.aborted) {
           verdict = 'CANCELLED';
           break;
         }
@@ -1020,29 +1474,6 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           break;
         }
         if (!runtimeGate.passed) {
-          const roleBoundaryViolation = runtimeGate.records.some(record => record.stage === 'verifier' && (record.changedFiles?.length ?? 0) > 0);
-          if (roleBoundaryViolation) {
-            for (const file of runtimeGate.records.filter(record => record.stage === 'verifier').flatMap(record => record.changedFiles ?? [])) {
-              recordOperationalFinding({
-                runId: runtimeGate.runId,
-                workflowRunId,
-                project: findingProject,
-                severity: 'high',
-                category: 'role-boundary',
-                ruleHint: 'runtime verifier must not modify workspace files',
-                file,
-              });
-            }
-            verdict = 'FAILED';
-            failure = {
-              step: VERIFY_AGENT_NAME,
-              status: 'FAILED',
-              cause: 'role_boundary_violation',
-              reason: runtimeGate.feedback,
-              routeAvailable: false,
-            };
-            break;
-          }
           const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
           recordOperationalFinding({
             runId: runtimeGate.runId,
@@ -1135,6 +1566,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
 
   return {
     workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount,
+    integrityViolations: integrityViolationCount,
     autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
     failure,
     delivery: deliveryState,

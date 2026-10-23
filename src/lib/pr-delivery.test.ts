@@ -95,6 +95,7 @@ describe('completePullRequestDelivery', () => {
       verifyConfigured: true,
       verifySummary: 'Deterministic verify: PASS',
       reviewSummary: 'Review verdict: SHIP',
+      testRegressionAllowed: true,
     }, (stage) => { stages.push(stage); }, { run });
 
     expect(result).toMatchObject({ status: 'DELIVERED', commitSha, prNumber: 7, prUrl: 'https://github.com/org/project/pull/7' });
@@ -109,6 +110,7 @@ describe('completePullRequestDelivery', () => {
     expect(body).not.toContain('shhh');
     expect(body).toContain(commitSha);
     expect(body).toContain(baseSha);
+    expect(body).toContain('Test regression override: ENABLED');
   });
 
   it('reuses an open PR only when its head matches the verified commit', async () => {

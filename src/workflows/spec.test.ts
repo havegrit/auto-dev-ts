@@ -12,6 +12,7 @@ const inputs: Record<string, string[]> = {
 let clarifierResult: any;
 let clarifierQueue: any[] = [];
 let plannerResult: any;
+let scaffoldStatus = 'DONE';
 const { commitSuccessfulSpec } = vi.hoisted(() => ({
   commitSuccessfulSpec: vi.fn(async (): Promise<any> => ({ steps: {} })),
 }));
@@ -60,7 +61,7 @@ vi.mock('../agents/scaffold.js', () => ({
   scaffold: vi.fn(async (input: string) => {
     calls.push('scaffold');
     inputs.scaffold.push(input);
-    return { runId: 'scaffold-run', output: 'created', tokensIn: 1, tokensOut: 1, durationMs: 10, status: 'DONE' };
+    return { runId: 'scaffold-run', output: 'created', tokensIn: 1, tokensOut: 1, durationMs: 10, status: scaffoldStatus };
   }),
 }));
 
@@ -96,7 +97,7 @@ vi.mock('./post-success-commit.js', () => ({
 const { loadProjectConfig, runVerifyStep, snapshotWorkspace, workspaceHeadSha, emitRunEvent, executeTeam } = vi.hoisted(() => ({
   loadProjectConfig: vi.fn((): any => undefined),
   runVerifyStep: vi.fn(async (_opts: any): Promise<any> => ({ runId: 'verify-run', passed: true, outcome: { exitCode: 0, timedOut: false, cancelled: false, durationMs: 5, outputTail: '' } })),
-  snapshotWorkspace: vi.fn(async (_dir: string): Promise<any> => new Map()),
+  snapshotWorkspace: vi.fn(async (_dir: string, _globs?: string[]): Promise<any> => new Map()),
   workspaceHeadSha: vi.fn(async (_dir: string): Promise<string | undefined> => 'head-sha'),
   emitRunEvent: vi.fn((_runId: string, _event: any) => {}),
   executeTeam: vi.fn(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false })),
@@ -118,9 +119,24 @@ const { projectFindingKey, recordOperationalFinding } = vi.hoisted(() => ({
   projectFindingKey: vi.fn(() => 'demo'),
   recordOperationalFinding: vi.fn(),
 }));
+const { captureTestIntegrityBaseline, findProtectedPathChanges, findTestIntegrityViolations, readJUnitReport } = vi.hoisted(() => ({
+  captureTestIntegrityBaseline: vi.fn(async () => ({
+    startHeadSha: 'integrity-head', workspaceSnapshot: {}, dirtyTestPaths: [], trackedTestPaths: [],
+  })),
+  findProtectedPathChanges: vi.fn(async () => [] as string[]),
+  findTestIntegrityViolations: vi.fn(async () => [] as string[]),
+  readJUnitReport: vi.fn(async () => ({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] })),
+}));
 
 vi.mock('../lib/run-events.js', () => ({ emitRunEvent, closeEmitter: vi.fn(), getOrCreateEmitter: vi.fn() }));
 vi.mock('../lib/review-findings.js', () => ({ projectFindingKey, recordOperationalFinding }));
+vi.mock('../lib/test-integrity.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/test-integrity.js')>()),
+  captureTestIntegrityBaseline,
+  findProtectedPathChanges,
+  findTestIntegrityViolations,
+  readJUnitReport,
+}));
 
 vi.mock('../lib/project-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/project-config.js')>()),
@@ -150,6 +166,12 @@ import { runSpec, workflowOutput, workflowRunStatus } from './spec.js';
 beforeEach(() => {
   projectFindingKey.mockReturnValue('demo');
   recordOperationalFinding.mockClear();
+  captureTestIntegrityBaseline.mockReset().mockResolvedValue({
+    startHeadSha: 'integrity-head', workspaceSnapshot: {}, dirtyTestPaths: [], trackedTestPaths: [],
+  });
+  findProtectedPathChanges.mockReset().mockResolvedValue([]);
+  findTestIntegrityViolations.mockReset().mockResolvedValue([]);
+  readJUnitReport.mockReset().mockResolvedValue({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] });
 });
 
 describe('runSpec clarification gate', () => {
@@ -159,6 +181,7 @@ describe('runSpec clarification gate', () => {
     clarifierResult = undefined;
     clarifierQueue = [];
     plannerResult = undefined;
+    scaffoldStatus = 'DONE';
     loadProjectConfig.mockReturnValue(undefined);
     executeTeam.mockReset();
     executeTeam.mockImplementation(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false }));
@@ -755,6 +778,7 @@ describe('runSpec verification gate', () => {
     clarifierResult = READY_CLARIFIER;
     clarifierQueue = [];
     plannerResult = PLAN_WITH_TEST;
+    scaffoldStatus = 'DONE';
     commitSuccessfulSpec.mockClear();
     runRuntimeVerification.mockClear();
     loadProjectConfig.mockReturnValue({ version: 1, verify: { command: './gradlew check', timeoutMs: 1000 } });
@@ -1023,7 +1047,7 @@ describe('runSpec verification gate', () => {
     const result = await runSpec('명확한 요청');
 
     expect(result.verdict).toBe('SHIP');
-    expect(executeTeam).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ deferReview: false }));
+    expect(executeTeam).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ deferReview: true }));
     expect(runRuntimeVerification).not.toHaveBeenCalled();
     expect(inputs.review).toHaveLength(0);
   });
@@ -1077,6 +1101,7 @@ describe('runSpec verification gate', () => {
     const result = await runSpec('명확한 요청');
 
     expect(result.failure).toMatchObject({ step: 'verify', cause: 'role_boundary_violation' });
+    expect(result.integrityViolations).toBe(1);
     expect(result.failure?.reason).toContain('src/main.ts');
     expect(calls).not.toContain('review');
     expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
@@ -1112,6 +1137,8 @@ describe('runSpec role boundary check', () => {
 
   it('fails the workflow when the test step edits a production file', async () => {
     snapshotWorkspace
+      .mockResolvedValueOnce(new Map())
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
       .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
       .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-2']]));
 
@@ -1130,6 +1157,8 @@ describe('runSpec role boundary check', () => {
 
   it('allows the test step to create and edit test files', async () => {
     snapshotWorkspace
+      .mockResolvedValueOnce(new Map())
+      .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
       .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1']]))
       .mockResolvedValueOnce(new Map([['src/lib/a.ts', 'hash-1'], ['src/lib/a.test.ts', 'hash-new']]));
 
@@ -1139,22 +1168,182 @@ describe('runSpec role boundary check', () => {
     expect(result.verdict).toBe('SHIP');
   });
 
-  it('skips the check with a warning when the workspace is not a git repository', async () => {
-    snapshotWorkspace.mockResolvedValueOnce(undefined);
+  it('blocks when an integrity baseline cannot be captured outside a Git repository', async () => {
+    captureTestIntegrityBaseline.mockRejectedValueOnce(new Error('integrity_unavailable: Git worktree required'));
 
     const result = await runSpec('명확한 요청');
 
-    expect(emitRunEvent).toHaveBeenCalledWith('test-run', expect.objectContaining({ type: 'warn' }));
-    expect(emitRunEvent.mock.calls.some((call) => String(call[1].data).startsWith('role_boundary_skipped'))).toBe(true);
-    expect(result.verdict).toBe('SHIP');
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.failure).toMatchObject({ cause: 'integrity_unavailable' });
+    expect(calls).not.toContain('planner');
   });
 
-  it('does not snapshot the workspace when no test globs are declared', async () => {
+  it('keeps built-in integrity checks active without project-specific test globs', async () => {
     loadProjectConfig.mockReturnValue({ version: 1 });
 
     await runSpec('명확한 요청');
 
-    expect(snapshotWorkspace).not.toHaveBeenCalled();
+    expect(captureTestIntegrityBaseline).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.any(Array));
+    expect(snapshotWorkspace).toHaveBeenCalled();
+  });
+});
+
+describe('runSpec integrity gates', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) inputs[key].length = 0;
+    clarifierResult = READY_CLARIFIER;
+    clarifierQueue = [];
+    plannerResult = PLAN_WITH_TEST;
+    scaffoldStatus = 'DONE';
+    loadProjectConfig.mockReturnValue(undefined);
+    runVerifyStep.mockReset().mockResolvedValue({ runId: 'verify-run', passed: true, outcome: verifyOutcome() });
+    findProtectedPathChanges.mockReset().mockResolvedValue([]);
+    findTestIntegrityViolations.mockReset().mockResolvedValue([]);
+    readJUnitReport.mockReset().mockResolvedValue({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] });
+    executeTeam.mockReset().mockImplementation(async (_plan: any, _opts: any): Promise<any> => ({ tasks: [], failed: false }));
+  });
+
+  it('routes protected-path changes to the planner and preserves them for inspection', async () => {
+    findProtectedPathChanges.mockResolvedValueOnce(['.auto-dev/checks/smoke.sh']);
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 0 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ cause: 'protected_path_modified' });
+    expect(result.integrityViolations).toBe(1);
+    expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'integrity', file: '.auto-dev/checks/smoke.sh',
+    }));
+    expect(calls).not.toContain('review');
+  });
+
+  it('routes test weakening to planner and reports test_regression when the route budget is exhausted', async () => {
+    findTestIntegrityViolations.mockResolvedValueOnce(['tests/math.test.ts']);
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 0 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.failure).toMatchObject({ cause: 'test_regression' });
+    expect(result.integrityViolations).toBe(1);
+    expect(recordOperationalFinding).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'integrity', file: 'tests/math.test.ts',
+    }));
+  });
+
+  it('checks a write-capable step even when the agent itself reports failure', async () => {
+    scaffoldStatus = 'FAILED';
+    findTestIntegrityViolations.mockResolvedValueOnce(['tests/math.test.ts']);
+
+    const result = await runSpec('명확한 요청', {
+      steps: new Set(['scaffold']),
+      startStep: 'scaffold',
+      initialPlanOutput: 'PLAN:\n1. scaffold | build\nEND.',
+      maxRoutes: 0,
+    });
+
+    expect(result.failure).toMatchObject({ cause: 'test_regression' });
+    expect(result.integrityViolations).toBe(1);
+    expect(findTestIntegrityViolations).toHaveBeenCalledOnce();
+  });
+
+  it('waives test regression checks only when explicitly requested and records the override', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1 });
+
+    const result = await runSpec('명확한 요청', { allowTestRegression: true });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(findTestIntegrityViolations).not.toHaveBeenCalled();
+    expect(emitRunEvent).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      type: 'warn', data: expect.stringContaining('allow_test_regression: true'),
+    }));
+  });
+
+  it('blocks a red baseline before the planner and skips baseline verify in bug reproduction mode', async () => {
+    loadProjectConfig.mockReturnValue({ version: 1, verify: { command: 'npm test', timeoutMs: 1000, baseline: true } });
+    runVerifyStep.mockResolvedValueOnce({ runId: 'baseline-run', passed: false, outcome: verifyOutcome({ exitCode: 1 }) });
+
+    const baselineResult = await runSpec('명확한 요청');
+
+    expect(baselineResult).toMatchObject({ verdict: 'BLOCKED', failure: { cause: 'baseline_red' } });
+    expect(calls).toEqual(['clarifier']);
+    expect(runVerifyStep).toHaveBeenCalledOnce();
+
+    calls.length = 0;
+    runVerifyStep.mockClear();
+    runVerifyStep.mockResolvedValue({ runId: 'verify-run', passed: true, outcome: verifyOutcome() });
+    await runSpec('버그 재현', { steps: new Set(['test']), startStep: 'test', reproCommand: './repro.sh' });
+
+    expect(runVerifyStep.mock.calls.some(([options]) => options.triggerDetail === 'baseline-verification')).toBe(false);
+    expect(runVerifyStep).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes a JUnit test-count regression and still rejects failures when override is enabled', async () => {
+    loadProjectConfig.mockReturnValue({
+      version: 1,
+      verify: {
+        command: 'npm test', timeoutMs: 1000, baseline: true,
+        report: { format: 'junit-xml', paths: ['reports/*.xml'] },
+      },
+    });
+    readJUnitReport
+      .mockResolvedValueOnce({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] })
+      .mockResolvedValueOnce({ counts: { tests: 2, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] })
+      .mockResolvedValue({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] });
+
+    const result = await runSpec('명확한 요청', { maxRoutes: 1 });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.integrityViolations).toBe(1);
+    expect(inputs.planner[1]).toContain('test count decreased (3 → 2)');
+
+    readJUnitReport.mockResolvedValueOnce({ counts: { tests: 1, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] });
+    const allowed = await runSpec('의도된 테스트 정리', { allowTestRegression: true });
+    expect(allowed.verdict).toBe('SHIP');
+
+    readJUnitReport.mockReset()
+      .mockResolvedValueOnce({ counts: { tests: 3, skipped: 0, failures: 0, errors: 0 }, stalePaths: [] })
+      .mockResolvedValueOnce({ counts: { tests: 2, skipped: 0, failures: 1, errors: 0 }, stalePaths: [] });
+    const failingAllowed = await runSpec('실패한 테스트는 허용하지 않음', { allowTestRegression: true, maxRoutes: 0 });
+    expect(failingAllowed.failure).toMatchObject({ cause: 'test_regression' });
+  });
+
+  it('blocks dynamic-team review after a protected path changes during integration', async () => {
+    plannerResult = {
+      ...PLAN_WITH_TEST,
+      output: `${PLAN_WITH_TEST.output}\nTEAM_PLAN:\n${JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] })}\nEND_TEAM_PLAN.`,
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [{ taskId: 'impl', agent: 'scaffold', status: 'DONE', output: 'built' }],
+      deferredReviews: [{ id: 'review', agent: 'review', input: 'review', dependsOn: ['impl'] }],
+      failed: false,
+    });
+    findProtectedPathChanges.mockResolvedValueOnce(['.auto-dev/project.json']);
+
+    const result = await runSpec('팀 구현', { maxRoutes: 0 });
+
+    expect(result.failure).toMatchObject({ cause: 'protected_path_modified' });
+    expect(result.integrityViolations).toBe(1);
+    expect(inputs.review).toHaveLength(0);
+    expect(runVerifyStep).not.toHaveBeenCalled();
+  });
+
+  it('checks the integrated workspace even when a team task fails', async () => {
+    plannerResult = {
+      ...PLAN_WITH_TEST,
+      output: `${PLAN_WITH_TEST.output}\nTEAM_PLAN:\n${JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] })}\nEND_TEAM_PLAN.`,
+    };
+    executeTeam.mockResolvedValueOnce({
+      tasks: [{ taskId: 'impl', agent: 'scaffold', status: 'FAILED', output: 'failed' }],
+      failed: true,
+      conflict: 'implementation failed',
+    });
+    findProtectedPathChanges.mockResolvedValueOnce(['.auto-dev/checks/smoke.sh']);
+
+    const result = await runSpec('팀 구현', { maxRoutes: 0 });
+
+    expect(result.failure).toMatchObject({ cause: 'protected_path_modified' });
+    expect(result.integrityViolations).toBe(1);
   });
 });
 

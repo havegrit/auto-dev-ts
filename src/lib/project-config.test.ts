@@ -51,6 +51,22 @@ describe('loadProjectConfig', () => {
     expect(loadProjectConfig(dir)?.verify?.timeoutMs).toBe(DEFAULT_VERIFY_TIMEOUT_MS);
   });
 
+  it('parses immutable protection globs and opt-in baseline JUnit reporting', () => {
+    writeConfig(JSON.stringify({
+      version: 1,
+      verify: {
+        command: 'npm test',
+        baseline: true,
+        report: { format: 'junit-xml', paths: ['reports/**/*.xml'] },
+      },
+      protect: { globs: ['.github/**', 'scripts/**'] },
+    }));
+    expect(loadProjectConfig(dir)).toMatchObject({
+      protect: { globs: ['.github/**', 'scripts/**'] },
+      verify: { baseline: true, report: { format: 'junit-xml', paths: ['reports/**/*.xml'] } },
+    });
+  });
+
   it('parses a runtime verification config', () => {
     writeConfig(JSON.stringify({
       version: 1,
@@ -155,6 +171,12 @@ describe('loadProjectConfig', () => {
     ['empty verify command', { version: 1, verify: { command: '  ' } }, /verify\.command/],
     ['non-positive timeout', { version: 1, verify: { command: 'npm test', timeoutMs: 0 } }, /verify\.timeoutMs/],
     ['non-string glob', { version: 1, roleBoundary: { testGlobs: [42] } }, /roleBoundary\.testGlobs/],
+    ['non-boolean baseline', { version: 1, verify: { command: 'npm test', baseline: 'yes' } }, /verify\.baseline/],
+    ['unsupported report format', { version: 1, verify: { command: 'npm test', baseline: true, report: { format: 'json', paths: ['report.json'] } } }, /verify\.report\.format/],
+    ['report without baseline', { version: 1, verify: { command: 'npm test', report: { format: 'junit-xml', paths: ['report.xml'] } } }, /requires verify\.baseline=true/],
+    ['report path traversal', { version: 1, verify: { command: 'npm test', baseline: true, report: { format: 'junit-xml', paths: ['../report.xml'] } } }, /project-relative paths/],
+    ['non-object protection', { version: 1, protect: ['.github/**'] }, /protect must be an object/],
+    ['invalid protection glob', { version: 1, protect: { globs: [''] } }, /protect\.globs/],
   ])('rejects %s instead of silently ignoring it', (_label, body, pattern) => {
     writeConfig(JSON.stringify(body));
 

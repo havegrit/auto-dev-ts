@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,7 +8,11 @@ const state = vi.hoisted(() => ({
   allow: true,
   modelIds: ['anthropic:sonnet'],
   fixtureValue: undefined as string | undefined,
+  fixtureHead: undefined as string | undefined,
   verifyOutcomes: [] as Array<{ exitCode: number | null; timedOut: boolean; cancelled: boolean; durationMs: number; outputTail: string }>,
+  verifyCalls: [] as Array<{ cwd: string; command: string; env?: Record<string, string> }>,
+  harnessCopied: false,
+  oracleValueAtCheck: undefined as string | undefined,
   runSpec: vi.fn(),
   runVerify: vi.fn(),
   getRunsByWorkflowId: vi.fn(),
@@ -55,7 +60,12 @@ describe('runEval', () => {
   let dataDir: string;
   let tempRoot: string;
 
-  function addCase(id: string, options: { reproCommand?: string; expectedResult?: string; autoMergeCategory?: 'docs' | 'dependency-patch' } = {}): string {
+  function addCase(id: string, options: {
+    reproCommand?: string;
+    expectedResult?: string;
+    autoMergeCategory?: 'docs' | 'dependency-patch';
+    oracleFiles?: Record<string, string>;
+  } = {}): string {
     const dir = join(casesDir, id);
     mkdirSync(join(dir, 'fixture'), { recursive: true });
     writeFileSync(join(dir, 'spec.md'), `Implement ${id}.`);
@@ -68,6 +78,16 @@ describe('runEval', () => {
     }));
     writeFileSync(join(dir, 'checks.sh'), 'test -f fixture.txt\n');
     writeFileSync(join(dir, 'fixture', 'fixture.txt'), id);
+    if (options.oracleFiles) {
+      for (const [path, content] of Object.entries(options.oracleFiles)) {
+        const fullPath = join(dir, 'oracle', path);
+        mkdirSync(join(fullPath, '..'), { recursive: true });
+        writeFileSync(fullPath, content);
+        const fixturePath = join(dir, 'fixture', path);
+        mkdirSync(join(fixturePath, '..'), { recursive: true });
+        writeFileSync(fixturePath, 'fixture version\n');
+      }
+    }
     return dir;
   }
 
@@ -82,9 +102,14 @@ describe('runEval', () => {
     state.allow = true;
     state.modelIds = ['anthropic:sonnet'];
     state.verifyOutcomes = [];
+    state.verifyCalls = [];
+    state.harnessCopied = false;
+    state.oracleValueAtCheck = undefined;
     state.fixtureValue = undefined;
+    state.fixtureHead = undefined;
     state.runSpec.mockReset().mockImplementation(async (_spec: string, opts: { workflowRunId: string; cwd: string }) => {
       state.fixtureValue = readFileSync(join(opts.cwd, 'fixture.txt'), 'utf-8');
+      state.fixtureHead = execFileSync('git', ['-C', opts.cwd, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
       return {
         workflowRunId: opts.workflowRunId,
         steps: {},
@@ -93,13 +118,20 @@ describe('runEval', () => {
         routeCount: 1,
       };
     });
-    state.runVerify.mockReset().mockImplementation(async () => state.verifyOutcomes.shift() ?? ({
-      exitCode: 0,
-      timedOut: false,
-      cancelled: false,
-      durationMs: 5,
-      outputTail: 'checks passed',
-    }));
+    state.runVerify.mockReset().mockImplementation(async (cwd: string, config: { command: string }, options?: { env?: Record<string, string> }) => {
+      state.verifyCalls.push({ cwd, command: config.command, env: options?.env });
+      if (config.command.includes('checks.sh')) {
+        state.harnessCopied = existsSync(join(cwd, 'checks.sh'));
+        try { state.oracleValueAtCheck = readFileSync(join(cwd, 'tests/oracle.test.ts'), 'utf-8'); } catch { /* 케이스에서 사용하지 않음 */ }
+      }
+      return state.verifyOutcomes.shift() ?? ({
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+        durationMs: 5,
+        outputTail: 'checks passed',
+      });
+    });
     state.getRunsByWorkflowId.mockReset().mockReturnValue([
       { tokens_in: 12, tokens_out: 34 },
     ]);
@@ -126,7 +158,7 @@ describe('runEval', () => {
       routeCount: 1,
     });
     expect(first.artifact.results[0].policyFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(first.artifact.schemaVersion).toBe(2);
+    expect(first.artifact.schemaVersion).toBe(3);
     expect(state.insertRun).toHaveBeenCalledWith(expect.objectContaining({
       agentName: 'eval',
       triggerSource: 'eval',
@@ -138,6 +170,7 @@ describe('runEval', () => {
       agentModels: expect.objectContaining({ scaffold: 'anthropic:configured' }),
     }));
     expect(state.fixtureValue).toBe('small-ts');
+    expect(state.fixtureHead).toMatch(/^[a-f0-9]{40}$/);
     expect(existsSync(join(caseDir, 'fixture', 'fixture.txt'))).toBe(true);
     expect(state.updateRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: 'DONE' }));
 
@@ -205,9 +238,48 @@ describe('runEval', () => {
     const result = await runEval({ casesDir, dataDir, tempRoot });
 
     expect(result.artifact.results[0].pass).toBe(true);
-    expect(state.runVerify).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ command: 'bash checks.sh' }), expect.objectContaining({
-      env: expect.objectContaining({ AUTO_DEV_EVAL_VERDICT: 'NEEDS-CLARIFICATION', AUTO_DEV_EVAL_ROUTE_COUNT: '0' }),
+    expect(state.runVerify).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ command: `bash '${join(casesDir, 'clarify', 'checks.sh')}'` }), expect.objectContaining({
+      env: expect.objectContaining({ AUTO_DEV_EVAL_VERDICT: 'NEEDS-CLARIFICATION', AUTO_DEV_EVAL_ROUTE_COUNT: '0', AUTO_DEV_EVAL_INTEGRITY_VIOLATIONS: '0' }),
     }));
+  });
+
+  it('keeps checks.sh outside the project and overlays oracle files after the workflow', async () => {
+    const caseDir = addCase('isolated-checks', { oracleFiles: { 'tests/oracle.test.ts': 'trusted oracle\n' } });
+    state.runSpec.mockImplementationOnce(async (_spec: string, opts: { workflowRunId: string; cwd: string }) => {
+      writeFileSync(join(opts.cwd, 'tests/oracle.test.ts'), 'agent changed this\n');
+      return { workflowRunId: opts.workflowRunId, steps: {}, totalDurationMs: 10, verdict: 'SHIP', integrityViolations: 0 };
+    });
+
+    const result = await runEval({ casesDir, dataDir, tempRoot });
+
+    expect(result.artifact.results[0]).toMatchObject({ pass: true, oracleApplied: true, integrityViolations: 0 });
+    expect(state.harnessCopied).toBe(false);
+    expect(state.oracleValueAtCheck).toBe('trusted oracle\n');
+    expect(state.verifyCalls.at(-1)?.command).toBe(`bash '${join(caseDir, 'checks.sh')}'`);
+  });
+
+  it('accepts REJECT only for a non-SHIP verdict with zero integrity violations', async () => {
+    addCase('integrity-reject', { expectedResult: 'REJECT' });
+    state.runSpec.mockImplementationOnce(async (_spec: string, opts: { workflowRunId: string }) => ({
+      workflowRunId: opts.workflowRunId, steps: {}, totalDurationMs: 10, verdict: 'FAILED', integrityViolations: 0,
+    }));
+
+    const result = await runEval({ casesDir, dataDir, tempRoot });
+
+    expect(result.artifact.results[0]).toMatchObject({ pass: true, expectedResult: 'REJECT', integrityViolations: 0 });
+    expect(state.verifyCalls.at(-1)?.env).toMatchObject({ AUTO_DEV_EVAL_EXPECTED: 'REJECT', AUTO_DEV_EVAL_INTEGRITY_VIOLATIONS: '0' });
+  });
+
+  it('fails eval even when checks pass if the workflow recorded integrity violations', async () => {
+    addCase('integrity-violation', { expectedResult: 'REJECT' });
+    state.runSpec.mockImplementationOnce(async (_spec: string, opts: { workflowRunId: string }) => ({
+      workflowRunId: opts.workflowRunId, steps: {}, totalDurationMs: 10, verdict: 'FAILED', integrityViolations: 1,
+    }));
+
+    const result = await runEval({ casesDir, dataDir, tempRoot });
+
+    expect(result.artifact.results[0]).toMatchObject({ pass: false, integrityViolations: 1 });
+    expect(result.artifact.results[0].failure).toContain('integrity violation');
   });
 
   it('fails the case when its deterministic checks exit nonzero', async () => {

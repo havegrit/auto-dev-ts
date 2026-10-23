@@ -237,7 +237,7 @@ After the enabled workflow stages finish successfully, two internal post-success
 
 ### Auto-dev evaluation
 
-`./run eval` runs every `evals/cases/<case-id>/` fixture; use `--case <id>` to select one or `--models id1,id2` to run a model matrix. Each case has `spec.md`, `fixture/`, `checks.sh`, and `meta.json`. The evaluator copies the fixture into a temporary workspace, runs `runSpec` with `triggerSource: eval`, applies the normal daily run limit, then checks the expected verdict and script exit code. Model overrides are isolated to each asynchronous workflow and do not change saved settings. Results include route count, token usage, duration, check output, and pass/fail changes against the previous run in `data/evals/<timestamp>.json`. A case may set `autoMergeCategory` to `docs` or `dependency-patch` in `meta.json` to contribute to the matching auto-merge eval streak; ordinary cases without a category never count. Eval runs do not schedule post-success commits. The Spring/PostgreSQL case requires Maven, Docker Compose, and dependency access; the TypeScript case requires Node.js 24.
+`./run eval` runs every `evals/cases/<case-id>/` fixture; use `--case <id>` to select one or `--models id1,id2` to run a model matrix. Each case has `spec.md`, `fixture/`, `checks.sh`, and `meta.json`; optional `oracle/` files are overlaid only after the workflow ends. The evaluator initializes a temporary Git baseline, keeps `checks.sh` outside the agent workspace, runs `runSpec` with `triggerSource: eval`, then checks the expected verdict and script exit code. `REJECT` accepts any non-`SHIP` verdict only when no integrity violations were recorded. Model overrides are isolated to each asynchronous workflow and do not change saved settings. Results include route count, token usage, duration, whether the oracle was applied, integrity violations, check output, and pass/fail changes against the previous run in `data/evals/<timestamp>.json`. A case may set `autoMergeCategory` to `docs` or `dependency-patch` in `meta.json` to contribute to the matching auto-merge eval streak; ordinary cases without a category never count. Eval runs do not schedule post-success commits. The Spring/PostgreSQL case requires Maven, Docker Compose, and dependency access; the TypeScript case requires Node.js 24.
 
 ### Deterministic verification gate
 
@@ -246,7 +246,12 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
 ```json
 {
   "version": 1,
-  "verify": { "command": "./gradlew check", "timeoutMs": 900000 },
+  "verify": {
+    "command": "./gradlew check",
+    "timeoutMs": 900000,
+    "baseline": true,
+    "report": { "format": "junit-xml", "paths": ["build/test-results/test/*.xml"] }
+  },
   "runtime": {
     "up": "docker compose up -d --wait",
     "down": "docker compose down -v",
@@ -256,14 +261,17 @@ When the target project declares how to verify itself in `<project>/.auto-dev/pr
   "roleBoundary": {
     "testGlobs": ["src/test/**", "**/*.test.ts"],
     "ignoreGlobs": []
-  }
+  },
+  "protect": { "globs": [".github/**"] }
 }
 ```
 
 - If `verify.command` exits non-zero or times out, the PASS marker is ignored and the output tail is routed back to the planner as feedback. Once the repair-route budget is exhausted the workflow fails with `verify_failed`.
 - Each run is recorded as an `agent_name='verify'` row, so the dashboard workflow detail shows the exit-code summary, duration, and output tail. Cancelling from the dashboard tears down the whole process group.
+- Every run uses built-in test-file globs and protects `.auto-dev/project.json`, `.auto-dev/checks/**`, and `.auto-dev/rules.json`; `protect.globs` adds paths and cannot remove these defaults. Test skip/focus markers, deleted test files, and weakened JUnit counts are reported as `integrity` findings and routed to planner. A Git worktree is required for these integrity checks; without one the workflow is `BLOCKED` with `integrity_unavailable`.
+- `verify.baseline: true` runs the verify command before planner and stops a red baseline as `baseline_red`. `verify.report` compares fresh JUnit `tests`, `skipped`, `failures`, and `errors`; stale reports emit a warning and skip that comparison. A report requires `baseline: true`.
 - Declaring `roleBoundary.testGlobs` enables a post-hoc check: file content hashes are compared before and after the test step, and editing anything outside the test paths fails the run with `role_boundary_violation` (reported, never reverted).
-- Without this file the project-configured verify/runtime gates are inactive and ordinary workflows behave as before. Bug issues still use the repro-first path below, with built-in test-file globs when no role-boundary globs are configured. If the file exists but its schema is wrong, the run fails immediately.
+- Without this file the project-configured verify/runtime gates remain inactive, while the built-in test and protected-path integrity checks still run. Use `./run spec request.md --allow-test-regression` or the dashboard checkbox only for an intentional test reduction; the override is recorded in run events and PR details, and protected paths remain enforced. If the file exists but its schema is wrong, the run fails immediately.
 
 Dashboard runs can additionally opt into restart checkpoints with
 `"workflow": { "resumeOnRestart": true }`. This setting requires a clean Git worktree at
