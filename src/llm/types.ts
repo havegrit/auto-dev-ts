@@ -69,4 +69,6 @@ export interface ModelSpec {
 /** 모델 디스커버리. */
 export interface ModelCatalog {
   listModels(): Promise<ModelSpec[]>;
+  /** 목록 조회의 완전성을 알 수 있는 provider는 refresh가 정리해도 되는 결과인지 함께 반환한다. */
+  listModelsWithStatus?(): Promise<{ models: ModelSpec[]; authoritative: boolean }>;
 }

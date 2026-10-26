@@ -43,6 +43,8 @@ describe('codexAgentRunner', () => {
       expect(calls[0].args.slice(0, 4)).toEqual(['exec', '--json', '--cd', '/repo']);
       expect(calls[0].args).not.toContain('--sandbox');
       expect(calls[0].args).toContain('--model');
+      expect(calls[0].args).toContain('--config');
+      expect(calls[0].args).toContain('model_reasoning_effort="high"');
       expect(calls[0].args.at(-1)).toContain('implement feature');
       expect(calls[0].args.at(-1)).toContain('"changedFiles"');
 

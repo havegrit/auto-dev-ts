@@ -6,6 +6,7 @@ export interface RuntimeConfig {
   fallbackModel?: string;
   effort?: string;
   agentModels?: Record<string, string>;
+  agentEfforts?: Record<string, string>;
   autoMergeEnabled?: boolean;
 }
 
@@ -20,11 +21,18 @@ function sanitizeConfig(input: unknown): RuntimeConfig {
       if (typeof model === 'string' && model.trim()) agentModels[agent] = model.trim();
     }
   }
+  const agentEfforts: Record<string, string> = {};
+  if (raw.agentEfforts && typeof raw.agentEfforts === 'object') {
+    for (const [agent, effort] of Object.entries(raw.agentEfforts as Record<string, unknown>)) {
+      if (typeof effort === 'string' && effort.trim()) agentEfforts[agent] = effort.trim();
+    }
+  }
   return {
     ...(typeof raw.model === 'string' && raw.model.trim() ? { model: raw.model.trim() } : {}),
     ...(typeof raw.fallbackModel === 'string' && raw.fallbackModel.trim() ? { fallbackModel: raw.fallbackModel.trim() } : {}),
     ...(typeof raw.effort === 'string' && raw.effort.trim() ? { effort: raw.effort.trim() } : {}),
     ...(Object.keys(agentModels).length > 0 ? { agentModels } : {}),
+    ...(Object.keys(agentEfforts).length > 0 ? { agentEfforts } : {}),
     ...(typeof raw.autoMergeEnabled === 'boolean' ? { autoMergeEnabled: raw.autoMergeEnabled } : {}),
   };
 }

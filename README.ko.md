@@ -308,6 +308,8 @@ review 프롬프트는 기존 verdict 마커 앞에 `FINDINGS_JSON` 블록을 �
 - 실행 목록과 상태의 실시간 갱신, 소요시간·토큰 사용량·마크다운 출력·취소
 - 스펙 재입력 없이 clarifier 답변, 후속 지시, 특정 단계부터 재개
 - 단계별 agent/workflow 제출 및 프로젝트·모델·effort·재작업 상한 설정
+- 모델 설정에서 에이전트마다 모델과 effort를 개별 지정. effort 미설정은 provider 기본값 사용
+- 서버가 매주 일요일 오전 9시(서울 시간)에 모델 목록을 갱신하고 폐기 모델 설정을 정리
 - 텍스트 요청과 참고 context 파일을 함께 제출하는 spec 입력 (모든 확장자, 파일당 2MB·전체 10MB, 여러 파일; 바이너리는 경로로 전달)
 - workflow 상세, agent 이동, 실패 원인, 토큰 breakdown
 - healthcheck 응답, check 출력, verifier 보고서 등 런타임 검증 증거
@@ -350,12 +352,12 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id/events/history` | 실행 이력에 저장된 이벤트 기록 |
 | `GET` | `/api/review-findings/candidates` | 최근 14일 리뷰·검증 규칙화 후보를 프로젝트별로 조회 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
-| `GET`/`POST` | `/api/config` | 모델·에이전트 설정, 전역 자동 머지 스위치, 프로젝트 목록 조회·변경 |
+| `GET`/`POST` | `/api/config` | 모델·effort·에이전트별 설정, 전역 자동 머지 스위치, 프로젝트 목록 조회·변경 |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |
 
 ## 설정
 
-설정은 대시보드의 설정 패널에서 변경할 수 있습니다. 런타임 변경값은 `AUTO_DEV_CONFIG_PATH`(기본 `./data/config.json`)에 저장되며 환경 변수보다 우선합니다. 환경 변수는 초기 부트스트랩 설정으로 계속 사용할 수 있습니다:
+설정은 대시보드의 설정 패널에서 변경할 수 있습니다. 에이전트별 모델과 effort를 저장할 수 있으며, effort를 `모델 기본값`으로 두면 실행 요청에서 effort를 생략해 provider가 선택하게 합니다. 런타임 변경값은 `AUTO_DEV_CONFIG_PATH`(기본 `./data/config.json`)에 저장되며 환경 변수보다 우선합니다. 모델 목록은 시작 시와 매주 일요일 오전 9시(서울 시간)에 조회합니다. 특정 provider 조회가 실패하면 기존 목록을 보존합니다. 환경 변수는 초기 부트스트랩 설정으로 계속 사용할 수 있습니다:
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|

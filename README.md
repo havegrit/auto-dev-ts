@@ -359,12 +359,12 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/runs/:id/events/history` | Persisted event history for a run |
 | `GET` | `/api/review-findings/candidates` | Project-grouped review and verification rule candidates from the last 14 days |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
-| `GET`/`POST` | `/api/config` | Get/set model, per-agent settings, global auto-merge switch, and project list |
+| `GET`/`POST` | `/api/config` | Get/set model, effort, per-agent settings, global auto-merge switch, and project list |
 | `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
 
 ## Configuration
 
-Configuration can be changed from the dashboard settings panel. Runtime changes are saved to `AUTO_DEV_CONFIG_PATH` (default `./data/config.json`) and take precedence over environment variables. Environment variables are still supported for bootstrapping:
+Configuration can be changed from the dashboard settings panel. Each agent can have its own model and effort; leaving effort at `Model default` omits it from the provider request. Runtime changes are saved to `AUTO_DEV_CONFIG_PATH` (default `./data/config.json`) and take precedence over environment variables. Model catalogs load at startup and refresh every Sunday at 9 AM Seoul time. If a provider lookup fails, its previous list is kept. Environment variables are still supported for bootstrapping:
 
 | Variable | Default | Description |
 |----------|---------|-------------|

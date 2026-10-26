@@ -1,5 +1,4 @@
 import type { ModelCatalog, ModelSpec } from '../types.js';
-import { appConfig } from '../../lib/app-config.js';
 import { execCommand } from './process.js';
 import { log } from '../../lib/logger.js';
 
@@ -49,10 +48,9 @@ interface CodexCatalogModel {
 /**
  * `codex debug models` 는 codex CLI가 provider(ChatGPT 계정)로부터 실제로 받은 모델
  * 카탈로그를 그대로 JSON으로 찍어준다. 서버 시작 시 이걸로 목록을 동적으로 가져와,
- * 신규/폐지 모델이 코드 수정 없이 반영되게 한다. 실패하면 undefined — 호출부가
- * DEFAULT_CODEX_MODELS 폴백을 쓴다.
+ * 신규/폐지 모델이 코드 수정 없이 반영되게 한다. 실패 여부는 상세 결과로 전달한다.
  */
-async function fetchLiveCodexModels(): Promise<ModelSpec[] | undefined> {
+async function fetchLiveCodexModels(): Promise<{ models: ModelSpec[]; authoritative: boolean } | undefined> {
   try {
     const result = await execCommand(
       process.env.AUTO_DEV_CODEX_COMMAND ?? 'codex',
@@ -64,6 +62,7 @@ async function fetchLiveCodexModels(): Promise<ModelSpec[] | undefined> {
       return undefined;
     }
     const parsed = JSON.parse(result.stdout) as { models?: CodexCatalogModel[] };
+    if (!Array.isArray(parsed.models)) return undefined;
     const models = (parsed.models ?? [])
       .filter(m => m.visibility === 'list' && m.slug)
       .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
@@ -73,40 +72,19 @@ async function fetchLiveCodexModels(): Promise<ModelSpec[] | undefined> {
         description: m.description,
         effortLevels: ['none', ...(m.supported_reasoning_levels ?? []).map(l => l.effort)],
       }));
-    return models.length > 0 ? models : undefined;
+    return { models, authoritative: true };
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to run codex debug models — keeping fallback list');
     return undefined;
   }
 }
 
-function configuredModels(): string[] {
-  const config = appConfig.get();
-  const ids = [
-    config.model ?? process.env.AUTO_DEV_MODEL,
-    config.fallbackModel ?? process.env.AUTO_DEV_FALLBACK_MODEL,
-    ...Object.values(config.agentModels ?? {}),
-    ...Object.entries(process.env)
-      .filter(([key, value]) => key.startsWith('AUTO_DEV_AGENT_') && key.endsWith('_MODEL') && value)
-      .map(([, value]) => value as string),
-  ];
-  return [...new Set(ids
-    .filter((id): id is string => Boolean(id))
-    .map(id => id.includes(':') ? id.slice(id.indexOf(':') + 1) : id)
-    .filter(id => !id.startsWith('claude-') && !['default', 'opus', 'haiku'].includes(id)))];
-}
-
 export const codexModelCatalog: ModelCatalog = {
   async listModels(): Promise<ModelSpec[]> {
-    const base = (await fetchLiveCodexModels()) ?? DEFAULT_CODEX_MODELS;
-    const configured = configuredModels().map(model => ({
-      id: model,
-      displayName: model.toUpperCase(),
-      description: 'Codex CLI configured model',
-      effortLevels: ['none', 'low', 'medium', 'high', 'xhigh'],
-    }));
-    const merged = new Map<string, ModelSpec>();
-    for (const model of [...base, ...configured]) merged.set(model.id, model);
-    return [...merged.values()];
+    return (await this.listModelsWithStatus!()).models;
+  },
+  async listModelsWithStatus() {
+    const live = await fetchLiveCodexModels();
+    return live ?? { models: DEFAULT_CODEX_MODELS, authoritative: false };
   },
 };

@@ -641,14 +641,15 @@ export function createRoutes(): Hono {
   });
 
   app.post('/api/config', async (c) => {
-    const body = await c.req.json<{ model?: string; fallbackModel?: string; agentModels?: Record<string, string>; effort?: string; autoMergeEnabled?: boolean }>();
+    const body = await c.req.json<{ model?: string; fallbackModel?: string; agentModels?: Record<string, string>; agentEfforts?: Record<string, string>; effort?: string; autoMergeEnabled?: boolean }>();
     try {
       if (body.autoMergeEnabled !== undefined && typeof body.autoMergeEnabled !== 'boolean') {
         throw new Error('autoMergeEnabled must be a boolean');
       }
-      const options: { fallbackModel?: string; agentModels?: Record<string, string>; persist: boolean } = { persist: true };
+      const options: { fallbackModel?: string; agentModels?: Record<string, string>; agentEfforts?: Record<string, string>; persist: boolean } = { persist: true };
       if (Object.prototype.hasOwnProperty.call(body, 'fallbackModel')) options.fallbackModel = body.fallbackModel || undefined;
       if (Object.prototype.hasOwnProperty.call(body, 'agentModels')) options.agentModels = body.agentModels;
+      if (Object.prototype.hasOwnProperty.call(body, 'agentEfforts')) options.agentEfforts = body.agentEfforts;
       modelConfig.set(body.model ?? modelConfig.getModel(), body.effort ?? modelConfig.getEffort(), options);
       if (body.autoMergeEnabled !== undefined) {
         appConfig.save({ ...appConfig.get(), autoMergeEnabled: body.autoMergeEnabled });

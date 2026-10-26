@@ -135,7 +135,7 @@ import { cancelActiveRun } from '../lib/run-cancellation.js';
 import { getRun, getRunWithSessionTotals, updateRun } from '../store/runs.js';
 import { getReviewFindingCandidates } from '../store/review-findings.js';
 import { claudeAuth } from '../lib/claude-auth.js';
-import { loadModelsFromCli } from '../lib/model-config.js';
+import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
 import { completeStream } from '../lib/complete.js';
 import { summarizeChatMemory } from '../lib/chat.js';
 import type { WorkflowEvidence } from '../lib/evidence.js';
@@ -151,6 +151,26 @@ describe('health', () => {
 });
 
 describe('global auto-merge switch', () => {
+  it('passes per-agent effort settings through the config endpoint', async () => {
+    const app = createRoutes();
+    const response = await app.fetch(new Request('http://localhost/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'model-a', effort: 'high',
+        agentModels: { scaffold: 'codex-cli:fast-model' },
+        agentEfforts: { scaffold: 'low' },
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(modelConfig.set).toHaveBeenCalledWith('model-a', 'high', expect.objectContaining({
+      agentModels: { scaffold: 'codex-cli:fast-model' },
+      agentEfforts: { scaffold: 'low' },
+      persist: true,
+    }));
+  });
+
   it('exposes the runtime switch and accepts an immediate switch update', async () => {
     const previousCapability = process.env.AUTO_DEV_AUTO_MERGE_ENABLED;
     process.env.AUTO_DEV_AUTO_MERGE_ENABLED = 'true';

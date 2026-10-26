@@ -213,7 +213,7 @@ for await (const msg of query({ prompt, options: {
 | `allowedTools` | `string[]` | 에이전트가 사용할 수 있는 도구 (`Read`, `Write`, `Bash`, `Agent`) |
 | `permissionMode` | string | `bypassPermissions` — 모든 권한 승인 없이 자동 실행 |
 | `cwd` | string | 에이전트 작업 디렉토리 (모든 파일 I/O 기준점) |
-| `model` / `effort` | string | `modelConfig` 가 에이전트 역할별 기본 선호(clarifier=haiku, planner/test/cicd=sonnet, scaffold/review=opus)를 적용. UI 저장값과 env override가 우선하며 이후 `role preference` → `fallback` → `global/current` 순으로 해석 |
+| `model` / `effort` | string | 모델은 UI 저장값 또는 env override, 역할별 선호, fallback, global/current 순으로 해석한다. 에이전트 effort override가 있으면 사용하고, 없으면 provider 요청에서 effort를 생략해 provider 기본값을 사용한다. 전역 effort는 전역 모델과 단발성 completion에 적용한다. |
 | `agents` | `{name, description}[]` | 서브에이전트 선언 (병렬 fan-out) |
 
 > 새 프로바이더(예: API 키 기반 직접 호출)는 `src/llm/<name>/` 에 세 인터페이스를
@@ -900,7 +900,7 @@ data/
 | `GET` | `/api/runs/:id/events` | **SSE** — 실행 중 라이브 이벤트 (text/tool/status) |
 | `GET` | `/api/runs/:id/events/history` | 저장된 실행 이벤트 이력 |
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
-| `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
+| `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델·effort 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
 | `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
 | `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거 |
 | 외부 연동 | `POST /automation/jobs` 등 | issue-tracker automation job 생성·claim·heartbeat·review |
@@ -916,6 +916,7 @@ cron.schedule('0 9 * * *', async () => {
 
 - `AUTO_DEV_WORKLOG_BRIEFING_ENABLED=true` 설정 시 활성 (기본 비활성)
 - 크론 표현식: `AUTO_DEV_WORKLOG_BRIEFING_CRON` (기본 `0 9 * * *`)
+- 모델 카탈로그는 서버 시작 시 조회하고 매주 일요일 9시에 `Asia/Seoul` 기준으로 갱신한다. provider별 조회 실패는 해당 provider의 이전 목록을 보존하며, 신뢰 가능한 최신 목록에 없는 모델과 호환되지 않는 저장 선택은 정리한다.
 
 ---
 
@@ -951,6 +952,7 @@ input/output을 분리해 갱신한다. spec 이력은 `spec_session_id` 단위�
 - 10초마다 `/api/status`, `/api/stats`, `/api/runs` 자동 폴링 (목록·통계)
 - 실행 중(RUNNING) 행은 `/api/runs/:id/events` **SSE** 로 라이브 갱신
 - run 행 클릭 → 상세 패널 펼치기 (메타 + 출력, 실행 중이면 라이브 이벤트 스트림)
+- 모델 설정 패널: 전역 모델/effort와 에이전트별 모델/effort 선택. 에이전트 effort 미설정은 provider 기본값을 사용
 - 작업 제출 폼: 에이전트 선택 + 프로젝트명 입력(자동완성) + 모델/effort 설정
 - 우하단 플로팅 채팅: 일반/프로젝트 모드, 독립 프로젝트·모델 선택, Markdown 스트리밍,
   생성 중지·재시도, 새 대화·기억 삭제·전체 삭제
@@ -1256,7 +1258,8 @@ auto-dev-ts/
 │   │   ├── index.ts                  # startServer() — Hono + serve-static
 │   │   └── routes.ts                 # HTTP API 엔드포인트 (§8.2)
 │   └── schedule/
-│       └── briefing.ts               # node-cron 일일 브리핑
+│       ├── briefing.ts               # node-cron 일일 브리핑
+│       └── model-refresh.ts          # node-cron 주간 모델 카탈로그 갱신
 └── data/                             # gitignore
     ├── auto-dev.db
     └── workspace/

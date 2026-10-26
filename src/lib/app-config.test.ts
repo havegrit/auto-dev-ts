@@ -27,6 +27,7 @@ describe('appConfig', () => {
       fallbackModel: 'fallback-model',
       effort: 'medium',
       agentModels: { scaffold: 'agent-model' },
+      agentEfforts: { scaffold: 'low' },
     });
 
     const reloaded = await freshStore(join(dir, 'nested', 'config.json'));
@@ -35,6 +36,7 @@ describe('appConfig', () => {
       fallbackModel: 'fallback-model',
       effort: 'medium',
       agentModels: { scaffold: 'agent-model' },
+      agentEfforts: { scaffold: 'low' },
     });
   });
 

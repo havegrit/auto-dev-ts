@@ -181,6 +181,8 @@
     .agent-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
     .agent-model-row { display: flex; flex-direction: column; gap: 0.35rem; }
     .agent-model-row label { font-size: 0.72rem; color: #8b949e; font-family: monospace; }
+    .agent-model-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(105px, 0.6fr); gap: 0.4rem; }
+    .agent-model-controls select { min-width: 0; }
     .effort-btns { display: flex; gap: 0.4rem; flex-wrap: wrap; }
     .effort-btn {
       background: #21262d; border: 1px solid #30363d; color: #8b949e;
@@ -607,6 +609,8 @@
     let pollTimer = null;
     let availableModels = [];
     let selectedEffort = 'high';
+    let resolvedAgentModels = {};
+    let initialGlobalModel = '';
     let selectedRunId = null;
     let liveEventSource = null;
     let liveActivityRunId = null;
@@ -984,12 +988,14 @@
       const cfg = await fetch('/api/config').then(r => r.json());
       availableModels = cfg.availableModels ?? [];
       configAgents = cfg.agents ?? [];
+      resolvedAgentModels = cfg.agentModels ?? {};
+      initialGlobalModel = cfg.model ?? '';
 
       // 모델 드롭다운 구성
       const sel = document.getElementById('model-select');
       sel.innerHTML = modelOptions(cfg.model);
       document.getElementById('fallback-model-select').innerHTML = modelOptions(cfg.fallbackModel, { includeEmpty: true, emptyLabel: '자동 선택' });
-      renderAgentModelSelectors(cfg.agentModels ?? {});
+      renderAgentModelSelectors(cfg.agentModels ?? {}, cfg.agentEfforts ?? {});
 
       // effort 버튼 구성 (선택된 모델 기준)
       selectedEffort = cfg.effort;
@@ -1002,7 +1008,19 @@
         ? '환경에서 기능이 허용됐습니다. 이 스위치를 끄면 새 요청이 즉시 차단됩니다.'
         : '서버 환경 변수 AUTO_DEV_AUTO_MERGE_ENABLED=true가 필요합니다.';
 
-      sel.onchange = () => renderEffortBtns(sel.value, selectedEffort);
+      sel.onchange = () => {
+        renderEffortBtns(sel.value, selectedEffort);
+        document.querySelectorAll('[data-agent-model]').forEach(modelSelect => {
+          if (modelSelect.value) return;
+          const agent = modelSelect.dataset.agentModel;
+          const effortSelect = document.querySelector(`[data-agent-effort="${agent}"]`);
+          const priorEffort = effortSelect.value;
+          const effortModelId = agentEffortModelId(agent, '');
+          const spec = availableModels.find(m => m.id === effortModelId);
+          effortSelect.innerHTML = agentEffortOptions(effortModelId, priorEffort);
+          effortSelect.disabled = !spec?.effortLevels.length;
+        });
+      };
     }
 
     function modelOptions(selected, opts = {}) {
@@ -1013,18 +1031,54 @@
       }).join('');
     }
 
-    function renderAgentModelSelectors(agentModels) {
+    function agentEffortModelId(agent, selectedModel) {
+      if (selectedModel) return selectedModel;
+      const resolvedModel = resolvedAgentModels[agent];
+      if (resolvedModel && resolvedModel !== initialGlobalModel) return resolvedModel;
+      return document.getElementById('model-select').value || resolvedModel || '';
+    }
+
+    function agentEffortOptions(modelId, selectedEffort) {
+      const spec = availableModels.find(m => m.id === modelId);
+      const levels = spec?.effortLevels ?? [];
+      if (levels.length === 0) {
+        return '<option value="" selected>모델 기본값</option>';
+      }
+      const options = ['<option value="">모델 기본값</option>', ...levels.map(level =>
+        `<option value="${escapeHtml(level)}" ${level === selectedEffort ? 'selected' : ''}>${escapeHtml(level)}</option>`
+      )];
+      return options.join('');
+    }
+
+    function renderAgentModelSelectors(agentModels, agentEfforts) {
       const grid = document.getElementById('agent-model-grid');
       grid.innerHTML = configAgents
         .filter(agent => agent !== 'spec')
         .map(agent => `
           <div class="agent-model-row">
             <label>${agent}</label>
-            <select data-agent-model="${agent}">
-              ${modelOptions(agentModels[agent], { includeEmpty: true, emptyLabel: '전역/폴백 자동' })}
-            </select>
+            <div class="agent-model-controls">
+              <select data-agent-model="${agent}" aria-label="${agent} 모델">
+                ${modelOptions(agentModels[agent], { includeEmpty: true, emptyLabel: '전역/폴백 자동' })}
+              </select>
+              <select data-agent-effort="${agent}" aria-label="${agent} effort" ${availableModels.find(m => m.id === agentEffortModelId(agent, agentModels[agent]))?.effortLevels.length ? '' : 'disabled'}>
+                ${agentEffortOptions(agentEffortModelId(agent, agentModels[agent]), agentEfforts[agent])}
+              </select>
+            </div>
           </div>
         `).join('');
+
+      grid.querySelectorAll('[data-agent-model]').forEach(modelSelect => {
+        modelSelect.addEventListener('change', () => {
+          const agent = modelSelect.dataset.agentModel;
+          const effortSelect = grid.querySelector(`[data-agent-effort="${agent}"]`);
+          const priorEffort = effortSelect.value;
+          const effortModelId = agentEffortModelId(agent, modelSelect.value);
+          const spec = availableModels.find(m => m.id === effortModelId);
+          effortSelect.innerHTML = agentEffortOptions(effortModelId, priorEffort);
+          effortSelect.disabled = !spec?.effortLevels.length;
+        });
+      });
     }
 
     function renderEffortBtns(modelId, activeEffort) {
@@ -1058,8 +1112,12 @@
       const fallbackModel = document.getElementById('fallback-model-select').value;
       const autoMergeEnabled = document.getElementById('global-auto-merge-enabled').checked;
       const agentModels = {};
+      const agentEfforts = {};
       document.querySelectorAll('[data-agent-model]').forEach(sel => {
         if (sel.value) agentModels[sel.dataset.agentModel] = sel.value;
+      });
+      document.querySelectorAll('[data-agent-effort]').forEach(sel => {
+        if (sel.value) agentEfforts[sel.dataset.agentEffort] = sel.value;
       });
       const statusEl = document.getElementById('save-status');
       statusEl.textContent = '저장 중...';
@@ -1067,7 +1125,7 @@
         const res = await fetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, fallbackModel, agentModels, effort: selectedEffort, autoMergeEnabled }),
+          body: JSON.stringify({ model, fallbackModel, agentModels, agentEfforts, effort: selectedEffort, autoMergeEnabled }),
         });
         if (!res.ok) {
           const err = await res.json();

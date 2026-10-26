@@ -18,7 +18,7 @@ describe('codexModelCatalog', () => {
     execCommand.mockReset();
   });
 
-  it('falls back to the static list when codex debug models fails, still merging configured models', async () => {
+  it('falls back to the static list when codex debug models fails without retaining configured models', async () => {
     execCommand.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'not logged in' });
     const dir = mkdtempSync(join(tmpdir(), 'auto-dev-codex-models-'));
     tempDirs.push(dir);
@@ -31,7 +31,9 @@ describe('codexModelCatalog', () => {
 
     const models = await codexModelCatalog.listModels();
 
-    expect(models.map(m => m.id)).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5-codex']);
+    expect(models.map(m => m.id)).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini']);
+    const result = await codexModelCatalog.listModelsWithStatus!();
+    expect(result.authoritative).toBe(false);
   });
 
   it('uses the live catalog from codex debug models when it succeeds, sorted by priority and filtered to visibility=list', async () => {
@@ -62,5 +64,14 @@ describe('codexModelCatalog', () => {
       { id: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', description: 'frontier', effortLevels: ['none', 'low', 'xhigh'] },
       { id: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', description: 'balanced', effortLevels: ['none', 'low', 'high'] },
     ]);
+    expect(await codexModelCatalog.listModelsWithStatus!()).toMatchObject({ authoritative: true });
+  });
+
+  it('treats a successful empty live list as authoritative', async () => {
+    execCommand.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ models: [] }), stderr: '' });
+    vi.resetModules();
+    const { codexModelCatalog } = await import('./models.js');
+
+    expect(await codexModelCatalog.listModelsWithStatus!()).toEqual({ models: [], authoritative: true });
   });
 });

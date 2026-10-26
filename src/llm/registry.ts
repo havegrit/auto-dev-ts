@@ -15,6 +15,12 @@ interface Provider {
   modelCatalog: ModelCatalog;
 }
 
+export interface ProviderModelCatalogResult {
+  models: ModelSpec[];
+  authoritative: boolean;
+  error?: string;
+}
+
 const PROVIDERS: Record<string, Provider> = {
   anthropic: {
     agentRunner: anthropicAgentRunner,
@@ -58,18 +64,34 @@ function active(model?: string): Provider {
 
 export function getAgentRunner(model?: string): AgentRunner { return active(model).agentRunner; }
 export function getCompleter(model?: string): Completer { return active(model).completer; }
+
+/** 각 provider 결과를 따로 보존해 일부 provider의 일시 장애가 다른 목록을 덮지 않게 한다. */
+export async function getProviderModelCatalogs(): Promise<Record<string, ProviderModelCatalogResult>> {
+  const results = await Promise.all(Object.entries(PROVIDERS).map(async ([providerName, provider]) => {
+    try {
+      const result = provider.modelCatalog.listModelsWithStatus
+        ? await provider.modelCatalog.listModelsWithStatus()
+        : { models: await provider.modelCatalog.listModels(), authoritative: true };
+      return [providerName, {
+        models: result.models.map(model => qualifiedModel(providerName, model)),
+        authoritative: result.authoritative,
+      }] as const;
+    } catch (err) {
+      return [providerName, {
+        models: [],
+        authoritative: false,
+        error: err instanceof Error ? err.message : String(err),
+      }] as const;
+    }
+  }));
+  return Object.fromEntries(results);
+}
+
 export function getModelCatalog(): ModelCatalog {
   return {
     async listModels(): Promise<ModelSpec[]> {
-      const models: ModelSpec[] = [];
-      for (const [providerName, provider] of Object.entries(PROVIDERS)) {
-        try {
-          models.push(...(await provider.modelCatalog.listModels()).map(model => qualifiedModel(providerName, model)));
-        } catch {
-          // A missing CLI/login for one provider should not hide models from the other provider.
-        }
-      }
-      return models;
+      const catalogs = await getProviderModelCatalogs();
+      return Object.values(catalogs).flatMap(catalog => catalog.models);
     },
   };
 }
