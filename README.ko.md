@@ -230,7 +230,7 @@ clarifier → planner → scaffold → test → review → cicd
 
 ### auto-dev 자체 평가
 
-`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성되고 선택적으로 `oracle/`을 둘 수 있습니다. 임시 Git 기준선을 만든 뒤 `checks.sh`를 에이전트 workspace 밖에 두고 `triggerSource: eval`로 `runSpec`을 실행합니다. workflow가 끝난 뒤 `oracle/` 파일을 덮어써 채점에 사용합니다. `REJECT`는 integrity 위반이 없고 verdict가 `SHIP`이 아닌 경우에 통과합니다. 결과에는 라우트 수, 토큰, 시간, 오라클 적용 여부, 무결성 위반, 검증 출력과 직전 실행 대비 결과가 `data/evals/<timestamp>.json`에 기록됩니다. 모델 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. `meta.json`의 `autoMergeCategory`에 `docs` 또는 `dependency-patch`를 지정하면 해당 분류의 자동 머지 eval streak에 반영됩니다. 분류가 없는 일반 케이스는 streak에 포함되지 않습니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
+`./run eval`은 `evals/cases/<case-id>/`의 모든 fixture를 실행합니다. `--case <id>`로 하나를 고르고 `--models id1,id2`로 모델 매트릭스를 비교할 수 있습니다. 저장된 역할별 모델을 해석하기 전에 프로바이더 카탈로그를 갱신합니다. 각 케이스는 `spec.md`, `fixture/`, `checks.sh`, `meta.json`으로 구성되고 선택적으로 `oracle/`을 둘 수 있습니다. 임시 Git 기준선을 만든 뒤 `checks.sh`를 에이전트 workspace 밖에 두고 `triggerSource: eval`로 `runSpec`을 실행합니다. workflow가 끝난 뒤 `oracle/` 파일을 덮어써 채점에 사용합니다. `REJECT`는 integrity 위반이 없고 verdict가 `SHIP`이 아닌 경우에 통과합니다. 결과에는 라우트 수, 토큰, 시간, 오라클 적용 여부, 무결성 위반, 검증 출력과 직전 실행 대비 결과가 `data/evals/<timestamp>.json`에 기록됩니다. `--models` 오버라이드는 해당 비동기 workflow에만 적용되어 저장 설정을 바꾸지 않습니다. `meta.json`의 `autoMergeCategory`에 `docs` 또는 `dependency-patch`를 지정하면 해당 분류의 자동 머지 eval streak에 반영됩니다. 분류가 없는 일반 케이스는 streak에 포함되지 않습니다. eval은 성공 후 자동 커밋을 예약하지 않습니다. Spring/PostgreSQL 케이스는 Maven, Docker Compose, 의존성 다운로드가 필요하고 TypeScript 케이스는 Node.js 24가 필요합니다.
 
 ### 결정적 검증 게이트
 

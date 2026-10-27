@@ -398,8 +398,9 @@ export async function runEval(opts: RunEvalOptions = {}): Promise<{ file: string
   const cases = await Promise.all(ids.map((id) => loadEvalCase(casesDir, id)));
   const requestedModels = opts.models?.map((model) => model.trim()).filter(Boolean);
   if (requestedModels && requestedModels.length === 0) throw new Error('--models requires at least one model ID');
+  // 저장된 역할별 모델을 해석하기 전에 프로바이더 카탈로그를 갱신한다.
+  await loadModelsFromCli();
   if (requestedModels) {
-    await loadModelsFromCli();
     const unknown = [...new Set(requestedModels)].filter((model) => !modelConfig.hasRunnableModel(model));
     if (unknown.length > 0) throw new Error(`Unknown or unsupported eval model(s): ${unknown.join(', ')}`);
   }

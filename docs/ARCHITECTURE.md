@@ -684,7 +684,8 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
 - `--models`는 요청한 runnable model ID를 AGENT_ORDER의 각 역할과 내부 verifier에
   실행 단위로 적용한다. `AsyncLocalStorage`로 비동기 호출 트리 안에서만 해석하므로
   동시 평가 사이에 섞이거나 전역 `agentModels` 설정을 변경하지 않는다. 옵션이 없으면
-  현재 역할별 모델 구성을 고정해 실행하고 결과에 기록한다.
+  먼저 프로바이더 모델 카탈로그를 갱신한 뒤 역할별 저장 구성을 해석해 실행하고 결과에
+  기록한다. 카탈로그 조회가 실패하면 기존 폴백 동작을 유지한다.
 - `meta.json`의 `expectedResult`는 `SHIP`, `CLARIFICATION`, `REJECT`다. `REJECT`는 최종
   verdict가 `SHIP`이 아니고 무결성 위반이 0건일 때만 체크 스크립트가 판정할 수 있다.
   eval 자체도 무결성 위반이 있으면 checks 결과와 관계없이 실패한다. 결과에는

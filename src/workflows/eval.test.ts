@@ -7,6 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   allow: true,
   modelIds: ['anthropic:sonnet'],
+  configuredAgentModels: {
+    clarifier: 'anthropic:configured',
+    planner: 'anthropic:configured',
+    scaffold: 'anthropic:configured',
+    test: 'anthropic:configured',
+    review: 'anthropic:configured',
+    cicd: 'anthropic:configured',
+  } as Record<string, string>,
   fixtureValue: undefined as string | undefined,
   fixtureHead: undefined as string | undefined,
   verifyOutcomes: [] as Array<{ exitCode: number | null; timedOut: boolean; cancelled: boolean; durationMs: number; outputTail: string }>,
@@ -28,14 +36,7 @@ vi.mock('../lib/model-config.js', () => ({
     getModel: () => 'anthropic:configured',
     getEffort: () => 'high',
     getFallbackModel: () => undefined,
-    getAgentModels: () => ({
-      clarifier: 'anthropic:configured',
-      planner: 'anthropic:configured',
-      scaffold: 'anthropic:configured',
-      test: 'anthropic:configured',
-      review: 'anthropic:configured',
-      cicd: 'anthropic:configured',
-    }),
+    getAgentModels: () => state.configuredAgentModels,
     hasRunnableModel: (model: string) => state.modelIds.includes(model),
   },
   loadModelsFromCli: state.loadModelsFromCli,
@@ -101,6 +102,14 @@ describe('runEval', () => {
     mkdirSync(tempRoot);
     state.allow = true;
     state.modelIds = ['anthropic:sonnet'];
+    state.configuredAgentModels = {
+      clarifier: 'anthropic:configured',
+      planner: 'anthropic:configured',
+      scaffold: 'anthropic:configured',
+      test: 'anthropic:configured',
+      review: 'anthropic:configured',
+      cicd: 'anthropic:configured',
+    };
     state.verifyOutcomes = [];
     state.verifyCalls = [];
     state.harnessCopied = false;
@@ -212,6 +221,29 @@ describe('runEval', () => {
     const reproTimeoutMs = state.runSpec.mock.calls[0][1].reproTimeoutMs as number;
     expect(reproTimeoutMs).toBeGreaterThan(0);
     expect(reproTimeoutMs).toBeLessThanOrEqual(1000);
+  });
+
+  it('refreshes provider catalogs before resolving configured per-agent models', async () => {
+    addCase('configured-models');
+    const refreshedModels = {
+      clarifier: 'anthropic:haiku',
+      planner: 'anthropic:sonnet',
+      scaffold: 'anthropic:opus',
+      test: 'codex-cli:gpt-6-luna',
+      review: 'codex-cli:gpt-6-luna',
+      cicd: 'anthropic:haiku',
+    };
+    state.loadModelsFromCli.mockImplementationOnce(async () => {
+      state.configuredAgentModels = refreshedModels;
+    });
+
+    const result = await runEval({ casesDir, dataDir, tempRoot });
+
+    expect(state.loadModelsFromCli).toHaveBeenCalledOnce();
+    expect(state.runSpec).toHaveBeenCalledWith('Implement configured-models.', expect.objectContaining({
+      agentModels: refreshedModels,
+    }));
+    expect(result.artifact.results[0].agentModels).toEqual(refreshedModels);
   });
 
   it('marks work skipped when the daily run limit is exhausted', async () => {
