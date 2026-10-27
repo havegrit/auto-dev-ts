@@ -1091,17 +1091,26 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
+| `AUTO_DEV_ENV_FILE` | `.env` | 프로세스 시작 시 로드할 환경 파일 경로 (셸/systemd에서 지정) |
 | `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`src/llm/registry.ts`). 미등록 값이면 fail-fast |
 | `AUTO_DEV_MODEL` | (CLI 기본) | 사용할 Claude 모델 id/별칭. 미지정 시 CLI 디스커버리 결과의 default |
 | `AUTO_DEV_AGENT_<AGENT>_MODEL` | 미설정 | 에이전트별 모델 override. 예: `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
 | `AUTO_DEV_FALLBACK_MODEL` | 미설정 | 선택 모델의 rate limit/auth 실패 시 한 번 재시도할 폴백 모델 |
 | `AUTO_DEV_EFFORT` | `high` | effort 레벨 (`low`/`medium`/`high`/`xhigh`/`max`). 모델이 미지원이면 무시 |
 | `AUTO_DEV_CONFIG_PATH` | `./data/config.json` | 대시보드에서 저장한 런타임 설정 파일. 저장값이 env보다 우선 |
+| `AUTO_DEV_CLAUDE_COMMAND` | `claude` | 대시보드 Claude 인증 상태 확인 명령 |
+| `CLAUDE_CODE_VERSION` | `2.1.274` | Docker 이미지에 설치하는 Claude Code CLI 버전 |
+| `AUTO_DEV_CODEX_COMMAND` | `codex` | Codex CLI 실행 명령 |
+| `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI 실행 timeout(ms) |
+| `AUTO_DEV_CODEX_SANDBOX` | CLI 기본값 | Codex CLI의 선택적 샌드박스 모드 |
+| `AUTO_DEV_CODEX_BYPASS_SANDBOX` | 미설정 | `1`이면 Codex 승인·샌드박스 검사 우회 |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 에이전트 cwd (프로젝트명 해석 기준 루트) |
 | `AUTO_DEV_SKILLS_ROOT` | `~/.codex/skills`, 이후 `~/.claude/skills` | 성공한 spec commit 후처리의 전역 skill root override |
 | `AUTO_DEV_DB_PATH` | `./data/auto-dev.db` | SQLite 경로 |
+| `AUTO_DEV_BACKUP_DIR` | `./data/backups` | DB 백업 출력 디렉터리 |
 | `AUTO_DEV_BIND_ADDR` | `127.0.0.1` | HTTP 바인드 주소 |
 | `AUTO_DEV_BIND_PORT` | `8080` | HTTP 포트 |
+| `AUTO_DEV_HOST_PORT` | `8080` | Docker Compose가 공개하는 호스트 포트 |
 | `AUTO_DEV_PUBLIC_BASE_URL` | 미설정 | PR 본문에 쓸 HTTPS 대시보드 URL |
 | `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | 미설정 | 외부 proxy 접근 제어 운영자 확인값 (`authenticated` / `network-restricted`) |
 | `AUTO_DEV_AUTO_MERGE_ENABLED` | `false` | Phase 7D auto-merge 요청을 위한 서버 capability ceiling |

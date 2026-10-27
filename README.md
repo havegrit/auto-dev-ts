@@ -368,6 +368,7 @@ Configuration can be changed from the dashboard settings panel. Codex CLI choice
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `AUTO_DEV_ENV_FILE` | `.env` | Environment file to load at process startup; set outside the file itself |
 | `AUTO_DEV_PROVIDER` | `anthropic` | LLM provider selection (`anthropic`, `codex-cli`, or `openai-compatible`) |
 | `AUTO_DEV_MODEL` | (provider default) | Provider model to use |
 | `AUTO_DEV_AGENT_<AGENT>_MODEL` | unset | Per-agent model override, e.g. `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
@@ -378,6 +379,10 @@ Configuration can be changed from the dashboard settings panel. Codex CLI choice
 | `AUTO_DEV_AUTO_MERGE_REPOSITORIES` | empty | Exact comma-separated `owner/repo` allowlist for auto-merge requests |
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | Codex CLI command when `AUTO_DEV_PROVIDER=codex-cli` |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI execution timeout |
+| `AUTO_DEV_CODEX_SANDBOX` | CLI default | Optional Codex sandbox mode, e.g. `workspace-write` |
+| `AUTO_DEV_CODEX_BYPASS_SANDBOX` | unset | Set to `1` to disable Codex approval and sandbox checks; only for isolated trusted environments |
+| `AUTO_DEV_CLAUDE_COMMAND` | `claude` | Claude CLI command used by dashboard authentication status |
+| `CLAUDE_CODE_VERSION` | `2.1.274` | Claude Code CLI version installed in Docker images |
 | `AUTO_DEV_OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint (NVIDIA NIM / DeepSeek / OpenRouter / vLLM). Text completion only — not tool-using agent steps |
 | `AUTO_DEV_OPENAI_API_KEY` | unset | Bearer key for the OpenAI-compatible endpoint (unset ⇒ provider hidden) |
 | `AUTO_DEV_OPENAI_MODELS` | unset | Comma-separated model ids to expose, e.g. `deepseek-ai/deepseek-v4-pro` |
@@ -391,6 +396,9 @@ Configuration can be changed from the dashboard settings panel. Codex CLI choice
 | `AUTO_DEV_PUBLIC_BASE_URL` | unset | HTTPS dashboard URL used in PR links; required for PR delivery |
 | `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | unset | Operator assertion that an external proxy protects all dashboard/API routes (`authenticated` or `network-restricted`) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | Max agent runs per day (empty = unlimited) |
+| `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS` | `300000` | Circuit-breaker cooldown in milliseconds when rate-limit reset time is missing |
+| `AUTO_DEV_HOST_PORT` | `8080` | Host port published by Docker Compose |
+| `AUTO_DEV_BACKUP_DIR` | `./data/backups` | Output directory for `npm run backup:db` |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | Enable OpenClaw Telegram terminal-state notifications |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | OpenClaw Telegram account used for notifications |
 | `AUTO_DEV_OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI command or absolute path |
@@ -398,8 +406,10 @@ Configuration can be changed from the dashboard settings panel. Codex CLI choice
 | `AUTO_DEV_OPENCLAW_TARGET` | account `allowFrom[0]` | Explicit Telegram chat ID override |
 | `AUTO_DEV_OPENCLAW_API_TOKEN` | unset | Optional Bearer token for the loopback bridge |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (none) | Issue-tracker URL — enables integration when set |
+| `AUTO_DEV_ISSUE_TRACKER_STATUS` | `OPEN` | Issue status filter used by the tracker integration |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | Enable daily review briefing cron |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | Cron expression for briefing schedule |
+| `AUTO_DEV_WORKLOG_PATH` | `./data/worklog.md` | Worklog file read by the daily briefing |
 
 ## Project structure
 

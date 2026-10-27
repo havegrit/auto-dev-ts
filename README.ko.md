@@ -359,6 +359,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
+| `AUTO_DEV_ENV_FILE` | `.env` | 프로세스 시작 시 읽을 환경 파일. 파일 내부가 아니라 셸/systemd에서 지정 |
 | `AUTO_DEV_PROVIDER` | `anthropic` | LLM 프로바이더 선택 (`anthropic` 또는 `codex-cli`) |
 | `AUTO_DEV_MODEL` | (프로바이더 기본) | 사용할 프로바이더 모델 |
 | `AUTO_DEV_AGENT_<AGENT>_MODEL` | 미설정 | 에이전트별 모델 override. 예: `AUTO_DEV_AGENT_SCAFFOLD_MODEL` |
@@ -369,6 +370,10 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_AUTO_MERGE_REPOSITORIES` | 비어 있음 | 요청을 허용할 정확한 `owner/repo` 목록 (쉼표 구분) |
 | `AUTO_DEV_CODEX_COMMAND` | `codex` | `AUTO_DEV_PROVIDER=codex-cli`일 때 사용할 Codex CLI 명령 |
 | `AUTO_DEV_CODEX_TIMEOUT_MS` | `600000` | Codex CLI 실행 timeout |
+| `AUTO_DEV_CODEX_SANDBOX` | CLI 기본값 | 선택적 Codex 샌드박스 모드 (예: `workspace-write`) |
+| `AUTO_DEV_CODEX_BYPASS_SANDBOX` | 미설정 | `1`이면 Codex 승인·샌드박스 검사를 우회. 격리된 신뢰 환경에서만 사용 |
+| `AUTO_DEV_CLAUDE_COMMAND` | `claude` | 대시보드 인증 상태 확인에 사용할 Claude CLI 명령 |
+| `CLAUDE_CODE_VERSION` | `2.1.274` | Docker 이미지에 설치할 Claude Code CLI 버전 |
 | `AUTO_DEV_WORKSPACE_ROOT` | `./data/workspace` | 프로젝트명 해석 기준 루트 |
 | `AUTO_DEV_SKILLS_ROOT` | `~/.codex/skills`, 이후 `~/.claude/skills` | 성공한 spec의 커밋 후처리에 사용할 전역 스킬 루트 override |
 | `AUTO_DEV_RUN_AS_USER` | `shin` | root로 시작 시 `scripts/serve.sh`가 권한을 낮출 비-root 유저 |
@@ -378,6 +383,9 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_PUBLIC_BASE_URL` | 미설정 | PR 링크에 사용할 HTTPS 대시보드 URL |
 | `AUTO_DEV_PUBLIC_ACCESS_CONTROL` | 미설정 | 외부 프록시의 전체 대시보드/API 접근 제어 확인값 (`authenticated` 또는 `network-restricted`) |
 | `AUTO_DEV_DAILY_RUN_LIMIT` | `100` | 일일 실행 횟수 한도 (비우면 무제한) |
+| `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS` | `300000` | rate-limit reset 시각이 없을 때 회로 차단 대기 시간(ms) |
+| `AUTO_DEV_HOST_PORT` | `8080` | Docker Compose가 공개하는 호스트 포트 |
+| `AUTO_DEV_BACKUP_DIR` | `./data/backups` | `npm run backup:db` 백업 출력 디렉터리 |
 | `AUTO_DEV_OPENCLAW_ENABLED` | `false` | OpenClaw Telegram 완료/실패 알림 활성 |
 | `AUTO_DEV_OPENCLAW_ACCOUNT` | `main` | 알림에 사용할 OpenClaw Telegram 계정 |
 | `AUTO_DEV_OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI 명령 또는 절대 경로 |
@@ -385,8 +393,10 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_OPENCLAW_TARGET` | 계정 `allowFrom[0]` | 명시적 Telegram chat ID override |
 | `AUTO_DEV_OPENCLAW_API_TOKEN` | 미설정 | 루프백 bridge 선택적 Bearer 토큰 |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker URL — 설정 시 연동 활성 |
+| `AUTO_DEV_ISSUE_TRACKER_STATUS` | `OPEN` | issue-tracker 조회 대상 상태 필터 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 리뷰 브리핑 스케줄러 활성화 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 스케줄 크론 표현식 |
+| `AUTO_DEV_WORKLOG_PATH` | `./data/worklog.md` | 일일 브리핑이 읽을 워크로그 파일 경로 |
 
 ## 프로젝트 구조
 
