@@ -88,14 +88,17 @@ describe('modelConfig model resolution', () => {
   });
 
   it('uses another available model when neither selected nor fallback models are available', async () => {
-    process.env.AUTO_DEV_MODEL = 'missing-global';
-    process.env.AUTO_DEV_FALLBACK_MODEL = 'missing-fallback';
-    process.env.AUTO_DEV_AGENT_SCAFFOLD_MODEL = 'missing-agent';
+    process.env.AUTO_DEV_MODEL = 'codex-cli:missing-global';
+    process.env.AUTO_DEV_FALLBACK_MODEL = 'codex-cli:missing-fallback';
+    process.env.AUTO_DEV_AGENT_SCAFFOLD_MODEL = 'codex-cli:missing-agent';
     const { loadModelsFromCli, modelConfig } = await freshConfig();
 
     await loadModelsFromCli();
 
+    expect(modelConfig.getModel()).toBe('codex-cli:fast-model');
     expect(modelConfig.getModelForAgent('scaffold')).toBe('fast-model');
+    expect(modelConfig.getProviderForAgent('scaffold')).toBe('codex-cli');
+    expect(modelConfig.stats().fallbackModel).toBeUndefined();
   });
 
   it('uses persisted UI settings before environment variables', async () => {
@@ -135,7 +138,7 @@ describe('modelConfig model resolution', () => {
 
     expect(fallbackRun).toBe('anthropic:fallback-model');
     expect(globalRun).toBe('anthropic:global-model');
-    expect(modelConfig.getModelIdForAgent('scaffold')).toBe('codex-cli:fast-model');
+    expect(modelConfig.getModelIdForAgent('scaffold')).toBe('anthropic:fallback-model');
     expect(modelConfig.hasRunnableModel('openai-compatible:deepseek-v4')).toBe(false);
   });
 });

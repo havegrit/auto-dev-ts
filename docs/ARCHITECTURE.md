@@ -184,6 +184,10 @@ export function getModelCatalog(): ModelCatalog
 | `lib/model-config.ts` | `ModelCatalog` | 대시보드 모델 목록 동적 로딩 + UI 저장 설정 적용 |
 | `lib/app-config.ts` | JSON file | 대시보드에서 저장한 런타임 설정 (`AUTO_DEV_CONFIG_PATH`, 기본 `./data/config.json`) |
 
+Codex CLI 모델 목록은 로그인된 계정의 `codex debug models` 결과 중 `visibility=list`인 항목만
+노출한다. CLI 조회가 실패하면 Codex 모델을 숨기며, 정적 폴백이나 저장된 설정값이 조회 결과에
+다시 합쳐지지 않는다. 오래된 전역/폴백 선택값은 현재 카탈로그 기준으로 보정된다.
+
 **anthropic 프로바이더 구현** (`src/llm/anthropic/`)이 실제 SDK 호출을 담당한다.
 `agent-runner.ts` 는 `query()` 로 Claude Code CLI 를 subprocess 구동하고,
 `message-reducer.ts` 가 SDK 메시지 스트림을 프로바이더-무관 `AgentEvent`

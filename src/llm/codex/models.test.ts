@@ -18,7 +18,7 @@ describe('codexModelCatalog', () => {
     execCommand.mockReset();
   });
 
-  it('falls back to the static list when codex debug models fails, still merging configured models', async () => {
+  it('hides static and configured models when codex debug models fails', async () => {
     execCommand.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'not logged in' });
     const dir = mkdtempSync(join(tmpdir(), 'auto-dev-codex-models-'));
     tempDirs.push(dir);
@@ -31,10 +31,10 @@ describe('codexModelCatalog', () => {
 
     const models = await codexModelCatalog.listModels();
 
-    expect(models.map(m => m.id)).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5-codex']);
+    expect(models).toEqual([]);
   });
 
-  it('uses the live catalog from codex debug models when it succeeds, sorted by priority and filtered to visibility=list', async () => {
+  it('uses only the live catalog and ignores stale configured models', async () => {
     execCommand.mockResolvedValue({
       exitCode: 0,
       stdout: JSON.stringify({
@@ -49,15 +49,15 @@ describe('codexModelCatalog', () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-dev-codex-models-'));
     tempDirs.push(dir);
     process.env.AUTO_DEV_CONFIG_PATH = join(dir, 'config.json');
-    delete process.env.AUTO_DEV_MODEL;
-    delete process.env.AUTO_DEV_FALLBACK_MODEL;
-    delete process.env.AUTO_DEV_AGENT_SCAFFOLD_MODEL;
+    process.env.AUTO_DEV_MODEL = 'gpt-5.5';
+    process.env.AUTO_DEV_FALLBACK_MODEL = 'gpt-5.4-mini';
+    process.env.AUTO_DEV_AGENT_SCAFFOLD_MODEL = 'gpt-5.4-mini';
     vi.resetModules();
     const { codexModelCatalog } = await import('./models.js');
 
     const models = await codexModelCatalog.listModels();
 
-    // priority 순 정렬, visibility=hide 는 제외, effortLevels 는 'none' + provider 값.
+    // 저장/환경 설정에 남아 있는 구형 모델은 제외하고, visibility=list 만 노출한다.
     expect(models).toEqual([
       { id: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', description: 'frontier', effortLevels: ['none', 'low', 'xhigh'] },
       { id: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', description: 'balanced', effortLevels: ['none', 'low', 'high'] },

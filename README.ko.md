@@ -92,7 +92,7 @@ docker compose --profile prod up -d auto-dev-prod
 
 # 기본 평가 케이스 실행 / 모델 비교
 ./run eval
-./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-5.5
+./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-6.1-sol
 
 # 현황 및 통계
 ./run status
@@ -355,7 +355,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 ## 설정
 
-설정은 대시보드의 설정 패널에서 변경할 수 있습니다. 런타임 변경값은 `AUTO_DEV_CONFIG_PATH`(기본 `./data/config.json`)에 저장되며 환경 변수보다 우선합니다. 환경 변수는 초기 부트스트랩 설정으로 계속 사용할 수 있습니다:
+설정은 대시보드의 설정 패널에서 변경할 수 있습니다. Codex CLI 모델 선택지는 로그인된 계정의 현재 모델 카탈로그에서 가져옵니다. 조회에 실패하면 확인되지 않은 Codex 모델을 숨기며, 저장값이나 정적 폴백을 목록에 다시 추가하지 않습니다. 런타임 변경값은 `AUTO_DEV_CONFIG_PATH`(기본 `./data/config.json`)에 저장되며 환경 변수보다 우선합니다. 환경 변수는 초기 부트스트랩 설정으로 계속 사용할 수 있습니다:
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|

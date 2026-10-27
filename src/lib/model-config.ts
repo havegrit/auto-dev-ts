@@ -18,8 +18,6 @@ const FALLBACK_MODELS: ModelSpec[] = [
   { id: 'anthropic:claude-sonnet-5', provider: 'anthropic', providerModel: 'claude-sonnet-5', displayName: 'anthropic / Claude Sonnet 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'anthropic:claude-fable-5', provider: 'anthropic', providerModel: 'claude-fable-5', displayName: 'anthropic / Claude Fable 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'anthropic:claude-haiku-4-5-20251001', provider: 'anthropic', providerModel: 'claude-haiku-4-5-20251001', displayName: 'anthropic / Claude Haiku 4.5', effortLevels: [] },
-  { id: 'codex-cli:gpt-5.5', provider: 'codex-cli', providerModel: 'gpt-5.5', displayName: 'codex-cli / GPT-5.5', effortLevels: ['none', 'low', 'medium', 'high', 'xhigh'] },
-  { id: 'codex-cli:gpt-5.4-mini', provider: 'codex-cli', providerModel: 'gpt-5.4-mini', displayName: 'codex-cli / GPT-5.4 mini', effortLevels: ['none', 'low', 'medium', 'high'] },
 ];
 
 const storedConfig = appConfig.get();
@@ -47,8 +45,15 @@ const CONFIG_AGENT_NAMES = Object.keys(AGENT_MODEL_PREFERENCES);
 
 /** 현재 선택값이 목록과 모순되지 않도록 보정한다. */
 function reconcileSelection(): void {
+  if (fallbackModel && !availableModels.find(m => m.id === fallbackModel)) {
+    fallbackModel = undefined;
+  }
   if (!availableModels.find(m => m.id === currentModel)) {
-    const preferred = availableModels.find(m => m.id === fallbackModel) ?? availableModels.find(m => m.id === 'default') ?? availableModels[0];
+    const currentProvider = providerOf(currentModel);
+    const preferred = availableModels.find(m => m.id === fallbackModel)
+      ?? availableModels.find(m => m.id === 'default')
+      ?? availableModels.find(m => m.provider === currentProvider)
+      ?? availableModels[0];
     if (preferred) currentModel = preferred.id;
   }
   const spec = availableModels.find(m => m.id === currentModel);
@@ -57,6 +62,11 @@ function reconcileSelection(): void {
       ? 'high'
       : spec.effortLevels[spec.effortLevels.length - 1];
   }
+}
+
+function providerOf(modelId: string | undefined): string | undefined {
+  if (!modelId?.includes(':')) return undefined;
+  return modelId.slice(0, modelId.indexOf(':'));
 }
 
 function envKeyForAgent(agentName: string): string {
@@ -88,8 +98,12 @@ function resolveModelSpec(agentName?: string): ModelSpec {
   const scopedModel = agentName ? scopedAgentModels.getStore()?.[agentName] : undefined;
   const agentModel = agentName ? scopedModel ?? agentModels[agentName] ?? process.env[envKeyForAgent(agentName)] : undefined;
   const preferred = agentName ? preferredModel(agentName)?.id : undefined;
+  const agentProvider = providerOf(agentModel);
+  const sameProviderModel = agentProvider
+    ? availableModels.find(model => model.provider === agentProvider && supportsAgentRuns(model))?.id
+    : undefined;
   const candidates = agentModel !== undefined
-    ? [agentModel, preferred, fallbackModel, currentModel]
+    ? [agentModel, sameProviderModel, preferred, fallbackModel, currentModel]
     : [preferred, currentModel, fallbackModel];
   for (const id of candidates) {
     const spec = availableModel(id);
@@ -137,15 +151,19 @@ export async function loadModelsFromCli(): Promise<void> {
     const models = await getModelCatalog().listModels();
     if (models.length > 0) {
       availableModels = models as ModelSpec[];
-      reconcileSelection();
       loadedFromCli = true;
       log.info({ count: availableModels.length, models: availableModels.map(m => m.id) }, 'Loaded models from provider');
     } else {
-      log.warn({}, 'Provider returned no models — keeping fallback list');
+      availableModels = FALLBACK_MODELS;
+      loadedFromCli = false;
+      log.warn({}, 'Provider returned no models — hiding unverified Codex models');
     }
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to load models from provider — keeping fallback list');
+    availableModels = FALLBACK_MODELS;
+    loadedFromCli = false;
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to load models from provider — hiding unverified Codex models');
   }
+  reconcileSelection();
 }
 
 /** 실행 단위 모델 오버라이드를 비동기 호출 트리 안에서만 적용한다. */

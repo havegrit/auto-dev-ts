@@ -94,7 +94,7 @@ Input can be an inline string or a file path — auto-dev detects automatically.
 
 # Run the built-in evaluation cases
 ./run eval
-./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-5.5
+./run eval --case typescript-even-bug --models anthropic:claude-sonnet-5,codex-cli:gpt-6.1-sol
 
 # Status & stats
 ./run status
@@ -364,7 +364,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 
 ## Configuration
 
-Configuration can be changed from the dashboard settings panel. Runtime changes are saved to `AUTO_DEV_CONFIG_PATH` (default `./data/config.json`) and take precedence over environment variables. Environment variables are still supported for bootstrapping:
+Configuration can be changed from the dashboard settings panel. Codex CLI choices come from the logged-in account's current model catalog. If that query fails, unverified Codex models are hidden; saved values and static fallbacks are not added back to the list. Runtime changes are saved to `AUTO_DEV_CONFIG_PATH` (default `./data/config.json`) and take precedence over environment variables. Environment variables are still supported for bootstrapping:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
