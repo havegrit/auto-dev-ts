@@ -15,7 +15,7 @@ export function startBriefingSchedule(): void {
     return;
   }
 
-  cron.schedule(CRON_EXPR, async () => {
+  cron.schedule(CRON_EXPR, () => void (async () => {
     log.info({ schedule: 'briefing' }, 'Running daily worklog briefing');
     try {
       const { readFileSync } = await import('fs');
@@ -68,7 +68,7 @@ export function startBriefingSchedule(): void {
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ schedule: 'briefing', err: msg }, 'Briefing failed');
     }
-  }, { timezone: 'Asia/Seoul' });
+  })(), { timezone: 'Asia/Seoul' });
 
   log.info({ schedule: 'briefing', cron: CRON_EXPR }, 'Worklog briefing scheduled');
 }

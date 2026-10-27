@@ -216,6 +216,15 @@ Telegram에서는 자연어로 auto-dev 실행을 요청하거나
 `AUTO_DEV_BIND_ADDR=127.0.0.1`일 때만 허용되며, 필요하면
 `AUTO_DEV_OPENCLAW_API_TOKEN`을 auto-dev와 OpenClaw 실행 환경에 같이 설정합니다.
 
+## 저장소 품질 게이트
+
+Pull request와 `master` push에서 LLM 호출 없이 동일한 검사를 실행한다:
+`npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run arch`, `npm run size-budget`.
+
+저장소의 `.auto-dev/project.json`은 자체 작업에 기준선 검증과 PR 전달을 적용한다.
+자동 머지는 켜지지 않는다. 프로젝트 맥락과 로컬 서버 실행 방법은
+`.auto-dev/feature-map.md`에 있다.
+
 ## 스펙 워크플로우
 
 `./run spec <file>`은 아래 순서로 전체 파이프라인을 실행합니다:
@@ -407,6 +416,11 @@ auto-dev-ts/
 ├── deploy/systemd/   SSH와 독립된 user service 템플릿
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          운영 스크립트 (비-root 런처 + user service 설치)
+├── .github/          PR 및 master 품질 검사 workflow
+├── .auto-dev/        자체 검증·전달 설정과 feature map
+├── eslint.config.js  오케스트레이션 안전성 타입 검사 규칙
+├── .dependency-cruiser.cjs  소스 의존 방향 검사
+├── size-budget.json  대형 소스 파일 증가 기준선
 ├── static/           대시보드 + 플로팅 채팅 위젯 (바닐라 HTML/CSS/JS)
 ├── src/
 │   ├── agents/       에이전트 구현체 및 레지스트리

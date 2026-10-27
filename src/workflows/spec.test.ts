@@ -1085,6 +1085,19 @@ describe('runSpec verification gate', () => {
     expect(inputs.review).toHaveLength(0);
   });
 
+  it('rejects a team runtime verifier that edits source files', async () => {
+    plannerResult = { ...PLAN_WITH_TEST, output: 'PLAN:\n1. scaffold | build\n2. review | check\nEND.\nTEAM_PLAN:\n' +
+      JSON.stringify({ version: 1, tasks: [{ id: 'impl', agent: 'scaffold', input: 'build', writes: true }] }) + '\nEND_TEAM_PLAN.' };
+    executeTeam.mockResolvedValueOnce({ tasks: [{ taskId: 'impl', agent: 'scaffold', status: 'DONE', output: 'done' }], deferredReviews: [{ id: 'review', agent: 'review', input: 'check', dependsOn: ['impl'] }], failed: false });
+    loadProjectConfig.mockReturnValue({ version: 1, runtime: { up: 'up', down: 'down', healthcheck: { url: 'http://localhost/health', timeoutMs: 1000 }, checks: [] } });
+    runRuntimeVerification.mockResolvedValueOnce({ runId: 'runtime-edit', passed: false, cancelled: false, blocked: false, output: '', feedback: '', evidenceSummary: '', records: [{ stage: 'verifier', status: 'FAIL', changedFiles: ['src/main.ts'] }] } as any);
+
+    const result = await runSpec('명확한 요청');
+
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'role_boundary_violation' });
+    expect(calls).not.toContain('review');
+  });
+
   it('fails immediately when the runtime verifier changes a source file', async () => {
     loadProjectConfig.mockReturnValue({
       version: 1,

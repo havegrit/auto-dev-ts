@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "verify": {
+    "command": "npm run lint && npx tsc --noEmit && npm test && npm run arch && npm run size-budget",
+    "baseline": true
+  },
+  "roleBoundary": {
+    "testGlobs": ["src/**/*.test.ts", "evals/**"],
+    "ignoreGlobs": []
+  },
+  "protect": {
+    "globs": [
+      ".github/**",
+      "eslint.config.js",
+      ".dependency-cruiser.cjs",
+      "size-budget.json",
+      "CLAUDE.md"
+    ]
+  },
+  "delivery": {
+    "mode": "pull-request"
+  }
+}

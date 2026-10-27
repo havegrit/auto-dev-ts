@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import type { RunEvent } from '../lib/run-events.js';
+import type { RunEvent } from '../lib/run-event-types.js';
 
 export function appendRunEvent(runId: string, event: RunEvent): void {
   db.prepare(`

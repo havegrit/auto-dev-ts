@@ -1481,6 +1481,24 @@ Bun 으로 런타임 교체도 가능.
 현재 미구현**입니다. "잘 정의된 스펙 하나를 자동화 파이프라인으로 처리"하는 수준으로
 범위를 좁혔고, 그 범위 안에서는 안정적으로 동작합니다.
 
+### 17.8 auto-dev 자체 품질 게이트
+
+저장소는 `.auto-dev/project.json`으로 자체 작업에도 결정적 검증을 적용한다.
+기준선 검증은 planner 전에 실행되고, 성공한 작업은 자동 머지 없이 PR로 전달한다.
+`.auto-dev/feature-map.md`에는 자체 서버와 데이터 확인 방법을 둔다.
+
+CI는 Node 24에서 ESLint, TypeScript, Vitest, dependency-cruiser, 파일 크기 예산을
+실행한다. type-aware ESLint는 누락된 Promise 처리와 비동기 callback 오용,
+불완전한 switch를 차단한다. 함수형 스타일을 유지하기 위해 클래스 선언과
+CLI 진입점 외의 `console` 호출도 막는다. 기존 Claude OAuth 관리자에는
+OAuth 범위 변경을 피하기 위한 단일 행 예외가 있다.
+
+dependency-cruiser는 `store`, `lib`, `llm`, `agents`의 역방향 의존과 순환 import를
+실패 처리한다. `lib/auto-merge-policy.ts`에서 `agents/specs.ts`의 `AGENT_SPECS`를
+읽는 단일 예외는 의존성 규칙에 명시한다. `size-budget.json`은 600줄 초과 파일을
+등록하고 기준선보다 20줄 넘게 커지는 것을 막아, 기존 대형 파일을 즉시 분해하지
+않으면서 추가 비대화를 제한한다.
+
 ---
 
 ## 18. 변경 이력 요약

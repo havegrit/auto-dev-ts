@@ -3,6 +3,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { createRoutes } from './routes.js';
 import { loadModelsFromCli } from '../lib/model-config.js';
+import { log } from '../lib/logger.js';
 import { keepRunningAfterSessionDisconnect } from '../lib/session-lifecycle.js';
 import { startWorkflowCheckpointRecovery } from '../workflows/spec-session.js';
 
@@ -20,7 +21,7 @@ export async function startServer(): Promise<void> {
   app.route('/', createRoutes());
   app.use('/*', serveStatic({ root: './static' }));
   serve({ fetch: app.fetch, hostname: ADDR, port: PORT }, (info) => {
-    console.log(`auto-dev listening on http://${info.address}:${info.port}`);
+    log.info({ address: info.address, port: info.port }, 'auto-dev server listening');
     startWorkflowCheckpointRecovery();
   });
 }

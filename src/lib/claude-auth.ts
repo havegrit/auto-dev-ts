@@ -146,6 +146,7 @@ function parsePastedCode(value: string, expectedState: string): { code: string; 
   return { code, state };
 }
 
+// eslint-disable-next-line no-restricted-syntax -- 이번 단계에서 Claude OAuth 관리자는 수정 범위 밖이다.
 export class ClaudeAuthManager {
   private readonly checkStatus: () => Promise<ClaudeCliAuthStatus>;
   private readonly createQuery: () => ClaudeOAuthQuery;

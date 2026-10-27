@@ -5,10 +5,12 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { runSpec, workflowOutput, workflowRunStatus, STEP_ORDER, type PersistedSpecCheckpointState, type SpecResult, type Step } from './spec.js';
-import { composeClarifierInput, renderPlanDoc, planSlug, type ClarificationRound } from './clarification.js';
+import { composeClarifierInput, renderPlanDoc, planSlug } from './clarification.js';
+import type { ClarificationRound } from '../lib/clarification-types.js';
 import { getRun, getRunsByWorkflowId, insertRun, updateRun, type RunRow } from '../store/runs.js';
 import { saveClarificationState, getClarificationState, type ClarificationState } from '../store/clarification.js';
 import { closeEmitter, emitRunEvent } from '../lib/run-events.js';
+import { log } from '../lib/logger.js';
 import { registerRunCancellation } from '../lib/run-cancellation.js';
 import { notifyOpenClawSpec } from '../integrations/openclaw/notify.js';
 import { AGENT_SPECS } from '../agents/specs.js';
@@ -632,7 +634,7 @@ export async function recoverExpiredWorkflowCheckpoints(): Promise<number> {
       try {
         if (await recoverExpiredCheckpoint(candidate)) recovered++;
       } catch (err) {
-        console.error(`workflow checkpoint recovery failed for ${candidate.workflowRunId}: ${err instanceof Error ? err.message : String(err)}`);
+        log.error({ workflowRunId: candidate.workflowRunId, err: err instanceof Error ? err.message : String(err) }, 'Workflow checkpoint recovery failed');
       }
     }
   } finally {
@@ -1253,7 +1255,7 @@ export function retryPullRequestDelivery(runId: string): DeliveryRetryHandle {
     : 'docs-audit');
   const done = finishPullRequestDelivery(runId, runtime, stage, controller.signal)
     .catch((err) => {
-      console.error(`PR delivery retry failed for ${runId}: ${err instanceof Error ? err.message : String(err)}`);
+      log.error({ workflowRunId: runId, err: err instanceof Error ? err.message : String(err) }, 'PR delivery retry failed');
     })
     .finally(() => {
       clearInterval(heartbeat);

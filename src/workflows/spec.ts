@@ -27,7 +27,8 @@ import {
   type TestIntegrityBaseline,
 } from '../lib/test-integrity.js';
 import { runVerifyStep, verifyFeedbackBody, VERIFY_AGENT_NAME } from './verify-gate.js';
-import { runRuntimeVerification } from './runtime-gate.js';
+import { runRuntimeVerification, type RuntimeGateResult } from './runtime-gate.js';
+import type { ClarificationQuestion } from '../lib/clarification-types.js';
 import { projectFindingKey, recordOperationalFinding } from '../lib/review-findings.js';
 import { emitRunEvent } from '../lib/run-events.js';
 import { withAgentModelOverrides } from '../lib/model-config.js';
@@ -82,12 +83,7 @@ export interface SpecOptions {
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
 
-export interface ClarificationQuestion {
-  id: string;
-  category: string;
-  text: string;
-  recommendation: string;
-}
+export type { ClarificationQuestion } from '../lib/clarification-types.js';
 
 export interface ClarificationResult {
   summary: string;
@@ -638,6 +634,76 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     }
     return files;
   };
+  type RuntimeGateDisposition = 'passed' | 'routed' | 'terminal';
+  const handleRuntimeGateResult = async (
+    runtimeGate: RuntimeGateResult,
+    integrityStage: string,
+  ): Promise<RuntimeGateDisposition> => {
+    results[VERIFY_AGENT_NAME] = {
+      runId: runtimeGate.runId,
+      durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
+      status: runtimeGate.passed ? 'DONE' : 'FAILED',
+    };
+    runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
+    const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
+    if (verifierChanges.length > 0) {
+      verdict = 'FAILED';
+      failure = {
+        step: VERIFY_AGENT_NAME,
+        status: 'FAILED',
+        cause: 'role_boundary_violation',
+        reason: `runtime verifier modified workspace files: ${verifierChanges.join(', ')}`,
+        routeAvailable: false,
+      };
+      return 'terminal';
+    }
+
+    const afterRuntime = await checkIntegrityAtGate(
+      runtimeGate.runId,
+      integrityStage,
+      !runtimeGate.cancelled && !opts.signal?.aborted,
+    );
+    if (afterRuntime === 'routed') return 'routed';
+    if (afterRuntime !== 'ok') return 'terminal';
+    if (runtimeGate.cancelled || opts.signal?.aborted) {
+      verdict = 'CANCELLED';
+      return 'terminal';
+    }
+    if (runtimeGate.blocked) {
+      verdict = 'BLOCKED';
+      failure = {
+        step: VERIFY_AGENT_NAME,
+        status: 'BLOCKED',
+        cause: 'agent_stopped',
+        reason: runtimeGate.feedback,
+        routeAvailable: false,
+      };
+      return 'terminal';
+    }
+    if (!runtimeGate.passed) {
+      const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
+      recordOperationalFinding({
+        runId: runtimeGate.runId,
+        workflowRunId,
+        project: findingProject,
+        severity: 'high',
+        category: 'verify',
+        ruleHint: `runtime verification failed at ${failedStage}`,
+      });
+      if (routeTo('planner', 'verify', runtimeGate.feedback)) return 'routed';
+      verdict = 'FAILED';
+      failure = {
+        step: VERIFY_AGENT_NAME,
+        status: 'FAILED',
+        cause: 'verify_failed',
+        reason: runtimeGate.feedback,
+        route: 'planner',
+        routeAvailable: false,
+      };
+      return 'terminal';
+    }
+    return 'passed';
+  };
   const inspectJUnitAfterVerify = async (
     verifyStartedAt: number,
     runId: string,
@@ -1110,61 +1176,13 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             signal: opts.signal,
             runOpts,
           });
-          results[VERIFY_AGENT_NAME] = {
-            runId: runtimeGate.runId,
-            durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
-            status: runtimeGate.passed ? 'DONE' : 'FAILED',
-          };
-          runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
-          const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
-          if (verifierChanges.length > 0) {
-            return {
-              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
-              integrityViolations: integrityViolationCount,
-              failure: {
-                step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation',
-                reason: `runtime verifier modified workspace files: ${verifierChanges.join(', ')}`, routeAvailable: false,
-              },
-            };
-          }
-          const afterRuntime = await checkIntegrityAtGate(
-            runtimeGate.runId,
-            'team-post-runtime',
-            !runtimeGate.cancelled && !opts.signal?.aborted,
-          );
-          if (afterRuntime === 'routed') continue;
-          if (afterRuntime !== 'ok') return {
+          const runtimeDisposition = await handleRuntimeGateResult(runtimeGate, 'team-post-runtime');
+          if (runtimeDisposition === 'routed') continue;
+          if (runtimeDisposition === 'terminal') return {
             workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, planOutput, routeCount, team,
             integrityViolations: integrityViolationCount,
             ...(failure ? { failure } : {}),
           };
-          if (runtimeGate.cancelled || opts.signal?.aborted) {
-            return { workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'CANCELLED', planOutput, routeCount, team, integrityViolations: integrityViolationCount };
-          }
-          if (runtimeGate.blocked) {
-            return {
-              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'BLOCKED', planOutput, routeCount, team,
-              integrityViolations: integrityViolationCount,
-              failure: { step: VERIFY_AGENT_NAME, status: 'BLOCKED', cause: 'agent_stopped', reason: runtimeGate.feedback, routeAvailable: false },
-            };
-          }
-          if (!runtimeGate.passed) {
-            const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
-            recordOperationalFinding({
-              runId: runtimeGate.runId,
-              workflowRunId,
-              project: findingProject,
-              severity: 'high',
-              category: 'verify',
-              ruleHint: `runtime verification failed at ${failedStage}`,
-            });
-            if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
-            return {
-              workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
-              integrityViolations: integrityViolationCount,
-              failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: runtimeGate.feedback, route: 'planner', routeAvailable: false },
-            };
-          }
         }
 
         if (!team.failed && !opts.signal?.aborted) {
@@ -1436,65 +1454,9 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           signal: opts.signal,
           runOpts,
         });
-        results[VERIFY_AGENT_NAME] = {
-          runId: runtimeGate.runId,
-          durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
-          status: runtimeGate.passed ? 'DONE' : 'FAILED',
-        };
-        runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
-        const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
-        if (verifierChanges.length > 0) {
-          verdict = 'FAILED';
-          failure = {
-            step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'role_boundary_violation',
-            reason: `runtime verifier modified workspace files: ${verifierChanges.join(', ')}`, routeAvailable: false,
-          };
-          break;
-        }
-        const afterRuntime = await checkIntegrityAtGate(
-          runtimeGate.runId,
-          'post-runtime',
-          !runtimeGate.cancelled && !opts.signal?.aborted,
-        );
-        if (afterRuntime === 'routed') continue;
-        if (afterRuntime !== 'ok') break;
-        if (runtimeGate.cancelled || opts.signal?.aborted) {
-          verdict = 'CANCELLED';
-          break;
-        }
-        if (runtimeGate.blocked) {
-          verdict = 'BLOCKED';
-          failure = {
-            step: VERIFY_AGENT_NAME,
-            status: 'BLOCKED',
-            cause: 'agent_stopped',
-            reason: runtimeGate.feedback,
-            routeAvailable: false,
-          };
-          break;
-        }
-        if (!runtimeGate.passed) {
-          const failedStage = runtimeGate.records.find(record => record.status === 'FAIL')?.stage ?? 'runtime verification';
-          recordOperationalFinding({
-            runId: runtimeGate.runId,
-            workflowRunId,
-            project: findingProject,
-            severity: 'high',
-            category: 'verify',
-            ruleHint: `runtime verification failed at ${failedStage}`,
-          });
-          if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
-          verdict = 'FAILED';
-          failure = {
-            step: VERIFY_AGENT_NAME,
-            status: 'FAILED',
-            cause: 'verify_failed',
-            reason: runtimeGate.feedback,
-            route: 'planner',
-            routeAvailable: false,
-          };
-          break;
-        }
+        const runtimeDisposition = await handleRuntimeGateResult(runtimeGate, 'post-runtime');
+        if (runtimeDisposition === 'routed') continue;
+        if (runtimeDisposition === 'terminal') break;
       }
     }
 

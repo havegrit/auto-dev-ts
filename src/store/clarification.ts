@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import type { ClarificationRound } from '../workflows/clarification.js';
+import type { ClarificationRound } from '../lib/clarification-types.js';
 import type { PullRequestDeliveryContext } from '../lib/pr-delivery.js';
 
 /**

@@ -1,6 +1,7 @@
 function write(level: string, ctx: Record<string, unknown>, msg: string) {
   const line = JSON.stringify({ time: new Date().toISOString(), level, ...ctx, msg });
-  (level === 'error' || level === 'warn' ? console.error : console.log)(line);
+  const stream = level === 'error' || level === 'warn' ? process.stderr : process.stdout;
+  stream.write(`${line}\n`);
 }
 
 export const log = {

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { log } from '../../lib/logger.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_CONFIG_PATH = `${process.env.HOME ?? ''}/.openclaw/openclaw.json`;
@@ -115,7 +116,7 @@ export async function notifyOpenClawSpec(notice: OpenClawSpecNotice): Promise<bo
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[openclaw] Telegram notification failed: ${message}`);
+    log.error({ service: 'openclaw', err: message }, 'Telegram notification failed');
     return false;
   }
 }

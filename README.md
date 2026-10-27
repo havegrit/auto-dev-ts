@@ -223,6 +223,16 @@ status or cancellation. Integration endpoints are accepted only while
 `AUTO_DEV_BIND_ADDR=127.0.0.1`; optionally set the same
 `AUTO_DEV_OPENCLAW_API_TOKEN` in the auto-dev and OpenClaw execution environments.
 
+## Repository quality gates
+
+Pull requests and pushes to `master` run the same offline checks as the self-project
+verification command: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run arch`,
+and `npm run size-budget`. No LLM credentials are needed for CI.
+
+The repository's `.auto-dev/project.json` enables baseline verification and pull-request
+delivery for self-directed work. Auto-merge is not enabled. Project-specific context and
+local service recipes are in `.auto-dev/feature-map.md`.
+
 ## Spec workflow
 
 `./run spec <file>` runs the full pipeline in order:
@@ -420,6 +430,11 @@ auto-dev-ts/
 ├── deploy/systemd/   User-service template independent of SSH sessions
 ├── integrations/     OpenClaw workspace skill + deterministic bridge script
 ├── scripts/          Ops scripts (non-root launcher + user-service installer)
+├── .github/          Pull-request and master-branch quality workflow
+├── .auto-dev/        Self-project verification, delivery, and feature-map settings
+├── eslint.config.js  Typed lint rules for orchestration safety
+├── .dependency-cruiser.cjs  Enforced source dependency directions
+├── size-budget.json  Maximum growth baseline for large source files
 ├── static/           Dashboard frontend + floating chat widget (vanilla HTML/CSS/JS)
 ├── src/
 │   ├── agents/       Agent implementations + registry

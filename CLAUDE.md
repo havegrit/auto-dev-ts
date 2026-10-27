@@ -8,6 +8,7 @@ Claude Agent SDK 기반 개발 자동화 오케스트레이터. TypeScript ESM, 
 |---|---|
 | 테스트 | `npm test` (vitest run) |
 | 타입 체크 | `npx tsc --noEmit` |
+| 정적 검사 | `npm run lint`, `npm run arch`, `npm run size-budget` |
 | 단일 에이전트 | `./run scaffold\|test\|review\|cicd\|planner\|clarifier <input>` |
 | 스펙 워크플로 | `./run spec <file>` |
 | 서버 / 데몬 | `./run serve`, `./run daemon` |
@@ -17,21 +18,19 @@ Claude Agent SDK 기반 개발 자동화 오케스트레이터. TypeScript ESM, 
 
 | 위치 | 역할 |
 |---|---|
-| `src/workflows/spec.ts` `runSpec()` | 단계 루프, `routeTo()`, `parseTests()`/`parseVerdict()`/`parseRoute()`, `feedbackBlock()` |
-| `src/workflows/team.ts` | TEAM_PLAN DAG, 워크트리 병렬 실행, integrator |
+| `src/workflows/spec.ts` / `team.ts` | `runSpec()` 단계 루프, TEAM_PLAN DAG, 워크트리·integrator |
 | `src/workflows/from-issue.ts` | 이슈 → 스펙 변환 후 `runSpec` 호출 |
 | `src/agents/specs.ts` | `AGENT_ORDER`, `AGENT_SPECS` — 역할 경계의 단일 진실 공급원 |
 | `src/agents/dispatch.ts` `buildOptions()` / `project-context.ts` | 프롬프트 조립 + 프로젝트 컨텍스트(16 KiB 상한) |
 | `src/agents/review/lenses.ts` | review 병렬 렌즈 서브에이전트 |
 | `src/llm/` | 프로바이더 seam (`anthropic` / `codex` / `openai`), `registry.ts` |
-| `src/lib/workspace.ts` | `resolveProjectDir()`, `listProjects()`, `defaultWorkspaceDir()` |
+| `src/lib/` | 워크스페이스, 취소, 설정·검증·역할 경계 유틸리티 |
 | `src/lib/{project-config,verify,role-boundary}.ts`, `src/workflows/verify-gate.ts` | 결정적 검증 게이트 — `.auto-dev/project.json`이 있을 때만 동작 (ARCHITECTURE §6.2.1) |
 | `src/lib/run-cancellation.ts` | 실행 취소 |
 | `src/store/` | `schema.sql`, `runs.ts`(`agent_run`), `run-events.ts`(`agent_run_event`) |
 | `src/server/`, `static/` | HTTP API + 대시보드 |
 | `src/schedule/briefing.ts` | 일일 브리핑 cron |
-| `prompts/*.system.md` | 에이전트 시스템 프롬프트 |
-| `docs/ARCHITECTURE.md` | 상세 설계 문서 (절 번호로 참조) |
+| `prompts/*.system.md`, `docs/ARCHITECTURE.md` | 에이전트 프롬프트와 상세 설계 |
 
 `src/store/run-repairs.ts`는 실패한 run 레코드를 보정하는 DB 유지보수 코드다. 라우팅 이력이 아니다.
 
@@ -51,10 +50,11 @@ Claude Agent SDK 기반 개발 자동화 오케스트레이터. TypeScript ESM, 
 
 1. `npm test` 통과
 2. `npx tsc --noEmit` 통과
-3. 새로 생긴 분기마다 테스트 추가
-4. 동작이 바뀌었다면 `docs/ARCHITECTURE.md` 해당 절(§5.0 역할 경계, §6.2 라우팅, §10.4 마커, §12 설정)과 `README.md`, `README.ko.md` 갱신
-5. 보고 형식: 변경 요약 / 변경 파일 / 테스트 결과 / 남은 이슈와 질문
+3. `npm run lint`, `npm run arch`, `npm run size-budget` 통과
+4. 새로 생긴 분기마다 테스트 추가
+5. 동작이 바뀌었다면 `docs/ARCHITECTURE.md`와 `README.md`, `README.ko.md` 갱신
+6. 보고 형식: 변경 요약 / 변경 파일 / 테스트 결과 / 남은 이슈와 질문
 
 ## 진행 중인 계획
 
-`docs/plans/verification-roadmap.md` — 검증 중심 개선 로드맵. 한 번에 한 Phase만, Phase당 브랜치 하나(`feat/phase-N-<slug>`), 끝나면 멈추고 승인을 받는다.
+`docs/plans/auto-dev-trust-roadmap.md` — 신뢰 측정 로드맵. 한 번에 한 Phase만, Phase당 브랜치 하나(`feat/phase-N-<slug>`), 끝나면 멈추고 승인을 받는다.

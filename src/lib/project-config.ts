@@ -72,12 +72,32 @@ export interface ProjectConfig {
   delivery?: DeliveryConfig;
 }
 
-export class ProjectConfigError extends Error {
-  constructor(readonly configPath: string, readonly reason: string) {
-    super(`Invalid project config: ${configPath} — ${reason}`);
-    this.name = 'ProjectConfigError';
-  }
+export interface ProjectConfigError extends Error {
+  readonly configPath: string;
+  readonly reason: string;
 }
+
+interface ProjectConfigErrorConstructor {
+  new (configPath: string, reason: string): ProjectConfigError;
+  prototype: ProjectConfigError;
+}
+
+export const ProjectConfigError = function ProjectConfigError(
+  configPath: string,
+  reason: string,
+): ProjectConfigError {
+  const error = Object.assign(new Error(`Invalid project config: ${configPath} — ${reason}`), {
+    name: 'ProjectConfigError',
+    configPath,
+    reason,
+  });
+  Object.setPrototypeOf(error, ProjectConfigError.prototype);
+  return error;
+} as unknown as ProjectConfigErrorConstructor;
+
+ProjectConfigError.prototype = Object.create(Error.prototype, {
+  constructor: { value: ProjectConfigError, writable: true, configurable: true },
+}) as ProjectConfigError;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)

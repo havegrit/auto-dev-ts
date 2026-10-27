@@ -1,11 +1,8 @@
 import { EventEmitter } from 'events';
 import { appendRunEvent } from '../store/run-events.js';
+import type { RunEvent } from './run-event-types.js';
 
-export interface RunEvent {
-  type: 'tool_call' | 'tool_result' | 'text' | 'usage' | 'status' | 'warn';
-  ts: string;
-  data: string;
-}
+export type { RunEvent } from './run-event-types.js';
 
 const emitters = new Map<string, EventEmitter>();
 

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "limit": 600,
+  "maxGrowth": 20,
+  "files": {
+    "src/server/routes.test.ts": 731,
+    "src/server/routes.ts": 686,
+    "src/workflows/spec-session.test.ts": 1143,
+    "src/workflows/spec-session.ts": 1278,
+    "src/workflows/spec.test.ts": 1423,
+    "src/workflows/spec.ts": 1594
+  }
+}

@@ -11,7 +11,7 @@ import { runNamedAgentBackground } from '../agents/dispatch.js';
 import { clarifier } from '../agents/clarifier.js';
 import { MAX_ROUTE_LIMIT, runSpec, STEP_ORDER, type Step } from '../workflows/spec.js';
 import { startSpecSession, resumeSpecSession, continueSpecSession, resumeLastSpecStep, pendingClarification, specRunPlan, retryPullRequestDelivery } from '../workflows/spec-session.js';
-import type { ClarificationRound } from '../workflows/clarification.js';
+import type { ClarificationRound } from '../lib/clarification-types.js';
 import { getRun, getRecentRunUnits, getRunWithSessionTotals, getRunsBySpecSessionId, getRunsByWorkflowId, getStats, updateRun } from '../store/runs.js';
 import { getRunEvents } from '../store/run-events.js';
 import { checkpointSummary, getWorkflowCheckpoint } from '../store/workflow-checkpoints.js';
