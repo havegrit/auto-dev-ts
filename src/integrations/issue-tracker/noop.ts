@@ -1,6 +1,7 @@
 import type { IssueTracker } from './types.js';
 
 export const noopIssueTracker: IssueTracker = {
+  provider: 'noop',
   async fetchOpenIssues() {
     return [];
   },

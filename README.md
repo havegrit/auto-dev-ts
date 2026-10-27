@@ -329,6 +329,12 @@ If accessing from a remote machine over SSH, use local port forwarding:
 ssh -L 8080:127.0.0.1:8080 user@host -N
 ```
 
+### Plane self-hosted issue automation
+
+Set `AUTO_DEV_ISSUE_TRACKER=plane` and the Plane base URL, workspace slug, project ID, server-side API key, and four state IDs in `.env`. `AUTO_DEV_PLANE_POLL_CRON` defaults to every two minutes and only scans the configured AI-wait state. Each issue runs in its own `origin` worktree and `autodev/issue/<key>-<runId8>` branch, based on project `delivery.baseBranch` or `origin` HEAD. Auto-dev records stage results and Git checkpoints as Plane comments, pushes a final or WIP commit, and removes the local worktree only after confirming the remote SHA. Failed work goes to the configured human-review state; push failures remain locked and retry automatically. Issue execution uses local branch delivery and is disabled when the project selects `delivery.mode: "pull-request"`.
+
+Execution endpoints require `Authorization: Bearer <AUTO_DEV_API_TOKEN>` when that token is set. A non-loopback bind address requires the token to be configured; without a token, execution endpoints return `503`. Loopback-only deployments can omit it.
+
 ## REST API
 
 | Method | Path | Description |
@@ -360,7 +366,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/review-findings/candidates` | Project-grouped review and verification rule candidates from the last 14 days |
 | `GET` | `/api/stats` | Aggregate stats by agent and status |
 | `GET`/`POST` | `/api/config` | Get/set model, effort, per-agent settings, global auto-merge switch, and project list |
-| `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process |
+| `GET` | `/api/issues` · `POST /api/issues/:key/run` | Issue-tracker fetch + auto-process; direct runs share the poller's execution lock |
 
 ## Configuration
 
@@ -398,6 +404,19 @@ Configuration can be changed from the dashboard settings panel. Each agent can h
 | `AUTO_DEV_OPENCLAW_TARGET` | account `allowFrom[0]` | Explicit Telegram chat ID override |
 | `AUTO_DEV_OPENCLAW_API_TOKEN` | unset | Optional Bearer token for the loopback bridge |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (none) | Issue-tracker URL — enables integration when set |
+| `AUTO_DEV_ISSUE_TRACKER` | auto-detected | `noop`, `http`, or `plane`; Plane is selected automatically when its settings are present |
+| `AUTO_DEV_PLANE_BASE_URL` | unset | Self-hosted Plane base URL, without API path or credentials |
+| `AUTO_DEV_PLANE_WORKSPACE_SLUG` | unset | Plane workspace slug |
+| `AUTO_DEV_PLANE_PROJECT_ID` | unset | The single Plane project UUID connected to this auto-dev workspace |
+| `AUTO_DEV_PLANE_API_KEY` | unset | Server-only Plane service-account API key |
+| `AUTO_DEV_PLANE_AI_WAIT_STATE_ID` | unset | State that triggers execution; must not be in Plane's `triage` group |
+| `AUTO_DEV_PLANE_IN_PROGRESS_STATE_ID` | unset | State set while the workflow runs |
+| `AUTO_DEV_PLANE_DONE_STATE_ID` | unset | State set after a successful workflow and post-success commit audit |
+| `AUTO_DEV_PLANE_HUMAN_REVIEW_STATE_ID` | unset | State set for failed, blocked, or interrupted work |
+| `AUTO_DEV_PLANE_POLL_CRON` | `*/2 * * * *` | Plane polling interval in cron syntax; only configured AI-wait issues run |
+| `AUTO_DEV_PLANE_MAX_CONCURRENCY` | `2` | Maximum active issue workflows across polling and direct API requests (range 1–4) |
+| `AUTO_DEV_PLANE_WORKTREE_ROOT` | `./data/worktrees/issues` | Local root for per-issue Git worktrees |
+| `AUTO_DEV_API_TOKEN` | unset | Bearer token for execution APIs; required when binding outside loopback |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | Enable daily review briefing cron |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | Cron expression for briefing schedule |
 

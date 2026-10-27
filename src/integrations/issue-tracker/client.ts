@@ -59,6 +59,7 @@ export function httpIssueTracker(baseUrl: string): IssueTracker {
   }
 
   return {
+    provider: 'http',
     async fetchOpenIssues(): Promise<IssueRef[]> {
       const res = await fetch(`${base}/issues/?status=${encodeURIComponent(statusFilter)}`);
       if (!res.ok) throw await readError(res, 'GET /issues');

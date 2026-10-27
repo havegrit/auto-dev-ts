@@ -138,6 +138,7 @@ import { claudeAuth } from '../lib/claude-auth.js';
 import { loadModelsFromCli, modelConfig } from '../lib/model-config.js';
 import { completeStream } from '../lib/complete.js';
 import { summarizeChatMemory } from '../lib/chat.js';
+import { processIssue } from '../workflows/from-issue.js';
 import type { WorkflowEvidence } from '../lib/evidence.js';
 
 describe('health', () => {
@@ -246,6 +247,50 @@ describe('workflow checkpoint detail', () => {
     expect(res.status).toBe(202);
     await expect(res.json()).resolves.toEqual({ status: 'RUNNING' });
     expect(retryPullRequestDelivery).toHaveBeenCalledWith('run-1');
+  });
+});
+
+describe('execution API authentication', () => {
+  it('requires a bearer token on direct issue execution when configured', async () => {
+    vi.mocked(processIssue).mockClear();
+    const previousToken = process.env.AUTO_DEV_API_TOKEN;
+    process.env.AUTO_DEV_API_TOKEN = 'issue-api-secret';
+    vi.mocked(processIssue).mockResolvedValueOnce({ issueKey: 'AD-1' } as any);
+    try {
+      const app = createRoutes();
+      const denied = await app.fetch(new Request('http://localhost/api/issues/AD-1/run', { method: 'POST' }));
+      expect(denied.status).toBe(401);
+      expect(processIssue).not.toHaveBeenCalled();
+
+      const allowed = await app.fetch(new Request('http://localhost/api/issues/AD-1/run', {
+        method: 'POST', headers: { authorization: 'Bearer issue-api-secret' },
+      }));
+      expect(allowed.status).toBe(200);
+      expect(processIssue).toHaveBeenCalledWith('AD-1', 'api');
+    } finally {
+      if (previousToken === undefined) delete process.env.AUTO_DEV_API_TOKEN;
+      else process.env.AUTO_DEV_API_TOKEN = previousToken;
+    }
+  });
+
+  it('disables execution endpoints on a non-loopback bind without a token', async () => {
+    vi.mocked(processIssue).mockClear();
+    const previousToken = process.env.AUTO_DEV_API_TOKEN;
+    const previousBind = process.env.AUTO_DEV_BIND_ADDR;
+    delete process.env.AUTO_DEV_API_TOKEN;
+    process.env.AUTO_DEV_BIND_ADDR = '0.0.0.0';
+    try {
+      const app = createRoutes();
+      const response = await app.fetch(new Request('http://example.test/api/issues/AD-1/run', { method: 'POST' }));
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('AUTO_DEV_API_TOKEN') });
+      expect(processIssue).not.toHaveBeenCalled();
+    } finally {
+      if (previousToken === undefined) delete process.env.AUTO_DEV_API_TOKEN;
+      else process.env.AUTO_DEV_API_TOKEN = previousToken;
+      if (previousBind === undefined) delete process.env.AUTO_DEV_BIND_ADDR;
+      else process.env.AUTO_DEV_BIND_ADDR = previousBind;
+    }
   });
 });
 
@@ -583,6 +628,35 @@ describe('dashboard auto-clarify options', () => {
 });
 
 describe('OpenClaw local bridge', () => {
+  it('accepts the shared execution token when the bridge has its own token too', async () => {
+    const previous = {
+      bind: process.env.AUTO_DEV_BIND_ADDR,
+      executionToken: process.env.AUTO_DEV_API_TOKEN,
+      openClawToken: process.env.AUTO_DEV_OPENCLAW_API_TOKEN,
+    };
+    process.env.AUTO_DEV_BIND_ADDR = '127.0.0.1';
+    process.env.AUTO_DEV_API_TOKEN = 'execution-secret';
+    process.env.AUTO_DEV_OPENCLAW_API_TOKEN = 'openclaw-secret';
+    vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'telegram-run', done: Promise.resolve() });
+
+    try {
+      const app = createRoutes();
+      const res = await app.fetch(new Request('http://127.0.0.1/api/integrations/openclaw/specs', {
+        method: 'POST',
+        headers: { authorization: 'Bearer execution-secret', 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'build the feature' }),
+      }));
+      expect(res.status).toBe(202);
+    } finally {
+      if (previous.bind === undefined) delete process.env.AUTO_DEV_BIND_ADDR;
+      else process.env.AUTO_DEV_BIND_ADDR = previous.bind;
+      if (previous.executionToken === undefined) delete process.env.AUTO_DEV_API_TOKEN;
+      else process.env.AUTO_DEV_API_TOKEN = previous.executionToken;
+      if (previous.openClawToken === undefined) delete process.env.AUTO_DEV_OPENCLAW_API_TOKEN;
+      else process.env.AUTO_DEV_OPENCLAW_API_TOKEN = previous.openClawToken;
+    }
+  });
+
   it('starts a detached spec session for the main Telegram account', async () => {
     vi.mocked(startSpecSession).mockReturnValueOnce({ runId: 'telegram-run', done: Promise.resolve() });
     const app = createRoutes();

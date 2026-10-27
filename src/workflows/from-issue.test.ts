@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { state, getIssue, updateIssue, getIssueTracker, testAgent, runSpec, runVerifyStep, snapshotWorkspace, emitRunEvent, insertRun, updateRun, loadProjectConfig } = vi.hoisted(() => {
+const { state, getIssue, updateIssue, addComment, getIssueTracker, testAgent, runSpec, runVerifyStep, snapshotWorkspace, emitRunEvent, insertRun, updateRun, loadProjectConfig, tryAcquireIssueExecution, finishIssueExecution, prepareIssueWorktree, issueWorktreeCheckpoint, commitIssueWorktree, pushIssueWorktree, removePushedIssueWorktree, updateIssueExecution } = vi.hoisted(() => {
   const state = {
     issue: {
       key: 'AD-42', title: '잘못된 응답', description: '재현 조건', type: 'BUG',
       priority: 'HIGH', status: 'OPEN', updatedAt: '2026-10-16',
     } as any,
+    provider: undefined as string | undefined,
   };
   const getIssue = vi.fn(async () => state.issue);
   const updateIssue = vi.fn(async (_key: string, _patch: { status?: string; linkedRunId?: string }) => {});
+  const addComment = vi.fn(async () => {});
   const testAgent = vi.fn();
   const runSpec = vi.fn();
   const runVerifyStep = vi.fn();
@@ -17,11 +19,22 @@ const { state, getIssue, updateIssue, getIssueTracker, testAgent, runSpec, runVe
   const insertRun = vi.fn();
   const updateRun = vi.fn();
   const loadProjectConfig = vi.fn(() => undefined);
+  const tryAcquireIssueExecution = vi.fn(() => ({ acquired: true, execution: {} }));
+  const finishIssueExecution = vi.fn();
+  const prepareIssueWorktree = vi.fn(async (sourceDir: string, workflowRunId: string, issueKey: string) => ({
+    sourceDir, workflowRunId, issueKey, worktreeDir: '/worktree/issue', remote: 'origin', branch: 'autodev/issue/ad-42-run', baseBranch: 'main', baseSha: 'base-sha',
+  }));
+  const issueWorktreeCheckpoint = vi.fn(async () => ({ headSha: 'checkpoint-sha', changedPaths: ['src/fix.ts'] }));
+  const commitIssueWorktree = vi.fn(async () => 'commit-sha');
+  const pushIssueWorktree = vi.fn(async () => {});
+  const removePushedIssueWorktree = vi.fn(async () => {});
+  const updateIssueExecution = vi.fn();
   return {
     state,
     getIssue,
     updateIssue,
-    getIssueTracker: vi.fn(() => ({ getIssue, updateIssue })),
+    addComment,
+    getIssueTracker: vi.fn(() => ({ provider: state.provider, getIssue, updateIssue, addComment })),
     testAgent,
     runSpec,
     runVerifyStep,
@@ -30,6 +43,14 @@ const { state, getIssue, updateIssue, getIssueTracker, testAgent, runSpec, runVe
     insertRun,
     updateRun,
     loadProjectConfig,
+    tryAcquireIssueExecution,
+    finishIssueExecution,
+    prepareIssueWorktree,
+    issueWorktreeCheckpoint,
+    commitIssueWorktree,
+    pushIssueWorktree,
+    removePushedIssueWorktree,
+    updateIssueExecution,
   };
 });
 
@@ -49,6 +70,23 @@ vi.mock('../lib/workspace.js', async (importOriginal) => ({
 }));
 vi.mock('../lib/run-events.js', () => ({ emitRunEvent }));
 vi.mock('../store/runs.js', () => ({ insertRun, updateRun }));
+vi.mock('../store/issue-executions.js', () => ({
+  tryAcquireIssueExecution,
+  finishIssueExecution,
+  heartbeatIssueExecution: vi.fn(() => true),
+  listDueIssueDeliveries: vi.fn(() => []),
+  listDueIssueStateUpdates: vi.fn(() => []),
+  expireStaleIssueExecutions: vi.fn(() => []),
+  updateIssueExecution,
+}));
+vi.mock('../lib/issue-worktree.js', () => ({
+  prepareIssueWorktree,
+  issueWorktreeCheckpoint,
+  commitIssueWorktree,
+  pushIssueWorktree,
+  removePushedIssueWorktree,
+  remoteIssueBranchSha: vi.fn(),
+}));
 vi.mock('./verify-gate.js', () => ({ runVerifyStep }));
 vi.mock('./spec.js', () => ({
   runSpec,
@@ -73,6 +111,7 @@ beforeEach(() => {
     key: 'AD-42', title: '잘못된 응답', description: '재현 조건', type: 'BUG',
     priority: 'HIGH', status: 'OPEN', updatedAt: '2026-10-16',
   });
+  state.provider = undefined;
   vi.clearAllMocks();
   getIssue.mockResolvedValue(state.issue);
   testAgent.mockResolvedValue({
@@ -89,6 +128,14 @@ beforeEach(() => {
   runSpec.mockResolvedValue(runResult());
   snapshotWorkspace.mockResolvedValue(new Map());
   loadProjectConfig.mockReturnValue(undefined);
+  tryAcquireIssueExecution.mockReturnValue({ acquired: true, execution: {} } as any);
+  prepareIssueWorktree.mockImplementation(async (sourceDir, workflowRunId, issueKey) => ({
+    sourceDir, workflowRunId, issueKey, worktreeDir: '/worktree/issue', remote: 'origin', branch: 'autodev/issue/ad-42-run', baseBranch: 'main', baseSha: 'base-sha',
+  }));
+  issueWorktreeCheckpoint.mockResolvedValue({ headSha: 'checkpoint-sha', changedPaths: ['src/fix.ts'] });
+  commitIssueWorktree.mockResolvedValue('commit-sha');
+  pushIssueWorktree.mockResolvedValue(undefined);
+  removePushedIssueWorktree.mockResolvedValue(undefined);
 });
 
 describe('bug issue mode', () => {
@@ -193,5 +240,73 @@ describe('bug issue mode', () => {
     expect(runVerifyStep).not.toHaveBeenCalled();
     expect(runSpec).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ workflowRunId: expect.any(String) }));
     expect(runSpec.mock.calls[0][1]).not.toHaveProperty('reproCommand');
+  });
+
+  it('runs Plane issues in an isolated branch, records stage comments, and waits for post-success work', async () => {
+    state.provider = 'plane';
+    state.issue.type = 'TASK';
+    state.issue.id = 'plane-issue-id';
+    state.issue.requesterId = 'plane-user-id';
+    runSpec.mockImplementationOnce(async (_content: string, options: any) => {
+      await options.onStageResult({ stage: 'test', runId: 'test-run-1', status: 'DONE', output: 'Verification decisions recorded.' });
+      return runResult({ testRepairCount: 1, planOutput: 'Use a branch-local change.' });
+    });
+
+    const result = await processIssue('AD-42', 'api');
+
+    expect(result).toMatchObject({ verdict: 'SHIP', finalStatus: 'DONE' });
+    expect(prepareIssueWorktree).toHaveBeenCalledWith('/workspace/project', expect.any(String), 'AD-42', undefined);
+    expect(runSpec).toHaveBeenCalledWith(expect.stringContaining('요청자 ID: plane-user-id'), expect.objectContaining({
+      cwd: '/worktree/issue',
+      projectConfigDir: '/workspace/project',
+      triggerSource: 'issue',
+      testRepairLimit: 2,
+      awaitPostSuccess: true,
+      onStageResult: expect.any(Function),
+    }));
+    expect(issueWorktreeCheckpoint).toHaveBeenCalledOnce();
+    expect(addComment).toHaveBeenCalledWith('AD-42', expect.objectContaining({
+      externalId: expect.stringContaining(':stage:test:test-run-1'),
+      html: expect.stringContaining('checkpoint-sha'),
+    }));
+    expect(commitIssueWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'autodev/issue/ad-42-run' }), 'success', expect.stringContaining('결정 근거'));
+    expect(pushIssueWorktree).toHaveBeenCalledWith(expect.anything(), 'commit-sha');
+    expect(updateIssue.mock.calls.map((call) => call[1].status)).toEqual(['IN_PROGRESS', 'DONE']);
+    expect(removePushedIssueWorktree).toHaveBeenCalledWith(expect.anything(), 'commit-sha');
+  });
+
+  it('pushes a WIP branch for exhausted test repairs and moves Plane issues to human review', async () => {
+    state.provider = 'plane';
+    state.issue.type = 'TASK';
+    runSpec.mockResolvedValueOnce(runResult({
+      verdict: 'FAILED',
+      testRepairCount: 2,
+      failure: { step: 'verify', cause: 'test_repair_limit_exhausted', reason: 'verification still fails' },
+    }));
+
+    const result = await processIssue('AD-42', 'poll');
+
+    expect(result).toMatchObject({ verdict: 'FAILED', finalStatus: 'HUMAN_REVIEW', cause: 'test_repair_limit_exhausted' });
+    expect(commitIssueWorktree).toHaveBeenCalledWith(expect.anything(), 'wip', expect.stringContaining('verification still fails'));
+    expect(updateIssue.mock.calls.map((call) => call[1].status)).toEqual(['IN_PROGRESS', 'HUMAN_REVIEW']);
+    expect(finishIssueExecution).toHaveBeenCalledWith(expect.any(String), 'HUMAN_REVIEW', expect.objectContaining({ commitSha: 'commit-sha' }));
+  });
+
+  it('keeps the issue locked and retries when a Plane branch push fails', async () => {
+    state.provider = 'plane';
+    state.issue.type = 'TASK';
+    runSpec.mockResolvedValueOnce(runResult({ verdict: 'FAILED', failure: { reason: 'review requested changes' } }));
+    pushIssueWorktree.mockRejectedValueOnce(new Error('remote rejected push'));
+
+    const result = await processIssue('AD-42', 'api');
+
+    expect(result).toMatchObject({ verdict: 'FAILED', finalStatus: 'IN_PROGRESS', cause: 'push_pending' });
+    expect(updateIssueExecution).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      status: 'DELIVERY_PENDING',
+      target_status: 'HUMAN_REVIEW',
+      last_error: 'remote rejected push',
+    }));
+    expect(finishIssueExecution).not.toHaveBeenCalled();
+    expect(removePushedIssueWorktree).not.toHaveBeenCalled();
   });
 });

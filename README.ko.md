@@ -322,6 +322,12 @@ review 프롬프트는 기존 verdict 마커 앞에 `FINDINGS_JSON` 블록을 �
 ssh -L 8080:127.0.0.1:8080 user@host -N
 ```
 
+### Plane 자체 호스팅 이슈 자동화
+
+`.env`에 `AUTO_DEV_ISSUE_TRACKER=plane`, Plane 주소, workspace slug, project ID, 서버 전용 API 키와 상태 ID 네 개를 설정합니다. `AUTO_DEV_PLANE_POLL_CRON` 기본값은 2분 간격이며 설정한 AI 대기 상태만 조회합니다. 이슈마다 `delivery.baseBranch` 또는 `origin` HEAD에서 별도 worktree와 `autodev/issue/<key>-<runId8>` 브랜치를 만들고, 단계 결과와 Git 체크포인트를 Plane 댓글로 기록합니다. 성공 또는 WIP 커밋을 push하고 원격 SHA를 확인한 뒤 로컬 worktree를 정리합니다. 실패는 사람 확인 상태로 보내며 push 실패는 실행 잠금을 유지한 채 재시도합니다. 프로젝트가 `delivery.mode: "pull-request"`이면 이슈 실행은 시작하지 않습니다.
+
+인증 토큰 `AUTO_DEV_API_TOKEN`을 설정하면 실행 API는 `Authorization: Bearer <AUTO_DEV_API_TOKEN>`을 요구합니다. loopback 외 주소에 바인딩할 때는 토큰 설정이 필수이며, 빠뜨리면 실행 API가 `503`을 반환합니다. loopback 전용 실행에서는 생략할 수 있습니다.
+
 ## REST API
 
 | 메서드 | 경로 | 설명 |
@@ -353,7 +359,7 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `GET` | `/api/review-findings/candidates` | 최근 14일 리뷰·검증 규칙화 후보를 프로젝트별로 조회 |
 | `GET` | `/api/stats` | 에이전트 · 상태별 집계 통계 |
 | `GET`/`POST` | `/api/config` | 모델·effort·에이전트별 설정, 전역 자동 머지 스위치, 프로젝트 목록 조회·변경 |
-| `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리 |
+| `GET` | `/api/issues` · `POST /api/issues/:key/run` | issue-tracker 조회 + 자동 처리; 직접 실행과 polling은 같은 실행 잠금 사용 |
 
 ## 설정
 
@@ -387,6 +393,19 @@ ssh -L 8080:127.0.0.1:8080 user@host -N
 | `AUTO_DEV_OPENCLAW_TARGET` | 계정 `allowFrom[0]` | 명시적 Telegram chat ID override |
 | `AUTO_DEV_OPENCLAW_API_TOKEN` | 미설정 | 루프백 bridge 선택적 Bearer 토큰 |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker URL — 설정 시 연동 활성 |
+| `AUTO_DEV_ISSUE_TRACKER` | 자동 감지 | `noop`, `http`, `plane`; Plane 설정이 있으면 자동 선택 |
+| `AUTO_DEV_PLANE_BASE_URL` | 미설정 | 자체 호스팅 Plane 주소 (API 경로와 인증 정보 제외) |
+| `AUTO_DEV_PLANE_WORKSPACE_SLUG` | 미설정 | Plane workspace slug |
+| `AUTO_DEV_PLANE_PROJECT_ID` | 미설정 | auto-dev 작업공간에 연결한 단일 Plane 프로젝트 UUID |
+| `AUTO_DEV_PLANE_API_KEY` | 미설정 | 서버에서만 쓰는 Plane 서비스 계정 API 키 |
+| `AUTO_DEV_PLANE_AI_WAIT_STATE_ID` | 미설정 | 실행을 시작할 상태 ID; Plane `triage` 그룹은 사용할 수 없음 |
+| `AUTO_DEV_PLANE_IN_PROGRESS_STATE_ID` | 미설정 | 실행 중에 설정할 상태 ID |
+| `AUTO_DEV_PLANE_DONE_STATE_ID` | 미설정 | workflow와 후처리 커밋 점검 성공 뒤 설정할 상태 ID |
+| `AUTO_DEV_PLANE_HUMAN_REVIEW_STATE_ID` | 미설정 | 실패·차단·중단 뒤 설정할 사람 확인 상태 ID |
+| `AUTO_DEV_PLANE_POLL_CRON` | `*/2 * * * *` | Plane polling cron 간격; AI 대기 상태만 실행 |
+| `AUTO_DEV_PLANE_MAX_CONCURRENCY` | `2` | polling과 직접 API 요청 전체의 동시 이슈 workflow 수 (1–4) |
+| `AUTO_DEV_PLANE_WORKTREE_ROOT` | `./data/worktrees/issues` | 이슈별 Git worktree 경로 루트 |
+| `AUTO_DEV_API_TOKEN` | 미설정 | 실행 API Bearer 토큰; loopback 외 바인딩 시 필수 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 리뷰 브리핑 스케줄러 활성화 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 스케줄 크론 표현식 |
 

@@ -32,6 +32,36 @@ CREATE TABLE IF NOT EXISTS agent_run_event (
 );
 CREATE INDEX IF NOT EXISTS idx_run_event_run ON agent_run_event(run_id, id);
 
+CREATE TABLE IF NOT EXISTS issue_execution (
+  id TEXT PRIMARY KEY,
+  issue_key TEXT NOT NULL,
+  provider_issue_id TEXT,
+  trigger_source TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('RUNNING','DELIVERY_PENDING','STATE_UPDATE_PENDING','DONE','HUMAN_REVIEW','FAILED')),
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  source_dir TEXT NOT NULL,
+  worktree_path TEXT,
+  remote TEXT,
+  branch_name TEXT,
+  base_branch TEXT,
+  base_sha TEXT,
+  commit_sha TEXT,
+  target_status TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_execution_active_key
+  ON issue_execution(issue_key)
+  WHERE status IN ('RUNNING','DELIVERY_PENDING','STATE_UPDATE_PENDING');
+CREATE INDEX IF NOT EXISTS idx_issue_execution_status_updated
+  ON issue_execution(status, updated_at);
+
 CREATE TABLE IF NOT EXISTS workflow_checkpoint (
   workflow_run_id TEXT PRIMARY KEY,
   schema_version INTEGER NOT NULL,

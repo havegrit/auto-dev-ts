@@ -27,6 +27,8 @@ import { getIssueTracker } from '../integrations/issue-tracker/index.js';
 import { processIssue } from '../workflows/from-issue.js';
 import { cancelActiveRun } from '../lib/run-cancellation.js';
 import { claudeAuth } from '../lib/claude-auth.js';
+import { timingSafeEqual } from 'node:crypto';
+import { log } from '../lib/logger.js';
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -70,7 +72,38 @@ function isOpenClawRequestAllowed(request: Request): boolean {
 
   const expectedToken = process.env.AUTO_DEV_OPENCLAW_API_TOKEN?.trim();
   if (!expectedToken) return true;
-  return request.headers.get('authorization') === `Bearer ${expectedToken}`;
+  const authorization = request.headers.get('authorization');
+  const executionToken = process.env.AUTO_DEV_API_TOKEN?.trim();
+  return authorization === `Bearer ${expectedToken}`
+    || Boolean(executionToken && authorization === `Bearer ${executionToken}`);
+}
+
+function isExecutionRequest(method: string, path: string): boolean {
+  if (method !== 'POST') return false;
+  return path === '/api/clarify'
+    || path === '/api/specs'
+    || path === '/api/submit'
+    || path === '/api/integrations/openclaw/specs'
+    || /^\/api\/agents\/[^/]+$/.test(path)
+    || /^\/api\/issues\/[^/]+\/run$/.test(path)
+    || /^\/api\/runs\/[^/]+\/(?:answers|continue|resume-last|cancel|delivery\/retry)$/.test(path);
+}
+
+function isApiExecutionAuthorized(request: Request): { authorized: true } | { authorized: false; status: 401 | 503; error: string } {
+  const expected = process.env.AUTO_DEV_API_TOKEN?.trim();
+  if (!expected) {
+    const bindAddr = process.env.AUTO_DEV_BIND_ADDR ?? '127.0.0.1';
+    return isLoopbackHostname(bindAddr)
+      ? { authorized: true }
+      : { authorized: false, status: 503, error: 'AUTO_DEV_API_TOKEN is required for execution APIs on a non-loopback bind address.' };
+  }
+  const actual = request.headers.get('authorization') ?? '';
+  const expectedBytes = Buffer.from(`Bearer ${expected}`);
+  const actualBytes = Buffer.from(actual);
+  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
+    return { authorized: false, status: 401, error: 'Bearer token required for execution API.' };
+  }
+  return { authorized: true };
 }
 
 interface OpenClawSpecBody {
@@ -112,6 +145,15 @@ export function createRoutes(): Hono {
 
   // 인터뷰 등 외부 정적 앱(다른 포트)에서 LLM 프록시를 호출할 수 있도록 허용 (루프백 전용)
   app.use('/api/*', cors());
+  app.use('/api/*', async (c, next) => {
+    if (!isExecutionRequest(c.req.method, c.req.path)) return next();
+    const authorization = isApiExecutionAuthorized(c.req.raw);
+    if (!authorization.authorized) {
+      log.warn({ method: c.req.method, path: c.req.path, status: authorization.status }, 'Rejected execution API request without valid authentication');
+      return c.json({ error: authorization.error }, authorization.status);
+    }
+    return next();
+  });
 
   // Claude 구독으로 단발성 completion을 수행하는 프록시 (브라우저 직접 API 호출 대체)
   app.post('/api/llm/complete', async (c) => {
@@ -661,12 +703,13 @@ export function createRoutes(): Hono {
   });
 
   app.get('/api/issues', async (c) => {
-    const tracker = getIssueTracker();
     try {
+      const tracker = getIssueTracker();
       const issues = await tracker.fetchOpenIssues();
       return c.json(issues);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err: msg }, 'Failed to fetch issues from issue tracker');
       return c.json({ error: msg }, 502);
     }
   });
@@ -674,11 +717,18 @@ export function createRoutes(): Hono {
   app.post('/api/issues/:key/run', async (c) => {
     const key = c.req.param('key');
     try {
-      const result = await processIssue(key);
+      const result = await processIssue(key, 'api');
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const status = msg.includes('연동되지 않았습니다') || msg.includes('찾을 수 없습니다') ? 400 : 500;
+      log.error({ issue: key, err: msg }, 'Issue run request failed');
+      const status = msg.includes('연동되지 않았습니다') || msg.includes('찾을 수 없습니다')
+        ? 400
+        : msg.includes('Plane GET') || msg.includes('Plane PATCH') || msg.includes('Plane UPSERT')
+          ? 502
+          : msg.includes('AI 대기 상태가 아닙니다') || msg.includes('이미 auto-dev') || msg.includes('동시 실행 한도') || msg.includes('이미 처리 중')
+          ? 409
+          : 500;
       return c.json({ error: msg }, status);
     }
   });

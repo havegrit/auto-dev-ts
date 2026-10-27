@@ -38,6 +38,12 @@ export interface SpecOptions {
   /** 피드백 재작업(라우팅) 허용 횟수. 미지정 시 iterations, 그것도 없으면 DEFAULT_MAX_ROUTES. */
   iterations?: number;
   maxRoutes?: number;
+  /** Issue-triggered deterministic test/verify failures may each request up to this many planner repairs. */
+  testRepairLimit?: number;
+  /** Wait for the existing docs/atomic-commit post-success steps before returning. */
+  awaitPostSuccess?: boolean;
+  /** Persist a Git checkpoint and concise decision record after each completed stage. */
+  onStageResult?: (result: SpecStageResult) => void | Promise<void>;
   triggerSource?: string;
   triggerDetail?: string;
   workflowRunId?: string;
@@ -82,6 +88,13 @@ export interface SpecOptions {
 
 export interface StepResult { runId: string; durationMs: number; status: string; }
 
+export interface SpecStageResult {
+  stage: string;
+  runId: string;
+  status: string;
+  output?: string;
+}
+
 export interface ClarificationQuestion {
   id: string;
   category: string;
@@ -104,6 +117,8 @@ export interface SpecResult {
   planOutput?: string;
   /** review/test 피드백으로 planner·clarifier 로 되돌아간 횟수 */
   routeCount?: number;
+  testRepairCount?: number;
+  postSuccessFailure?: string;
   /** workflow 중 관찰한 무결성 또는 검증자 역할 경계 위반 경로 수. */
   integrityViolations?: number;
   /** skip 모드에서 추천 답안으로 자동 답변한 clarifier 라운드들 (히스토리 편입용). */
@@ -115,7 +130,8 @@ export interface SpecResult {
     reason: string;
     cause?: 'agent_stopped' | 'invalid_output' | 'route_limit_exhausted' | 'route_target_disabled' | 'route_missing' | 'skill_unavailable'
       | 'verify_failed' | 'role_boundary_violation' | 'reproduction_failed' | 'protected_path_modified'
-      | 'test_regression' | 'baseline_red' | 'integrity_unavailable' | 'junit_report_unavailable';
+      | 'test_regression' | 'baseline_red' | 'integrity_unavailable' | 'junit_report_unavailable'
+      | 'test_repair_limit_exhausted';
     route?: string;
     routeAvailable: boolean;
   };
@@ -253,6 +269,9 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   const maxRoutes = Number.isFinite(configuredMaxRoutes)
     ? Math.min(MAX_ROUTE_LIMIT, Math.max(0, Math.floor(configuredMaxRoutes)))
     : DEFAULT_MAX_ROUTES;
+  const testRepairLimit = opts.testRepairLimit === undefined
+    ? undefined
+    : Math.min(MAX_ROUTE_LIMIT, Math.max(0, Math.floor(opts.testRepairLimit)));
   const autoClarify = opts.autoClarify ?? false;
   const configuredClarifyRounds = opts.maxClarifyRounds ?? 0;
   const maxClarifyRounds = configuredClarifyRounds === 0
@@ -300,6 +319,14 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     deliveryIntent: opts.deliveryIntent ?? 'ci',
     signal: opts.signal,
   };
+  const reportStage = async (stage: string, runId: string, status: string, output?: string): Promise<void> => {
+    if (!opts.onStageResult) return;
+    try {
+      await opts.onStageResult({ stage, runId, status, ...(output ? { output } : {}) });
+    } catch (err) {
+      log.warn({ workflowRunId, stage, err: err instanceof Error ? err.message : String(err) }, 'Failed to record issue stage checkpoint');
+    }
+  };
   const agents: Record<string, (input: string, opts: any) => Promise<RunResult>> = {
     clarifier, planner, scaffold, test, review, cicd,
   };
@@ -313,7 +340,9 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   let verdict: string | undefined;
   let clarification: ClarificationResult | undefined;
   let routeCount = checkpointState?.routeCount ?? 0;
+  let testRepairCount = 0;
   let failure: SpecResult['failure'];
+  let postSuccessFailure: string | undefined;
   let runtimeEvidenceSummary = checkpointState?.runtimeEvidenceSummary ?? '';
 
   // 구현/테스트 단계는 최종 판정 기준이 되는 명령을 미리 알아야 한다.
@@ -363,7 +392,14 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   };
 
   const routeTo = (target: RouteTarget, fromStep: FeedbackSource, output: string): boolean => {
-    if (!stepsFilter.has(target) || routeCount >= maxRoutes) return false;
+    if (!stepsFilter.has(target)) return false;
+    const testRepair = target === 'planner' && (fromStep === 'test' || fromStep === 'verify' || fromStep === 'repro') && testRepairLimit !== undefined;
+    if (testRepair) {
+      if (testRepairCount >= testRepairLimit!) return false;
+      testRepairCount++;
+    } else if (routeCount >= maxRoutes) {
+      return false;
+    }
     routeCount++;
     pendingFeedback = feedbackBlock(fromStep, output);
     const targetIndex = STEP_ORDER.indexOf(target);
@@ -380,17 +416,27 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     return true;
   };
 
-  const routeFailure = (route: RouteTarget | undefined, step: Step, output: string): NonNullable<SpecResult['failure']> => {
+  const routeFailure = (route: RouteTarget | undefined, step: string, output: string, fromStep?: FeedbackSource): NonNullable<SpecResult['failure']> => {
+    const testRepairLimitExhausted = testRepairLimit !== undefined && route === 'planner' &&
+      (fromStep === 'test' || fromStep === 'verify' || fromStep === 'repro') && testRepairCount >= testRepairLimit;
     const cause = !route
       ? 'route_missing'
       : !stepsFilter.has(route)
         ? 'route_target_disabled'
-        : 'route_limit_exhausted';
+        : testRepairLimitExhausted
+          ? 'test_repair_limit_exhausted'
+          : step === VERIFY_AGENT_NAME && testRepairLimit === undefined
+            ? 'verify_failed'
+            : 'route_limit_exhausted';
     const explanation = cause === 'route_missing'
       ? `The ${step} agent requested rework but did not provide a valid planner/clarifier route.`
       : cause === 'route_target_disabled'
         ? `The ${step} agent requested ${route}, but that stage is disabled for this workflow.`
-        : `Rework route budget exhausted (${routeCount}/${maxRoutes}). The ${step} agent requested ${route}, but no routes remain.`;
+        : testRepairLimitExhausted
+          ? `Test repair limit exhausted (${testRepairCount}/${testRepairLimit}). The ${step} stage failed after its allowed planner repairs.`
+          : cause === 'verify_failed'
+            ? `The deterministic ${step} stage failed and no planner rework route remains.`
+          : `Rework route budget exhausted (${routeCount}/${maxRoutes}). The ${step} agent requested ${route}, but no routes remain.`;
     return {
       step,
       status: step === 'test' ? 'FAIL' : 'NEEDS-WORK',
@@ -695,12 +741,14 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
       planOutput,
       runOpts: {
         ...runOpts,
-        workflowRunId: undefined,
-        specSessionId: undefined,
-        triggerSource: 'background',
-        triggerDetail: 'post-success',
+        ...(opts.awaitPostSuccess ? {} : { workflowRunId: undefined, specSessionId: undefined }),
+        triggerSource: opts.awaitPostSuccess ? runOpts.triggerSource : 'background',
+        triggerDetail: opts.awaitPostSuccess ? `${opts.triggerDetail ?? ''}:post-success` : 'post-success',
         signal: undefined,
       },
+      ...(opts.awaitPostSuccess ? { onStage: async (stage: 'docs-audit' | 'local-commit') => {
+        await checkpointActionIntent('delivery', stage, clarifiedSpec);
+      } } : {}),
       ...(opts.deliveryContext ? {
         commit: false,
         onStage: async (stage: 'docs-audit' | 'local-commit') => {
@@ -708,8 +756,14 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         },
       } : {}),
     });
+    for (const [stage, result] of Object.entries(postSuccess.steps)) {
+      await reportStage(stage, result.runId, result.status, result.output);
+    }
     if (postSuccess.failure) {
       log.error({ step: postSuccess.failure.step, cause: postSuccess.failure.cause }, 'Background post-success agent failed');
+      if (opts.awaitPostSuccess) {
+        postSuccessFailure = `${postSuccess.failure.step}: ${postSuccess.failure.reason}`;
+      }
       if (opts.deliveryContext) {
         deliveryState = { status: 'DELIVERY_PENDING', stage: 'docs-audit', reason: postSuccess.failure.reason };
         await opts.onDeliveryState?.('docs-audit', deliveryState);
@@ -747,7 +801,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     }
     if (opts.checkpoint) publishCheckpoint({ activeAction: undefined, activeStep: undefined, activeRunId: undefined, activeInput: undefined, actionStartedAt: undefined, beforeSnapshot: undefined, beforeHeadSha: undefined });
   };
-  const routeSafetyCap = STEP_ORDER.length * (maxRoutes + 2);
+  const routeSafetyCap = STEP_ORDER.length * (maxRoutes + (testRepairLimit ?? 0) + 2);
   const safetyCap = autoClarify && !Number.isFinite(maxClarifyRounds)
     ? Number.POSITIVE_INFINITY
     : routeSafetyCap + (autoClarify ? maxClarifyRounds : 0);
@@ -845,6 +899,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
     }
     pendingFeedback = undefined;
     results[step] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
+    await reportStage(step, r.runId, r.status, r.output);
 
     if (integrityWritableStep) {
       const integrityStepAfter = await snapshotWorkspace(projectDir, [...testGlobs, ...protectedGlobs]);
@@ -999,6 +1054,19 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             durationMs: task.run?.durationMs ?? 0,
             status: task.status,
           };
+          if (task.run) await reportStage(task.agent, task.run.runId, task.status, task.output);
+        }
+        const failedTeamTest = team.tasks.find((task) => task.agent === 'test' &&
+          (task.status === 'FAILED' || parseTests(task.output) === 'FAIL'));
+        if (failedTeamTest) {
+          const output = failedTeamTest.output || `Dynamic team test task ${failedTeamTest.taskId} failed.`;
+          if (routeTo('planner', 'test', output)) continue;
+          return {
+            workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
+            integrityViolations: integrityViolationCount,
+            testRepairCount,
+            failure: routeFailure('planner', 'test', output, 'test'),
+          };
         }
         // 동적 팀 review는 통합 후 무결성·결정적·런타임 검사를 통과한 뒤 실행한다.
         try {
@@ -1043,6 +1111,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             durationMs: gate.outcome.durationMs,
             status: gate.passed ? 'DONE' : 'FAILED',
           };
+          await reportStage(VERIFY_AGENT_NAME, gate.runId, gate.passed ? 'DONE' : 'FAILED', gate.outcome.outputTail);
           const afterGate = await checkIntegrityAtGate(
             gate.runId,
             'team-post-verify',
@@ -1067,10 +1136,12 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
               ruleHint: `verify command failed: ${projectConfig.verify.command}`,
             });
             const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
+            if (testRepairLimit !== undefined && routeTo('planner', 'verify', feedback)) continue;
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
               integrityViolations: integrityViolationCount,
-              failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: feedback, route: 'planner', routeAvailable: false },
+              testRepairCount,
+              failure: routeFailure('planner', VERIFY_AGENT_NAME, feedback, 'verify'),
             };
           }
           runtimeEvidenceSummary = `- deterministic verify: PASS (exit 0, ${gate.outcome.durationMs}ms)` +
@@ -1115,6 +1186,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
             status: runtimeGate.passed ? 'DONE' : 'FAILED',
           };
+          await reportStage(VERIFY_AGENT_NAME, runtimeGate.runId, runtimeGate.passed ? 'DONE' : 'FAILED', runtimeGate.feedback);
           runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
           const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
           if (verifierChanges.length > 0) {
@@ -1158,11 +1230,12 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
               category: 'verify',
               ruleHint: `runtime verification failed at ${failedStage}`,
             });
-            if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
+            if (testRepairLimit !== undefined && routeTo('planner', 'verify', runtimeGate.feedback)) continue;
             return {
               workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict: 'FAILED', planOutput, routeCount, team,
               integrityViolations: integrityViolationCount,
-              failure: { step: VERIFY_AGENT_NAME, status: 'FAILED', cause: 'verify_failed', reason: runtimeGate.feedback, route: 'planner', routeAvailable: false },
+              testRepairCount,
+              failure: routeFailure('planner', VERIFY_AGENT_NAME, runtimeGate.feedback, 'verify'),
             };
           }
         }
@@ -1174,6 +1247,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
             const reviewTask = { taskId: task.id, agent: task.agent, run: r, status: r.status, output: r.output };
             team.tasks.push(reviewTask);
             results[task.id] = { runId: r.runId, durationMs: r.durationMs, status: r.status };
+            await reportStage(task.agent, r.runId, r.status, r.output);
             if (r.status !== 'DONE') {
               team.failed = true;
               team.conflict ??= `Team review failed: ${task.id}`;
@@ -1344,7 +1418,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
         const route = parseRoute(r.output) ?? 'planner';
         if (routeTo(route, 'test', r.output)) continue;
         verdict = 'FAILED';
-        failure = routeFailure(route, 'test', r.output);
+        failure = routeFailure(route, 'test', r.output, 'test');
         break;
       }
 
@@ -1369,6 +1443,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           durationMs: gate.outcome.durationMs,
           status: gate.passed ? 'DONE' : 'FAILED',
         };
+        await reportStage(VERIFY_AGENT_NAME, gate.runId, gate.passed ? 'DONE' : 'FAILED', gate.outcome.outputTail);
         // 취소 여부와 관계없이 검증 명령이 보호 파일을 바꾸지 않았는지 확인한다.
         const afterGate = await checkIntegrityAtGate(
           gate.runId,
@@ -1397,14 +1472,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           const feedback = verifyFeedbackBody(projectConfig.verify, gate.outcome);
           if (routeTo('planner', 'verify', feedback)) continue;
           verdict = 'FAILED';
-          failure = {
-            step: VERIFY_AGENT_NAME,
-            status: 'FAILED',
-            cause: 'verify_failed',
-            reason: feedback,
-            route: 'planner',
-            routeAvailable: false,
-          };
+          failure = routeFailure('planner', VERIFY_AGENT_NAME, feedback, 'verify');
           break;
         }
         const junitIssue = await inspectJUnitAfterVerify(verifyStartedAt, gate.runId);
@@ -1441,6 +1509,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           durationMs: runtimeGate.records.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0),
           status: runtimeGate.passed ? 'DONE' : 'FAILED',
         };
+        await reportStage(VERIFY_AGENT_NAME, runtimeGate.runId, runtimeGate.passed ? 'DONE' : 'FAILED', runtimeGate.feedback);
         runtimeEvidenceSummary = [runtimeEvidenceSummary, runtimeGate.evidenceSummary].filter(Boolean).join('\n');
         const verifierChanges = recordVerifierRoleBoundary(runtimeGate.runId, runtimeGate.records);
         if (verifierChanges.length > 0) {
@@ -1485,14 +1554,7 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
           });
           if (routeTo('planner', 'verify', runtimeGate.feedback)) continue;
           verdict = 'FAILED';
-          failure = {
-            step: VERIFY_AGENT_NAME,
-            status: 'FAILED',
-            cause: 'verify_failed',
-            reason: runtimeGate.feedback,
-            route: 'planner',
-            routeAvailable: false,
-          };
+          failure = routeFailure('planner', VERIFY_AGENT_NAME, runtimeGate.feedback, 'verify');
           break;
         }
       }
@@ -1537,9 +1599,10 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
   if (cursor >= STEP_ORDER.length && executed > 0 && !failure && !clarification && !opts.signal?.aborted && runOpts.triggerSource !== 'eval') {
     // 문서 점검/커밋은 핵심 spec 결과와 무관한 후처리다. 별도 실행으로 넘겨
     // spec children/status를 오염시키지 않고, review 통과 뒤 백그라운드에서 수행한다.
-    if (opts.checkpoint) {
+    if (opts.awaitPostSuccess || opts.checkpoint) {
       try { await commitPostSuccess(); } catch (err) {
-        log.error({ err: err instanceof Error ? err.message : String(err) }, 'Checkpointed post-success workflow failed');
+        postSuccessFailure = err instanceof Error ? err.message : String(err);
+        log.error({ err: postSuccessFailure }, 'Checkpointed post-success workflow failed');
       }
     } else {
       void commitSuccessfulSpec({
@@ -1566,6 +1629,8 @@ async function runSpecInternal(specContent: string, opts: SpecOptions = {}): Pro
 
   return {
     workflowRunId, steps: results, totalDurationMs: Date.now() - start, verdict, clarification, planOutput, routeCount,
+    testRepairCount,
+    ...(postSuccessFailure ? { postSuccessFailure } : {}),
     integrityViolations: integrityViolationCount,
     autoClarifyRounds: autoClarifyRounds.length ? autoClarifyRounds : undefined,
     failure,

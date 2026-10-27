@@ -1,11 +1,23 @@
 export interface IssueRef {
   key: string;
+  /** Provider-stable identifier; Plane uses the work item UUID. */
+  id?: string;
   title: string;
   description: string;
   type: string;
   priority: string;
   status: string;
+  stateId?: string;
+  requesterId?: string;
   updatedAt: string;
+}
+
+export type IssueTrackerProvider = 'noop' | 'http' | 'plane';
+
+export interface IssueCommentInput {
+  externalId: string;
+  html: string;
+  access?: 'INTERNAL' | 'EXTERNAL';
 }
 
 export type AutomationJobStatus =
@@ -88,9 +100,11 @@ export interface AutomationJobListOptions {
 }
 
 export interface IssueTracker {
+  readonly provider?: IssueTrackerProvider;
   fetchOpenIssues(): Promise<IssueRef[]>;
   getIssue?(key: string): Promise<IssueRef | null>;
   updateIssue?(key: string, patch: { status?: string; linkedRunId?: string }): Promise<void>;
+  addComment?(key: string, input: IssueCommentInput): Promise<void>;
   createAutomationJob?(input: AutomationJobCreateInput): Promise<AutomationJob>;
   listAutomationJobs?(options?: AutomationJobListOptions): Promise<AutomationJob[]>;
   claimAutomationJob?(id: string, instanceId: string, leaseSeconds?: number): Promise<AutomationJob>;

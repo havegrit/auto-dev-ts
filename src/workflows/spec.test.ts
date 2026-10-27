@@ -830,6 +830,44 @@ describe('runSpec verification gate', () => {
     expect(commitSuccessfulSpec).not.toHaveBeenCalled();
   });
 
+  it('allows exactly two issue-triggered planner repairs after deterministic test failures', async () => {
+    runVerifyStep.mockImplementation(async () => failingVerify('persistent verification failure'));
+
+    const result = await runSpec('명확한 요청', { testRepairLimit: 2 });
+
+    expect(result.verdict).toBe('FAILED');
+    expect(result.testRepairCount).toBe(2);
+    expect(result.routeCount).toBe(2);
+    expect(result.failure).toMatchObject({ step: 'verify', cause: 'test_repair_limit_exhausted' });
+    expect(calls.filter((step) => step === 'planner')).toHaveLength(3);
+    expect(runVerifyStep).toHaveBeenCalledTimes(3);
+  });
+
+  it('waits for issue post-success steps and reports their failures', async () => {
+    commitSuccessfulSpec.mockResolvedValueOnce({
+      steps: {
+        'checking-docs-before-commit': { runId: 'docs-run', durationMs: 4, status: 'BLOCKED', output: 'README needs an update' },
+      },
+      failure: { step: 'checking-docs-before-commit', status: 'BLOCKED', cause: 'invalid_output', reason: 'docs were not ready' },
+    });
+    const stages: Array<{ stage: string; status: string; output?: string }> = [];
+
+    const result = await runSpec('명확한 요청', {
+      awaitPostSuccess: true,
+      workflowRunId: 'issue-run',
+      triggerSource: 'issue',
+      onStageResult: (stage) => { stages.push(stage); },
+    });
+
+    expect(result.verdict).toBe('SHIP');
+    expect(result.postSuccessFailure).toContain('docs were not ready');
+    expect(commitSuccessfulSpec).toHaveBeenCalledOnce();
+    expect(commitSuccessfulSpec).toHaveBeenCalledWith(expect.objectContaining({
+      runOpts: expect.objectContaining({ workflowRunId: 'issue-run', triggerSource: 'issue' }),
+    }));
+    expect(stages).toContainEqual(expect.objectContaining({ stage: 'checking-docs-before-commit', status: 'BLOCKED', output: 'README needs an update' }));
+  });
+
   it('does not run verify when the test agent reports FAIL', async () => {
     const { test } = await import('../agents/test.js');
     (test as any).mockResolvedValueOnce({

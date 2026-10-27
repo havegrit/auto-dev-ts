@@ -8,6 +8,7 @@ export interface PostSuccessStepResult {
   runId: string;
   durationMs: number;
   status: string;
+  output?: string;
 }
 
 export interface PostSuccessCommitResult {
@@ -44,7 +45,7 @@ function workflowContext(ctx: PostSuccessCommitContext): string {
 }
 
 function stepResult(result: Awaited<ReturnType<typeof runNamedAgent>>): PostSuccessStepResult {
-  return { runId: result.runId, durationMs: result.durationMs, status: result.status };
+  return { runId: result.runId, durationMs: result.durationMs, status: result.status, output: result.output };
 }
 
 function stoppedFailure(step: string, result: Awaited<ReturnType<typeof runNamedAgent>>): NonNullable<PostSuccessCommitResult['failure']> {

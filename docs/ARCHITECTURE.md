@@ -477,9 +477,10 @@ if cursor == len(STEP_ORDER) and core workflow succeeded:
   종료코드 `124`가 발생한 경우는 완료로 보존해 false failure를 막는다.
 - **review 작업 경계**: review는 지정된 `cwd`만 검사한다. 대상에 `.git`이 없어도 부모나
   형제 디렉터리에서 다른 저장소를 찾지 않고 현재 프로젝트 파일을 직접 읽는다.
-- **성공 후 커밋** (`workflows/post-success-commit.ts`): core 단계가 끝까지 성공한 경우에만
-  `checking-docs-before-commit → atomic-commit`을 백그라운드에서 실행한다. 두 run은 spec
-  children에 포함하지 않으며 review 통과로 확정된 spec 상태를 바꾸지 않는다. `lib/skill-loader.ts`가
+- **성공 후 커밋** (`workflows/post-success-commit.ts`): 일반 workflow는 core 단계가 끝까지 성공한
+  경우 `checking-docs-before-commit → atomic-commit`을 백그라운드에서 실행한다. Plane issue workflow는
+  두 단계를 기다리고 같은 workflow run의 child로 기록하며, 후처리가 실패하면 사람 확인 상태로 보낸다.
+  그 외 기존 workflow에서 두 run은 spec children에 포함하지 않으며 review 통과로 확정된 spec 상태를 바꾸지 않는다. `lib/skill-loader.ts`가
   `AUTO_DEV_SKILLS_ROOT`, `~/.codex/skills`, `~/.claude/skills` 순으로 실제 전역
   `SKILL.md`를 읽어 provider와 무관하게 프롬프트에 주입한다. docs 단계는 `[DOCS: READY]`,
   commit 단계는 `[COMMIT: DONE]` 또는 `[COMMIT: NO-CHANGES]` 계약을 충족해야 한다.
@@ -653,8 +654,22 @@ test 에이전트도 `Bash` 를 가지므로 프로덕션 소스를 바꾸는 �
   피드백으로 planner에 되돌리고, route 예산이 끝나면 `reproduction_failed`로 실패한다.
   통과해야 Phase 1 verify, Phase 3 runtime gate, review로 넘어간다. 내부 REPRO 마커의
   파서·test 프롬프트·테스트는 같은 변경 단위로 관리한다.
-- 버그 이슈에는 `agent_name='spec'` 부모 run을 만들어 사전 재현 테스트와 명령 결과를
-  대시보드 상세의 자식 실행으로 연결한다. 일반 이슈 경로는 기존 흐름을 유지한다.
+- 이슈마다 `agent_name='spec'` 부모 run을 만들어 사전 재현과 하위 단계 실행을 대시보드 상세에 연결한다.
+
+### 6.2.3a Plane 이슈 자동화
+
+- `src/integrations/issue-tracker/plane.ts`는 self-hosted Plane v2 API의 cursor 페이지 조회, 이슈 조회,
+  상태 PATCH, idempotent comment upsert를 구현한다. 서비스 API key는 서버 요청에만 사용한다.
+- 4개 상태 ID가 Plane 프로젝트 states endpoint에서 검증되어야 하며 AI 대기 state는 `triage` 그룹일 수 없다.
+  잘못된 설정, 인증 실패, API 오류는 실행을 막고 서버 로그에 남긴다.
+- `plane-issues.ts`는 주기적으로 AI 대기 이슈를 찾는다. 직접 API 실행도 같은 SQLite lease를 사용해 polling과
+  중복되지 않는다. 기본 동시 실행 수는 2다.
+- 이슈별 `data/worktrees/issues/<runId>`와 `autodev/issue/<key>-<runId8>` 브랜치에서 작업한다. 성공은 기존
+  docs/atomic-commit 후처리까지 마친 뒤 push하고, 실패·검증 재시도 한도 소진은 WIP로 push해 사람 확인 상태로 보낸다.
+  테스트·verify 실패에는 planner 수정 기회를 두 번 준다.
+- 단계 결과·결정 출력·Git HEAD/변경 경로를 Plane 댓글로 upsert한다. 원격에서 정확한 push SHA를 확인한 뒤에만
+  local worktree와 branch를 정리한다. push 실패는 `DELIVERY_PENDING` lease를 유지하고 polling 주기에 재시도한다.
+- 실행 API POST는 설정한 `AUTO_DEV_API_TOKEN` Bearer 인증을 요구한다. loopback 밖에 bind할 때 토큰 설정은 필수다.
 
 ### 6.2.4 review findings와 학습 후보
 
@@ -824,10 +839,27 @@ CREATE TABLE workflow_checkpoint (
   heartbeat_at TEXT,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE issue_execution (
+  id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, provider_issue_id TEXT,
+  trigger_source TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('RUNNING','DELIVERY_PENDING','STATE_UPDATE_PENDING','DONE','HUMAN_REVIEW','FAILED')),
+  lease_token TEXT,
+  lease_expires_at TEXT, heartbeat_at TEXT, source_dir TEXT NOT NULL,
+  worktree_path TEXT, remote TEXT, branch_name TEXT, base_branch TEXT, base_sha TEXT,
+  commit_sha TEXT, target_status TEXT, attempt_count INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE UNIQUE INDEX idx_issue_execution_active_key ON issue_execution(issue_key)
+  WHERE status IN ('RUNNING', 'DELIVERY_PENDING', 'STATE_UPDATE_PENDING');
 ```
 
 체크포인트는 opt-in한 dashboard spec의 직렬화 상태와 fencing revision, lease를 저장한다.
 부모 `agent_run`과 체크포인트의 종료 상태는 한 SQLite transaction으로 함께 기록한다.
+`issue_execution`은 polling과 직접 API 요청이 공유하는 이슈별 lease, 동시 실행 상한,
+worktree/Git 전달 상태를 저장한다. Git push가 실패하면 `DELIVERY_PENDING`으로 잠금을 유지하고
+스케줄러가 재시도한다. 실행 lease가 만료되면 이슈를 사람 확인 상태로 보내고 worktree를 보존한다.
 
 Java 버전 대비 제거된 컬럼:
 - `cost_usd` — 구독 플랜이므로 per-call 비용 없음
@@ -841,6 +873,7 @@ Java 버전의 multi-lens JSON dedup 파싱은 별도로 구현하지 않는다.
 data/
 ├── auto-dev.db          # SQLite (gitignore)
 ├── workspace/           # 에이전트 cwd (gitignore)
+├── worktrees/issues/    # Plane 이슈별 Git worktree (gitignore)
 └── evidence/            # runtime 관찰 결과 (gitignore), workflow id별 evidence.json
 
 <project>/docs/plan/<slug>.md   # spec 세션마다 누적 기록: 원본 스펙 + 의사결정 + 플랜
@@ -903,8 +936,19 @@ data/
 | `GET` | `/api/stats` | 집계 통계 (total, today, byStatus, byAgent) |
 | `GET`/`POST` | `/api/config` | 모델/effort/fallback/에이전트별 모델·effort 조회·변경 + 워크스페이스/프로젝트 목록. POST 변경은 런타임 설정 JSON에 저장 |
 | `GET` | `/api/issues` | issue-tracker 열린 이슈 조회 |
-| `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거 |
+| `POST` | `/api/issues/:key/run` | 이슈 1건 자동 처리 워크플로우 트리거; polling과 같은 SQLite 실행 잠금을 사용 |
 | 외부 연동 | `POST /automation/jobs` 등 | issue-tracker automation job 생성·claim·heartbeat·review |
+
+실행 API (`/api/specs`, `/api/agents/*`, `/api/submit`, 이슈 run 및 run 재개/취소 POST)는
+`AUTO_DEV_API_TOKEN`이 설정되면 모두 `Authorization: Bearer ...`를 요구한다. loopback 외 주소에
+바인딩하면 토큰 설정이 필수이며, 없으면 실행 요청을 `503`으로 거부한다. 조회 API는 이 토큰
+검사를 적용하지 않는다.
+
+Plane 이슈는 `.env`의 상태 ID를 검증한 뒤 AI 대기 상태만 실행한다. 이슈별 `origin` worktree와
+`autodev/issue/<key>-<runId8>` 브랜치를 사용하고, 단계별 결과·근거·Git HEAD/변경 경로를 Plane 댓글로
+upsert한다. 성공 실행은 기존 docs 점검과 atomic commit 단계를 기다린 뒤 push하고, 실패는 WIP 커밋을
+push해 사람 확인 상태로 옮긴다. push SHA가 원격에 기록된 것을 확인한 뒤에만 로컬 worktree와
+브랜치를 정리한다. Plane API 키는 서버 환경변수에서만 읽는다.
 
 ### 8.3 스케줄러 (node-cron)
 
@@ -917,6 +961,8 @@ cron.schedule('0 9 * * *', async () => {
 
 - `AUTO_DEV_WORKLOG_BRIEFING_ENABLED=true` 설정 시 활성 (기본 비활성)
 - 크론 표현식: `AUTO_DEV_WORKLOG_BRIEFING_CRON` (기본 `0 9 * * *`)
+- Plane 선택 시 `plane-issues.ts`가 `AUTO_DEV_PLANE_POLL_CRON` (기본 `*/2 * * * *`)으로 AI 대기 이슈를 조회한다. API 직접 실행도 같은 `issue_execution` lease와 기본 동시성 2를 쓴다.
+- push 대기 브랜치와 만료 lease를 주기적으로 복구한다. push 실패는 1분 뒤 재시도하고, lease가 만료된 실행은 worktree 보존 후 사람 확인으로 전환한다.
 - 모델 카탈로그는 서버 시작 시 조회하고 매주 일요일 9시에 `Asia/Seoul` 기준으로 갱신한다. provider별 조회 실패는 해당 provider의 이전 목록을 보존하며, 신뢰 가능한 최신 목록에 없는 모델과 호환되지 않는 저장 선택은 정리한다.
 
 ---
@@ -1117,6 +1163,19 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | `AUTO_DEV_CIRCUIT_BREAKER_FALLBACK_MS` | `300000` | rate-limit reset 미제공 시 회로 open 쿨다운(ms) |
 | `AUTO_DEV_ISSUE_TRACKER_URL` | (없음) | issue-tracker 베이스 URL — 설정 시 연동 활성 |
 | `AUTO_DEV_ISSUE_TRACKER_STATUS` | `OPEN` | 조회할 이슈 상태 필터 |
+| `AUTO_DEV_ISSUE_TRACKER` | 자동 감지 | `noop`, `http`, `plane`; Plane 설정이 있으면 자동 선택 |
+| `AUTO_DEV_PLANE_BASE_URL` | 미설정 | 자체 호스팅 Plane base URL (API path/credentials 제외) |
+| `AUTO_DEV_PLANE_WORKSPACE_SLUG` | 미설정 | Plane workspace slug |
+| `AUTO_DEV_PLANE_PROJECT_ID` | 미설정 | 연결한 단일 Plane project UUID |
+| `AUTO_DEV_PLANE_API_KEY` | 미설정 | 서버 전용 Plane 서비스 계정 API key |
+| `AUTO_DEV_PLANE_AI_WAIT_STATE_ID` | 미설정 | 실행 trigger 상태 ID; `triage` 그룹 불가 |
+| `AUTO_DEV_PLANE_IN_PROGRESS_STATE_ID` | 미설정 | 실행 중 상태 ID |
+| `AUTO_DEV_PLANE_DONE_STATE_ID` | 미설정 | 성공 완료 상태 ID |
+| `AUTO_DEV_PLANE_HUMAN_REVIEW_STATE_ID` | 미설정 | 실패·중단 시 사람 확인 상태 ID |
+| `AUTO_DEV_PLANE_POLL_CRON` | `*/2 * * * *` | AI 대기 상태 polling cron |
+| `AUTO_DEV_PLANE_MAX_CONCURRENCY` | `2` | polling/direct API 합산 동시 이슈 실행 수 (1–4) |
+| `AUTO_DEV_PLANE_WORKTREE_ROOT` | `./data/worktrees/issues` | 이슈별 Git worktree 경로 |
+| `AUTO_DEV_API_TOKEN` | 미설정 | 실행 API Bearer 인증; non-loopback bind에 필수 |
 | `AUTO_DEV_WORKLOG_BRIEFING_ENABLED` | `false` | 일일 브리핑 스케줄러 활성 |
 | `AUTO_DEV_WORKLOG_BRIEFING_CRON` | `0 9 * * *` | 브리핑 크론 표현식 |
 | `AUTO_DEV_WORKLOG_PATH` | `./data/worklog.md` | 워크로그 파일 경로 |
@@ -1142,7 +1201,7 @@ Java 버전에서 직접 구현했던 아래 항목들을 SDK 가 처리:
 | | `protect.globs` | 기본 보호 경로에 추가할 경로 glob |
 | | `workflow.resumeOnRestart` | dashboard spec 재시작 복구 opt-in. 시작 시 깨끗한 Git 작업 트리 필요 |
 | | `delivery.mode` | `local` (기본) 또는 `pull-request`; PR은 자동 checkpoint/worktree 사용 |
-| | `delivery.baseBranch` | PR base branch. 생략하면 GitHub 저장소 기본 브랜치 |
+| | `delivery.baseBranch` | PR base branch 및 Plane issue worktree 기준 branch. 생략하면 origin HEAD |
 | | `delivery.autoMerge.enabled` | PR 자격 평가 opt-in. `requestMerge`가 없으면 GitHub 요청을 보내지 않음 |
 | | `delivery.autoMerge.requestMerge` | GitHub `--auto` 요청에 대한 별도 프로젝트 opt-in. `enabled`도 true여야 함 |
 | `data/config.json` | `autoMergeEnabled` | 대시보드의 서버 전역 kill switch. 기본 false |
@@ -1224,7 +1283,7 @@ auto-dev-ts/
 │   │   ├── clarification.ts          # slug · Q&A 합성 · plan 문서 렌더 (순수 함수)
 │   │   └── from-issue.ts             # 이슈 1건 → 워크플로우 트리거
 │   ├── integrations/
-│   │   └── issue-tracker/            # 이슈·automation job 클라이언트 (+ Noop 폴백)
+│   │   └── issue-tracker/            # Noop/HTTP/Plane v2 이슈 + automation job 클라이언트
 │   ├── llm/                          # LLM 프로바이더 seam (§4.2)
 │   │   ├── types.ts                  # AgentRunner / Completer / ModelCatalog 인터페이스
 │   │   ├── registry.ts               # AUTO_DEV_PROVIDER 기반 활성 프로바이더 선택
@@ -1237,6 +1296,7 @@ auto-dev-ts/
 │   │   ├── schema.sql                # DDL (IF NOT EXISTS)
 │   │   ├── db.ts                     # better-sqlite3 싱글턴 + WAL pragma
 │   │   ├── runs.ts                   # insertRun / updateRun / getRun / getStats
+│   │   ├── issue-executions.ts       # 이슈 실행 lease, 동시성 상한, Git 전달 재시도
 │   │   └── clarification.ts          # clarification_state 저장·조회 (재개용)
 │   ├── lib/
 │   │   ├── chat.ts                   # 채팅 검증·프롬프트·장기 기억 압축
@@ -1252,6 +1312,7 @@ auto-dev-ts/
 │   │   ├── project-config.ts         # .auto-dev/project.json 로드·검증 (§6.2)
 │   │   ├── test-integrity.ts         # 보호 경로·테스트 약화·JUnit 기준선 검사 (§6.2.1)
 │   │   ├── pr-delivery.ts            # run 전용 PR worktree와 idempotent 전달 (§6.2.7)
+│   │   ├── issue-worktree.ts         # Plane 이슈 브랜치/worktree 생성·push 검증·정리
 │   │   ├── evidence.ts               # workflow runtime 증거 파일 읽기·쓰기 (§6.2.2)
 │   │   ├── verify.ts                 # 검증 명령 실행 + 프로세스 그룹 정리 (§6.2.1)
 │   │   ├── role-boundary.ts          # test 단계 역할 경계 사후 검사 (§6.2.1)
@@ -1262,13 +1323,15 @@ auto-dev-ts/
 │   │   └── routes.ts                 # HTTP API 엔드포인트 (§8.2)
 │   └── schedule/
 │       ├── briefing.ts               # node-cron 일일 브리핑
-│       └── model-refresh.ts          # node-cron 주간 모델 카탈로그 갱신
+│       ├── model-refresh.ts          # node-cron 주간 모델 카탈로그 갱신
+│       └── plane-issues.ts           # Plane AI 대기 이슈 polling 및 Git 전달 복구
 └── data/                             # gitignore
     ├── auto-dev.db
-    └── workspace/
+    ├── workspace/
+    └── worktrees/issues/             # Plane 이슈별 checkout
 ```
 
-대략 **TypeScript 73 파일(테스트 제외) / HTML 1 파일 / 프롬프트 14 파일**.
+대략 **TypeScript 88 파일(테스트 제외) / HTML 1 파일 / 프롬프트 14 파일**.
 
 ---
 
