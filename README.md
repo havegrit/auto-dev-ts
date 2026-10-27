@@ -316,7 +316,7 @@ Start from [`docs/templates/feature-map.md`](docs/templates/feature-map.md).
 - Browser OAuth login for Claude Code, including fallback-model retry and normalized failure states
 - Live run history and status updates with elapsed time, token usage, Markdown output, and cancellation
 - Clarifier answers, follow-up instructions, and resume-from-step actions without re-entering the spec
-- Stage-based agent/workflow submission with project, model, effort, and repair-limit settings
+- Request submission defaults to the full workflow, with an optional project; stage selection, advanced options, and reference files are in expandable sections
 - Spec submission with text and multiple reference-context files together (any extension; 2 MB per file, 10 MB total; binaries are passed by path)
 - Workflow details, per-agent navigation, failure reasons, and token breakdowns
 - Runtime verification evidence, including healthcheck responses, check output, and verifier report

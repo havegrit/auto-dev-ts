@@ -48,8 +48,25 @@
     /* Submit panel */
     .submit-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
     .submit-card h2 { font-size: 0.85rem; font-weight: 600; color: #e6edf3; margin-bottom: 1rem; }
+    .request-description { color: #8b949e; font-size: 0.78rem; line-height: 1.45; margin: -0.55rem 0 1rem; }
+    .request-input-label { display: block; color: #c9d1d9; font-size: 0.8rem; margin-bottom: 0.4rem; }
+    .request-summary-meta { color: #8b949e; font-size: 0.74rem; font-weight: 400; margin-left: 0.55rem; }
+    .request-disclosure { border-top: 1px solid #30363d; margin-top: 0.75rem; padding-top: 0.75rem; }
+    .request-disclosure summary { color: #c9d1d9; cursor: pointer; font-size: 0.82rem; font-weight: 600; }
+    .request-disclosure summary:hover { color: #79c0ff; }
+    .request-disclosure-body { padding-top: 0.8rem; }
+    .request-help { color: #8b949e; font-size: 0.74rem; line-height: 1.45; margin: -0.25rem 0 0.75rem; }
+    .request-option-label .request-help { display: block; margin: 0.2rem 0 0; }
+    .request-disclosure-body .form-row > .request-help { margin: 0; }
+    .request-option-label { display: flex; align-items: flex-start; gap: 0.5rem; color: #c9d1d9; font-size: 0.8rem; white-space: normal; }
+    .request-option-label input { flex: 0 0 auto; width: auto; margin: 0.15rem 0 0; }
+    .request-warning { color: #d29922; }
+    .attachment-disclosure .attachment-panel { margin-top: 0.75rem; }
+    .attachment-disclosure .drop-zone { padding: 1.25rem; }
     .form-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; align-items: center; flex-wrap: wrap; }
     .form-row label { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
+    .form-row label.request-option-label { color: #c9d1d9; white-space: normal; }
+    .form-row label.request-option-label.request-warning { color: #d29922; }
     .workflow-step-row { align-items: flex-start; }
     .workflow-step-config { flex: 1; min-width: 0; }
     .workflow-step-picker { display: flex; flex-wrap: wrap; gap: 0.45rem; }
@@ -173,11 +190,19 @@
     .sub-run-row .agent-name { font-size: 0.78rem; }
 
     /* Config panel */
-    .config-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; position: relative; }
-    .config-card h2 { font-size: 0.85rem; font-weight: 600; color: #e6edf3; margin-bottom: 1rem; }
+    .config-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 0.75rem; position: relative; }
+    .config-card h2 { font-size: 0.85rem; font-weight: 600; color: #e6edf3; margin-bottom: 0.5rem; }
+    .config-description { color: #8b949e; font-size: 0.78rem; line-height: 1.45; margin-bottom: 1rem; }
     .config-row { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
     .config-group { display: flex; flex-direction: column; gap: 0.4rem; flex: 1; min-width: 200px; }
     .config-group label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+    .config-disclosure { border-top: 1px solid #30363d; margin-top: 1rem; padding-top: 0.85rem; }
+    .config-disclosure summary { color: #c9d1d9; cursor: pointer; font-size: 0.82rem; font-weight: 600; }
+    .config-disclosure summary:hover { color: #79c0ff; }
+    .config-disclosure-count { display: inline-block; margin-left: 0.55rem; color: #8b949e; font-size: 0.74rem; font-weight: 400; }
+    .config-disclosure-content { display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.85rem; }
+    .config-help { color: #8b949e; font-size: 0.74rem; line-height: 1.45; }
+    .agent-model-help { margin-top: 0.7rem; }
     .agent-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
     .agent-model-row { display: flex; flex-direction: column; gap: 0.35rem; }
     .agent-model-row label { font-size: 0.72rem; color: #8b949e; font-family: monospace; }
@@ -197,6 +222,14 @@
     }
     .save-btn:hover { background: #2ea043; }
     .save-status { position: absolute; top: 1.25rem; right: 1.25rem; font-size: 0.75rem; color: #3fb950; white-space: nowrap; }
+    .settings-safety-card { border-color: #3d444d; }
+    .settings-toggle { display: flex; align-items: flex-start; gap: 0.55rem; color: #e6edf3; font-size: 0.82rem; cursor: pointer; }
+    .settings-toggle input { flex: 0 0 auto; margin-top: 0.15rem; }
+    .settings-gate-note { display: block; margin: 0.55rem 0 0 1.45rem; }
+    .settings-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0 0 1.5rem; }
+    .settings-actions .save-btn { align-self: auto; }
+    .settings-actions .save-status { position: static; }
+    .settings-actions .config-help { margin-left: auto; }
     body.auth-modal-open { overflow: hidden; }
     .auth-modal-backdrop {
       position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
@@ -314,48 +347,67 @@
     </div>
   </div>
 
-  <!-- 모델 & Effort 설정 -->
-  <div class="config-card">
-    <h2>모델 설정</h2>
-    <div class="config-row">
-      <div class="config-group">
-        <label>모델</label>
-        <select id="model-select"></select>
+  <!-- 실행 설정 -->
+  <section aria-label="실행 설정">
+    <div class="config-card">
+      <h2>기본 실행 설정</h2>
+      <p class="config-description">전체 실행에 적용됩니다. 특정 에이전트만 바꾸려면 아래 재정의를 설정하세요.</p>
+      <div class="config-row">
+        <div class="config-group">
+          <label for="model-select">기본 모델</label>
+          <select id="model-select"></select>
+        </div>
+        <div class="config-group">
+          <label>기본 effort</label>
+          <div class="effort-btns" id="effort-btns"></div>
+        </div>
       </div>
-      <div class="config-group">
-        <label>Fallback 모델</label>
-        <select id="fallback-model-select"></select>
-      </div>
-      <div class="config-group">
-        <label>Effort</label>
-        <div class="effort-btns" id="effort-btns"></div>
-      </div>
-      <div class="config-group" style="min-width:260px">
-        <label>자동 머지 비상 스위치</label>
-        <label style="display:flex;align-items:center;gap:0.5rem;text-transform:none;letter-spacing:0;color:#e6edf3">
-          <input type="checkbox" id="global-auto-merge-enabled" /> 서버 허용 저장소에 자동 머지 요청 허용
-        </label>
-        <small id="auto-merge-gate-note" style="color:#8b949e">환경 허용, 저장소 allowlist, 프로젝트 설정이 모두 필요합니다.</small>
-      </div>
-      <button class="save-btn" onclick="saveConfig()">저장</button>
-      <span class="save-status" id="save-status"></span>
+
+      <details class="config-disclosure">
+        <summary>폴백 모델 <span class="config-disclosure-count" id="fallback-model-summary">자동 선택</span></summary>
+        <div class="config-disclosure-content">
+          <div class="config-group">
+            <label for="fallback-model-select">기본 모델을 사용할 수 없을 때 사용할 모델</label>
+            <select id="fallback-model-select"></select>
+          </div>
+          <small class="config-help">자동 선택을 유지하면 사용 가능한 모델이 선택됩니다.</small>
+        </div>
+      </details>
+
+      <details class="config-disclosure">
+        <summary>에이전트별 재정의 <span class="config-disclosure-count" id="agent-override-count">기본 설정 사용</span></summary>
+        <p class="config-help agent-model-help">값을 선택한 에이전트만 기본 모델 또는 effort 대신 별도 설정을 사용합니다.</p>
+        <div class="agent-model-grid" id="agent-model-grid"></div>
+      </details>
     </div>
-    <div class="agent-model-grid" id="agent-model-grid"></div>
-  </div>
+
+    <div class="config-card settings-safety-card">
+      <h2>자동화 및 안전</h2>
+      <p class="config-description">전역 자동 머지 허용 스위치입니다. 환경, 저장소, 프로젝트 설정이 모두 허용해야 실제 요청이 실행됩니다.</p>
+      <label class="settings-toggle">
+        <input type="checkbox" id="global-auto-merge-enabled" />
+        <span>허용된 저장소에서 자동 머지 요청 허용</span>
+      </label>
+      <small class="config-help settings-gate-note" id="auto-merge-gate-note">환경 허용, 저장소 allowlist, 프로젝트 설정이 모두 필요합니다.</small>
+    </div>
+
+    <div class="settings-actions">
+      <button class="save-btn" onclick="saveConfig()">설정 저장</button>
+      <span class="save-status" id="save-status" role="status" aria-live="polite"></span>
+      <small class="config-help">기본 설정과 고급 설정을 함께 저장합니다.</small>
+    </div>
+  </section>
 
   <!-- 새 요청 실행 -->
   <div class="submit-card">
     <h2>새 요청 실행</h2>
+    <p class="request-description">요청 내용을 적고 실행하세요. 단계나 추가 동작은 필요할 때만 펼치면 됩니다.</p>
 
-    <div class="form-row workflow-step-row" id="workflow-step-row">
-      <label>에이전트</label>
-      <div class="workflow-step-config">
-        <div class="workflow-step-picker" id="workflow-step-picker"></div>
-      </div>
-    </div>
+    <label class="request-input-label" for="text-input">요청 내용</label>
+    <textarea id="text-input" placeholder="무엇을 만들거나 고칠까요? 요청, 완료 기준, 제약을 적어주세요..."></textarea>
 
     <div class="form-row">
-      <label>프로젝트명</label>
+      <label for="project-input">프로젝트 <span style="color:#6e7681">(선택)</span></label>
       <div class="combobox" id="project-combobox">
         <input type="text" id="project-input" autocomplete="off" placeholder="프로젝트명 (비우면 워크스페이스 루트)" style="font-family:monospace;font-size:0.82rem" />
         <button type="button" class="combobox-toggle" id="project-toggle" aria-label="프로젝트 목록 열기">▼</button>
@@ -364,57 +416,75 @@
       <span id="workspace-hint" style="color:#8b949e;font-size:0.72rem;white-space:nowrap"></span>
     </div>
 
-    <div class="form-row" id="auto-clarify-row">
-      <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;color:#c9d1d9;font-size:0.82rem;white-space:normal">
-        <input type="checkbox" id="auto-clarify" onchange="toggleAutoClarifyRow()" style="flex:0 0 auto;width:auto;margin:0" />
-        구체화 자동 진행 — clarifier 질문을 AI 추천 답안으로 자동 채워 멈추지 않고 진행 (전체 워크플로우 전용)
-      </label>
-    </div>
-
-    <div class="form-row" id="auto-clarify-limit-row" style="display:none">
-      <label for="auto-clarify-limit">자동 구체화 최대 라운드</label>
-      <input type="number" id="auto-clarify-limit" min="0" step="1" value="0" style="max-width:8rem;font-family:monospace" />
-      <span style="color:#d29922;font-size:0.74rem">0 = 무제한 (모델이 계속 질문하면 비용과 시간이 계속 증가)</span>
-    </div>
-
-    <div class="form-row" id="route-limit-row">
-      <label for="route-limit">재작업 최대 횟수</label>
-      <input type="number" id="route-limit" min="0" max="10" step="1" value="4" style="max-width:8rem;font-family:monospace" />
-      <span style="color:#8b949e;font-size:0.74rem">review/test가 수정 요청 시 planner/clarifier로 돌아가는 횟수 (기본 4, 최대 10)</span>
-    </div>
-
-    <div class="form-row" id="allow-test-regression-row" style="display:none">
-      <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;color:#d29922;font-size:0.82rem;white-space:normal">
-        <input type="checkbox" id="allow-test-regression" style="flex:0 0 auto;width:auto;margin:0" />
-        테스트 수 감소 허용 — 의도된 경우에만 사용하며 보호 경로 검사는 유지됩니다. run과 PR 본문에 기록됩니다.
-      </label>
-    </div>
-
-    <div class="form-row" id="delivery-intent-row">
-      <label class="intent-row">
-        <input type="checkbox" id="include-cd" style="flex:0 0 auto;width:auto;margin:0" />
-        배포 포함(CD) — 배포/릴리스 파일까지 생성
-      </label>
-    </div>
-
-    <textarea id="text-input" placeholder="스펙 또는 요청 내용을 입력하세요..."></textarea>
-
-    <div class="attachment-panel">
-      <div style="color:#8b949e;font-size:0.78rem;margin-bottom:0.45rem">참고 context 파일 (선택)</div>
-      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
-           ondragover="event.preventDefault();this.classList.add('drag-over')"
-           ondragleave="this.classList.remove('drag-over')"
-           ondrop="handleDrop(event)">
-        파일을 끌어다 놓거나 클릭해서 추가<br>
-        <small style="color:#484f58">(모든 확장자, 파일당 최대 2 MB / 총 10 MB)</small>
+    <details class="request-disclosure">
+      <summary>실행 단계 <span class="request-summary-meta" id="workflow-summary">전체 워크플로우</span></summary>
+      <div class="request-disclosure-body">
+        <div class="form-row workflow-step-row" id="workflow-step-row">
+          <label>실행 단계</label>
+          <div class="workflow-step-config">
+            <div class="workflow-step-picker" id="workflow-step-picker"></div>
+          </div>
+        </div>
+        <p class="request-help">전체 워크플로우가 기본 선택입니다. 칩을 끄면 선택한 단계만 실행합니다.</p>
       </div>
-      <input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(this)" />
-      <div class="file-name" id="file-name"></div>
-    </div>
+    </details>
+
+    <details class="request-disclosure">
+      <summary>고급 옵션 <span class="request-summary-meta" id="advanced-options-summary">기본값</span></summary>
+      <div class="request-disclosure-body">
+        <div class="form-row" id="auto-clarify-row">
+          <label class="request-option-label">
+            <input type="checkbox" id="auto-clarify" onchange="toggleAutoClarifyRow()" />
+            <span>질문 자동 구체화 <small class="request-help">AI 추천 답안으로 질문에 응답해 전체 워크플로우를 멈추지 않고 진행합니다.</small></span>
+          </label>
+        </div>
+
+        <div class="form-row" id="auto-clarify-limit-row" style="display:none">
+          <label for="auto-clarify-limit">최대 질문 라운드</label>
+          <input type="number" id="auto-clarify-limit" min="0" step="1" value="0" style="max-width:8rem;font-family:monospace" />
+          <span class="request-help request-warning">0은 무제한이며 비용과 시간이 늘 수 있습니다.</span>
+        </div>
+
+        <div class="form-row" id="route-limit-row">
+          <label for="route-limit">최대 재작업 횟수</label>
+          <input type="number" id="route-limit" min="0" max="10" step="1" value="4" style="max-width:8rem;font-family:monospace" />
+          <span class="request-help">리뷰·테스트 수정 요청 후 다시 시도하는 횟수. 기본 4회, 최대 10회.</span>
+        </div>
+
+        <div class="form-row" id="allow-test-regression-row" style="display:none">
+          <label class="request-option-label request-warning">
+            <input type="checkbox" id="allow-test-regression" />
+            <span>테스트 수 감소 허용 <small class="request-help">의도된 경우에만 사용합니다. 보호 경로 검사는 유지되며 run과 PR 본문에 기록됩니다.</small></span>
+          </label>
+        </div>
+
+        <div class="form-row" id="delivery-intent-row">
+          <label class="request-option-label">
+            <input type="checkbox" id="include-cd" />
+            <span>배포 파일 포함 <small class="request-help">배포와 릴리스 설정까지 생성합니다.</small></span>
+          </label>
+        </div>
+      </div>
+    </details>
+
+    <details class="request-disclosure attachment-disclosure" id="request-files">
+      <summary>참고 파일 <span class="request-summary-meta" id="attachment-summary">선택 안 됨</span></summary>
+      <div class="attachment-panel">
+        <div style="color:#8b949e;font-size:0.78rem;margin-bottom:0.45rem">선택 사항 · 파일당 최대 2 MB, 전체 최대 10 MB</div>
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
+             ondragover="event.preventDefault();this.classList.add('drag-over')"
+             ondragleave="this.classList.remove('drag-over')"
+             ondrop="handleDrop(event)">
+          파일을 끌어다 놓거나 클릭해서 추가
+        </div>
+        <input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(this)" />
+        <div class="file-name" id="file-name"></div>
+      </div>
+    </details>
 
     <div class="request-actions">
       <button class="run-btn" id="run-btn" onclick="submitRequest()">실행</button>
-      <button class="reset-btn" type="button" onclick="resetRequestInput()">초기화</button>
+      <button class="reset-btn" type="button" onclick="resetRequestInput()">입력 지우기</button>
     </div>
 
     <!-- 결과 패널 -->
@@ -721,6 +791,7 @@
       document.getElementById('file-input').value = '';
       document.getElementById('file-name').textContent = '';
       document.getElementById('drop-zone').innerHTML = '파일을 끌어다 놓거나 클릭해서 추가<br><small style="color:#484f58">(모든 확장자, 파일당 최대 2 MB / 총 10 MB)</small>';
+      updateAttachmentSummary();
       saveRequestDraft();
     }
 
@@ -995,6 +1066,7 @@
       const sel = document.getElementById('model-select');
       sel.innerHTML = modelOptions(cfg.model);
       document.getElementById('fallback-model-select').innerHTML = modelOptions(cfg.fallbackModel, { includeEmpty: true, emptyLabel: '자동 선택' });
+      updateFallbackSummary();
       renderAgentModelSelectors(cfg.agentModels ?? {}, cfg.agentEfforts ?? {});
 
       // effort 버튼 구성 (선택된 모델 기준)
@@ -1021,6 +1093,13 @@
           effortSelect.disabled = !spec?.effortLevels.length;
         });
       };
+      document.getElementById('fallback-model-select').onchange = updateFallbackSummary;
+    }
+
+    function updateFallbackSummary() {
+      const select = document.getElementById('fallback-model-select');
+      const selectedModel = availableModels.find(modelSpec => modelSpec.id === select.value);
+      document.getElementById('fallback-model-summary').textContent = selectedModel?.displayName ?? '자동 선택';
     }
 
     function modelOptions(selected, opts = {}) {
@@ -1059,7 +1138,7 @@
             <label>${agent}</label>
             <div class="agent-model-controls">
               <select data-agent-model="${agent}" aria-label="${agent} 모델">
-                ${modelOptions(agentModels[agent], { includeEmpty: true, emptyLabel: '전역/폴백 자동' })}
+                ${modelOptions(agentModels[agent], { includeEmpty: true, emptyLabel: '기본 설정 사용' })}
               </select>
               <select data-agent-effort="${agent}" aria-label="${agent} effort" ${availableModels.find(m => m.id === agentEffortModelId(agent, agentModels[agent]))?.effortLevels.length ? '' : 'disabled'}>
                 ${agentEffortOptions(agentEffortModelId(agent, agentModels[agent]), agentEfforts[agent])}
@@ -1077,8 +1156,25 @@
           const spec = availableModels.find(m => m.id === effortModelId);
           effortSelect.innerHTML = agentEffortOptions(effortModelId, priorEffort);
           effortSelect.disabled = !spec?.effortLevels.length;
+          updateAgentOverrideCount();
         });
       });
+
+      grid.querySelectorAll('[data-agent-effort]').forEach(effortSelect => {
+        effortSelect.addEventListener('change', updateAgentOverrideCount);
+      });
+      updateAgentOverrideCount();
+    }
+
+    function updateAgentOverrideCount() {
+      const overriddenAgents = new Set();
+      document.querySelectorAll('[data-agent-model], [data-agent-effort]').forEach(select => {
+        if (select.value) overriddenAgents.add(select.dataset.agentModel ?? select.dataset.agentEffort);
+      });
+      const count = overriddenAgents.size;
+      document.getElementById('agent-override-count').textContent = count === 0
+        ? '기본 설정 사용'
+        : `${count}개 에이전트 재정의`;
     }
 
     function renderEffortBtns(modelId, activeEffort) {
@@ -1140,17 +1236,8 @@
       }
     }
 
-    // 구체화 자동 진행 옵션은 spec(전체 워크플로우)일 때만 노출한다.
+    // 실행 단계에 맞는 세부 옵션만 표시한다.
     function toggleAutoClarifyRow() {
-      const isSpec = selectedAgent() === 'spec';
-      const stepRow = document.getElementById('workflow-step-row');
-      const autoClarify = document.getElementById('auto-clarify').checked;
-      document.getElementById('auto-clarify-row').style.display = isSpec ? '' : 'none';
-      document.getElementById('auto-clarify-limit-row').style.display = isSpec && autoClarify ? '' : 'none';
-      document.getElementById('route-limit-row').style.display = isSpec ? '' : 'none';
-      document.getElementById('allow-test-regression-row').style.display = isSpec ? '' : 'none';
-      document.getElementById('delivery-intent-row').style.display = (isSpec || selectedAgent() === 'cicd') ? '' : 'none';
-      stepRow.style.display = '';
       renderWorkflowStepPicker();
     }
 
@@ -1172,11 +1259,64 @@
           <span class="step-dot"></span>${WORKFLOW_STEP_LABELS[step]}
         </button>`;
       }).join('');
+      const agent = selectedAgent();
+      const isSpec = agent === 'spec';
       const clarifyEnabled = selectedWorkflowSteps.has('clarifier');
       const autoClarifyEl = document.getElementById('auto-clarify');
-      autoClarifyEl.disabled = !clarifyEnabled;
-      if (!clarifyEnabled) autoClarifyEl.checked = false;
-      document.getElementById('auto-clarify-limit-row').style.display = clarifyEnabled && autoClarifyEl.checked ? '' : 'none';
+      autoClarifyEl.disabled = !isSpec || !clarifyEnabled;
+      if (!isSpec || !clarifyEnabled) autoClarifyEl.checked = false;
+      document.getElementById('auto-clarify-row').style.display = isSpec ? '' : 'none';
+      document.getElementById('auto-clarify-limit-row').style.display = isSpec && clarifyEnabled && autoClarifyEl.checked ? '' : 'none';
+      document.getElementById('route-limit-row').style.display = isSpec ? '' : 'none';
+      document.getElementById('allow-test-regression-row').style.display = isSpec ? '' : 'none';
+      document.getElementById('delivery-intent-row').style.display = (isSpec || agent === 'cicd') ? '' : 'none';
+      if (!isSpec && agent !== 'cicd') document.getElementById('include-cd').checked = false;
+      updateWorkflowSummary();
+      updateAdvancedOptionsSummary();
+    }
+
+    function updateWorkflowSummary() {
+      const summary = document.getElementById('workflow-summary');
+      if (!summary) return;
+      const selected = [...selectedWorkflowSteps];
+      if (selected.length === WORKFLOW_STEPS.length) {
+        summary.textContent = '전체 워크플로우';
+      } else if (selected.length === 1) {
+        summary.textContent = `${WORKFLOW_STEP_LABELS[selected[0]]}만`;
+      } else if (selected.length === 0) {
+        summary.textContent = '실행 단계 선택 필요';
+      } else {
+        summary.textContent = `${selected.length}개 단계`;
+      }
+    }
+
+    function updateAdvancedOptionsSummary() {
+      const summary = document.getElementById('advanced-options-summary');
+      if (!summary) return;
+      const agent = selectedAgent();
+      const options = [];
+      if (agent === 'spec' && document.getElementById('auto-clarify').checked) {
+        const maxRounds = document.getElementById('auto-clarify-limit').value || '0';
+        options.push(maxRounds === '0' ? '질문 자동 구체화 · 무제한' : `질문 자동 구체화 · 최대 ${maxRounds}회`);
+      }
+      if (agent === 'spec' && document.getElementById('route-limit').value !== '4') {
+        options.push(`재작업 ${document.getElementById('route-limit').value || '4'}회`);
+      }
+      if (agent === 'spec' && document.getElementById('allow-test-regression').checked) {
+        options.push('테스트 감소 허용');
+      }
+      if ((agent === 'spec' || agent === 'cicd') && document.getElementById('include-cd').checked) {
+        options.push('배포 파일 포함');
+      }
+      summary.textContent = options.length > 0 ? options.join(' · ') : '기본값';
+    }
+
+    function bindAdvancedOptionsSummary() {
+      ['auto-clarify', 'auto-clarify-limit', 'route-limit', 'allow-test-regression', 'include-cd'].forEach(id => {
+        const element = document.getElementById(id);
+        element.addEventListener('input', updateAdvancedOptionsSummary);
+        element.addEventListener('change', updateAdvancedOptionsSummary);
+      });
     }
 
     function toggleWorkflowStep(step) {
@@ -1204,6 +1344,14 @@
       selectedFiles = merged;
       document.getElementById('file-name').textContent = selectedFiles
         .map(file => `${file.name} (${(file.size / 1024).toFixed(1)} KB)`).join(', ');
+      updateAttachmentSummary();
+    }
+
+    function updateAttachmentSummary() {
+      const count = selectedFiles.length;
+      document.getElementById('attachment-summary').textContent = count === 0
+        ? '선택 안 됨'
+        : `${count}개 선택됨`;
     }
 
     function handleDrop(e) {
@@ -1245,7 +1393,7 @@
         formData.append('autoClarify', 'true');
         formData.append('maxClarifyRounds', document.getElementById('auto-clarify-limit').value || '0');
       }
-      if (document.getElementById('include-cd').checked) {
+      if ((agent === 'spec' || agent === 'cicd') && document.getElementById('include-cd').checked) {
         formData.append('deliveryIntent', 'cd');
       }
 
@@ -2495,6 +2643,7 @@
     const requestedRunId = new URLSearchParams(window.location.search).get('run');
     loadStats().then(() => { if (requestedRunId) showRunDetail(requestedRunId); });
     toggleAutoClarifyRow();
+    bindAdvancedOptionsSummary();
     document.addEventListener('keydown', (event) => {
       const modal = document.getElementById('claude-auth-modal');
       if (event.key === 'Escape' && modal.style.display !== 'none') {
