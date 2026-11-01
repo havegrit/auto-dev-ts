@@ -51,7 +51,7 @@ function qualifiedModel(providerName: string, model: ModelSpec): ModelSpec {
     id: `${providerName}:${providerModel}`,
     provider: providerName,
     providerModel,
-    displayName: `${providerName} / ${model.displayName}`,
+    displayName: model.displayName,
   };
 }
 

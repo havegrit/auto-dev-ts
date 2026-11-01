@@ -114,6 +114,16 @@
     })[char]);
   }
 
+  function modelLabel(modelSpec) {
+    const displayName = modelSpec.displayName || modelSpec.providerModel || modelSpec.id;
+    const provider = modelSpec.provider || modelSpec.id?.split(':', 1)[0];
+    if (!provider) return displayName;
+    if (displayName.slice(0, provider.length).toLowerCase() !== provider.toLowerCase()) return displayName;
+    const remainder = displayName.slice(provider.length);
+    if (!/^\s*[/:]\s*/.test(remainder)) return displayName;
+    return remainder.replace(/^\s*[/:]\s*/, '').trim();
+  }
+
   function renderMarkdown(element, content) {
     if (window.marked && window.DOMPurify) {
       element.classList.add('md-body');
@@ -169,8 +179,7 @@
 
     const modelSelect = document.getElementById('chat-model');
     modelSelect.innerHTML = config.availableModels.map((modelSpec) => {
-      const label = modelSpec.description ? `${modelSpec.displayName} — ${modelSpec.description}` : modelSpec.displayName;
-      return `<option value="${htmlEscape(modelSpec.id)}"${modelSpec.id === state.model ? ' selected' : ''}>${htmlEscape(label)}</option>`;
+      return `<option value="${htmlEscape(modelSpec.id)}"${modelSpec.id === state.model ? ' selected' : ''}>${htmlEscape(modelLabel(modelSpec))}</option>`;
     }).join('');
     modelSelect.value = state.model;
     modelSelect.disabled = busy || (mode === 'project' && !project);

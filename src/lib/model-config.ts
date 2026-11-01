@@ -14,12 +14,12 @@ export interface ModelSpec {
 
 /** CLI 조회 실패 시 사용하는 폴백 목록 (전체 모델 ID 기준 — SDK가 별칭/풀네임 모두 허용). */
 const FALLBACK_MODELS: ModelSpec[] = [
-  { id: 'anthropic:claude-opus-4-8', provider: 'anthropic', providerModel: 'claude-opus-4-8', displayName: 'anthropic / Claude Opus 4.8', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'anthropic:claude-sonnet-5', provider: 'anthropic', providerModel: 'claude-sonnet-5', displayName: 'anthropic / Claude Sonnet 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'anthropic:claude-fable-5', provider: 'anthropic', providerModel: 'claude-fable-5', displayName: 'anthropic / Claude Fable 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'anthropic:claude-haiku-4-5-20251001', provider: 'anthropic', providerModel: 'claude-haiku-4-5-20251001', displayName: 'anthropic / Claude Haiku 4.5', effortLevels: [] },
-  { id: 'codex-cli:gpt-5.5', provider: 'codex-cli', providerModel: 'gpt-5.5', displayName: 'codex-cli / GPT-5.5', effortLevels: ['none', 'low', 'medium', 'high', 'xhigh'] },
-  { id: 'codex-cli:gpt-5.4-mini', provider: 'codex-cli', providerModel: 'gpt-5.4-mini', displayName: 'codex-cli / GPT-5.4 mini', effortLevels: ['none', 'low', 'medium', 'high'] },
+  { id: 'anthropic:claude-opus-4-8', provider: 'anthropic', providerModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'anthropic:claude-sonnet-5', provider: 'anthropic', providerModel: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'anthropic:claude-fable-5', provider: 'anthropic', providerModel: 'claude-fable-5', displayName: 'Claude Fable 5', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'anthropic:claude-haiku-4-5-20251001', provider: 'anthropic', providerModel: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', effortLevels: [] },
+  { id: 'codex-cli:gpt-5.5', provider: 'codex-cli', providerModel: 'gpt-5.5', displayName: 'GPT-5.5', effortLevels: ['none', 'low', 'medium', 'high', 'xhigh'] },
+  { id: 'codex-cli:gpt-5.4-mini', provider: 'codex-cli', providerModel: 'gpt-5.4-mini', displayName: 'GPT-5.4 mini', effortLevels: ['none', 'low', 'medium', 'high'] },
 ];
 
 const storedConfig = appConfig.get();
@@ -120,7 +120,7 @@ function resolveModelSpecById(modelId: string): ModelSpec {
     id: modelId,
     provider: modelId.includes(':') ? modelId.split(':', 1)[0] : undefined,
     providerModel: modelId.includes(':') ? modelId.slice(modelId.indexOf(':') + 1) : modelId,
-    displayName: modelId,
+    displayName: modelId.includes(':') ? modelId.slice(modelId.indexOf(':') + 1) : modelId,
     effortLevels: [],
   };
 }
@@ -170,7 +170,7 @@ function configuredModelsForProvider(provider: string): ModelSpec[] {
       id,
       provider,
       providerModel,
-      displayName: `${provider} / ${providerModel}`,
+      displayName: providerModel,
       description: 'Previously configured model; provider catalog temporarily unavailable',
       effortLevels: [...new Set(retainedEfforts)],
     });

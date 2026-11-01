@@ -1099,14 +1099,23 @@
     function updateFallbackSummary() {
       const select = document.getElementById('fallback-model-select');
       const selectedModel = availableModels.find(modelSpec => modelSpec.id === select.value);
-      document.getElementById('fallback-model-summary').textContent = selectedModel?.displayName ?? '자동 선택';
+      document.getElementById('fallback-model-summary').textContent = selectedModel ? modelLabel(selectedModel) : '자동 선택';
+    }
+
+    function modelLabel(modelSpec) {
+      const displayName = modelSpec.displayName || modelSpec.providerModel || modelSpec.id;
+      const provider = modelSpec.provider || modelSpec.id?.split(':', 1)[0];
+      if (!provider) return displayName;
+      if (displayName.slice(0, provider.length).toLowerCase() !== provider.toLowerCase()) return displayName;
+      const remainder = displayName.slice(provider.length);
+      if (!/^\s*[/:]\s*/.test(remainder)) return displayName;
+      return remainder.replace(/^\s*[/:]\s*/, '').trim();
     }
 
     function modelOptions(selected, opts = {}) {
       const empty = opts.includeEmpty ? `<option value="" ${!selected ? 'selected' : ''}>${opts.emptyLabel ?? '기본값'}</option>` : '';
       return empty + availableModels.map(m => {
-        const label = m.description ? `${m.displayName} — ${m.description}` : m.displayName;
-        return `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${label}</option>`;
+        return `<option value="${escapeHtml(m.id)}" ${m.id === selected ? 'selected' : ''}>${escapeHtml(modelLabel(m))}</option>`;
       }).join('');
     }
 
