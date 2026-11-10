@@ -430,7 +430,7 @@
             <div class="workflow-step-picker" id="workflow-step-picker"></div>
           </div>
         </div>
-        <p class="request-help">전체 워크플로우가 기본 선택입니다. 칩을 끄면 선택한 단계만 실행합니다.</p>
+        <p class="request-help">기본 단계에서 CI/CD는 제외됩니다. 필요하면 칩을 켜세요. 선택한 단계만 실행합니다.</p>
       </div>
     </details>
 
@@ -706,7 +706,7 @@
       clarifier: '구체화', planner: '계획', scaffold: '구현',
       test: '테스트', review: '리뷰', cicd: 'CI/CD',
     };
-    const selectedWorkflowSteps = new Set(WORKFLOW_STEPS);
+    const selectedWorkflowSteps = new Set(WORKFLOW_STEPS.filter(step => step !== 'cicd'));
     // 최근 실행 버튼 로드 상태: 한 번에 유닛(spec 워크플로우 또는 단독 실행) 10개씩.
     const RUNS_UNIT_BATCH = 10;
     let loadedUnits = RUNS_UNIT_BATCH;
